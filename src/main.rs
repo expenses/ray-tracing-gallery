@@ -225,7 +225,7 @@ fn main() -> anyhow::Result<()> {
         )
     };
 
-    let (blas, blas_built_fence) = {
+    let blas = {
         let blas = AccelerationStructure::new(
             build_sizes.acceleration_structure_size,
             "blas",
@@ -264,20 +264,17 @@ fn main() -> anyhow::Result<()> {
                 blas_built_fence,
             )?;
 
-            //device.wait_for_fences(&[blas_built_fence], true, u64::MAX)?;
-            //device.destroy_fence(blas_built_fence, None);
+            device.wait_for_fences(&[blas_built_fence], true, u64::MAX)?;
         }
 
-        (blas, blas_built_fence)
+        blas
     };
 
     unsafe {
-        device.wait_for_fences(&[blas_built_fence], true, u64::MAX)?;
-
         device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
     }
 
-    let (tlas, tlas_built_fence) = {
+    let tlas = {
         let instance = vk::AccelerationStructureInstanceKHR {
             transform: vk::TransformMatrixKHR {
                 matrix: flatted_matrix(Mat4::identity()),
@@ -363,8 +360,6 @@ fn main() -> anyhow::Result<()> {
         let as_offset =
             vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(primitive_count);
 
-        dbg!(());
-
         unsafe {
             device.begin_command_buffer(
                 command_buffer,
@@ -399,17 +394,20 @@ fn main() -> anyhow::Result<()> {
                 &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
                 tlas_built_fence,
             )?;
+
+            device.wait_for_fences(&[tlas_built_fence], true, u64::MAX)?;
         }
 
-        (tlas, tlas_built_fence)
+        instances_buffer.cleanup(&mut allocator)?;
+
+        tlas
     };
 
-    unsafe {
-        device.wait_for_fences(&[tlas_built_fence], true, u64::MAX)?;
-    }
-
     blas.buffer.cleanup(&mut allocator)?;
+    tlas.buffer.cleanup(&mut allocator)?;
     scratch_buffer.cleanup(&mut allocator)?;
+    cube_verts_buffer.cleanup(&mut allocator)?;
+    cube_indices_buffer.cleanup(&mut allocator)?;
 
     Ok(())
 }
