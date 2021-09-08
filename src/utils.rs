@@ -1,6 +1,7 @@
 use crate::SurfaceLoader;
+use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDesc};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -65,7 +66,7 @@ pub fn select_physical_device(
                 .or_else(|| surface_formats.get(0));
 
             println!(
-                "  Checking for a surface format: {}",
+                "  Checking for an appropriate surface format: {}",
                 tick(surface_format.is_some())
             );
 
@@ -157,64 +158,175 @@ pub fn load_shader_module(bytes: &[u8], device: &ash::Device) -> anyhow::Result<
         .map_err(|err| err.into())
 }
 
+pub struct Allocator {
+    inner: gpu_allocator::vulkan::Allocator,
+    device: ash::Device,
+    queue_family: u32,
+}
+
+impl Allocator {
+    pub fn new(
+        instance: ash::Instance,
+        device: ash::Device,
+        physical_device: vk::PhysicalDevice,
+        queue_family: u32,
+    ) -> anyhow::Result<Self> {
+        let buffer_device_address = {
+            let mut bda_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
+
+            let mut physical_device_features_2 =
+                vk::PhysicalDeviceFeatures2::builder().push_next(&mut bda_features);
+
+            unsafe {
+                instance
+                    .get_physical_device_features2(physical_device, &mut physical_device_features_2)
+            };
+
+            bda_features.buffer_device_address != 0
+        };
+
+        let mut allocator = gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
+            instance,
+            device: device.clone(),
+            physical_device,
+            debug_settings: gpu_allocator::AllocatorDebugSettings::default(),
+            buffer_device_address,
+        })?;
+
+        Ok(Allocator {
+            inner: allocator,
+            queue_family,
+            device,
+        })
+    }
+}
+
+pub struct AccelerationStructure {
+    pub buffer: Buffer,
+    pub acceleration_structure: vk::AccelerationStructureKHR,
+}
+
+impl AccelerationStructure {
+    pub fn new(
+        size: u64,
+        ty: vk::AccelerationStructureTypeKHR,
+        loader: &AccelerationStructureLoader,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let buffer = Buffer::new_of_size(
+            size,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
+            allocator,
+        )?;
+
+        let acceleration_structure = unsafe {
+            loader.create_acceleration_structure(
+                &vk::AccelerationStructureCreateInfoKHR::builder()
+                    .buffer(buffer.buffer)
+                    .offset(0)
+                    .size(size)
+                    .ty(ty),
+                None,
+            )
+        }?;
+
+        Ok(Self {
+            buffer,
+            acceleration_structure,
+        })
+    }
+}
+
 pub struct Buffer {
     pub allocation: Allocation,
     pub buffer: vk::Buffer,
 }
 
 impl Buffer {
-    pub fn new(
-        bytes: &[u8],
+    pub fn new_of_size(
+        size: u64,
         usage: vk::BufferUsageFlags,
         allocator: &mut Allocator,
-        queue_family: u32,
-        device: &ash::Device,
     ) -> anyhow::Result<Self> {
-        let buffer_size = bytes.len() as u64;
-
         let buffer = unsafe {
-            device.create_buffer(
+            allocator.device.create_buffer(
                 &vk::BufferCreateInfo::builder()
-                    .size(buffer_size)
+                    .size(size)
                     .usage(usage)
-                    .queue_family_indices(&[queue_family]),
+                    .queue_family_indices(&[allocator.queue_family]),
                 None,
             )
         }?;
 
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
 
-        let mut allocation = allocator.allocate(&AllocationCreateDesc {
+        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+            name: "",
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: true,
+        })?;
+
+        unsafe {
+            allocator
+                .device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+        }?;
+
+        Ok(Self { buffer, allocation })
+    }
+
+    pub fn new(
+        bytes: &[u8],
+        usage: vk::BufferUsageFlags,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let buffer_size = bytes.len() as u64;
+
+        let buffer = unsafe {
+            allocator.device.create_buffer(
+                &vk::BufferCreateInfo::builder()
+                    .size(buffer_size)
+                    .usage(usage)
+                    .queue_family_indices(&[allocator.queue_family]),
+                None,
+            )
+        }?;
+
+        let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
+
+        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name: "",
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
             linear: true,
         })?;
 
-        let memory = unsafe { allocation.memory() };
-
         let slice = allocation.mapped_slice_mut().unwrap();
 
         slice.copy_from_slice(bytes);
 
-        unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }?;
+        unsafe {
+            allocator
+                .device
+                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+        }?;
 
         Ok(Self { buffer, allocation })
     }
 
-    pub fn cleanup(self, allocator: &mut Allocator, device: &ash::Device) -> anyhow::Result<()> {
-        allocator.free(self.allocation)?;
+    pub fn cleanup(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        allocator.inner.free(self.allocation)?;
 
-        unsafe { device.destroy_buffer(self.buffer, None) };
+        unsafe { allocator.device.destroy_buffer(self.buffer, None) };
 
         Ok(())
     }
 }
 
-/*
 pub struct Image {
     image: vk::Image,
-    allocation: vk_mem::Allocation,
+    allocation: Allocation,
     pub view: vk::ImageView,
 }
 
@@ -222,11 +334,10 @@ impl Image {
     pub fn new_depth_buffer(
         width: u32,
         height: u32,
-        device: &Device,
-        allocator: &vk_mem::Allocator,
+        allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
-        let (image, allocation, _allocation_info) = allocator
-            .create_image(
+        let image = unsafe {
+            allocator.device.create_image(
                 &vk::ImageCreateInfo::builder()
                     .image_type(vk::ImageType::TYPE_2D)
                     .format(vk::Format::D32_SFLOAT)
@@ -239,16 +350,27 @@ impl Image {
                     .array_layers(1)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
-                &vk_mem::AllocationCreateInfo {
-                    usage: vk_mem::MemoryUsage::GpuOnly,
-                    flags: vk_mem::AllocationCreateFlags::DEDICATED_MEMORY,
-                    ..Default::default()
-                },
+                None,
             )
-            .map_err(|err| anyhow::anyhow!("{:?}", err))?;
+        }?;
+
+        let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
+
+        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+            name: "",
+            requirements,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+            linear: false,
+        })?;
+
+        unsafe {
+            allocator
+                .device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+        }?;
 
         let view = unsafe {
-            device.create_image_view(
+            allocator.device.create_image_view(
                 &vk::ImageViewCreateInfo::builder()
                     .image(image)
                     .view_type(vk::ImageViewType::TYPE_2D)
@@ -271,14 +393,14 @@ impl Image {
         })
     }
 
-    pub fn cleanup(&self, device: &Device, allocator: &vk_mem::Allocator) -> anyhow::Result<()> {
-        unsafe {
-            device.destroy_image_view(self.view, None);
-        }
+    pub fn cleanup(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        allocator.inner.free(self.allocation)?;
 
-        allocator
-            .destroy_image(self.image, &self.allocation)
-            .map_err(|err| err.into())
+        unsafe { allocator.device.destroy_image_view(self.view, None) };
+
+        unsafe { allocator.device.destroy_image(self.image, None) };
+
+        Ok(())
     }
 }
 
@@ -287,16 +409,9 @@ pub fn load_rgba_image_from_bytes(
     width: u32,
     height: u32,
     command_buffer: vk::CommandBuffer,
-    device: &Device,
-    allocator: &vk_mem::Allocator,
-    queue_family: u32,
+    allocator: &mut Allocator,
 ) -> anyhow::Result<(Image, Buffer)> {
-    let staging_buffer = Buffer::new(
-        bytes,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        &allocator,
-        queue_family,
-    )?;
+    let staging_buffer = Buffer::new(bytes, vk::BufferUsageFlags::TRANSFER_SRC, allocator)?;
 
     let extent = vk::Extent3D {
         width,
@@ -304,20 +419,34 @@ pub fn load_rgba_image_from_bytes(
         depth: 1,
     };
 
-    let (image, allocation, _allocation_info) = allocator.create_image(
-        &vk::ImageCreateInfo::builder()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .extent(extent)
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
-        &vk_mem::AllocationCreateInfo {
-            usage: vk_mem::MemoryUsage::GpuOnly,
-            ..Default::default()
-        },
-    )?;
+    let image = unsafe {
+        allocator.device.create_image(
+            &vk::ImageCreateInfo::builder()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_SRGB)
+                .extent(extent)
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
+            None,
+        )
+    }?;
+
+    let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
+
+    let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        name: "",
+        requirements,
+        location: gpu_allocator::MemoryLocation::GpuOnly,
+        linear: false,
+    })?;
+
+    unsafe {
+        allocator
+            .device
+            .bind_image_memory(image, allocation.memory(), allocation.offset())
+    }?;
 
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -325,7 +454,7 @@ pub fn load_rgba_image_from_bytes(
         .layer_count(1);
 
     let view = unsafe {
-        device.create_image_view(
+        allocator.device.create_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
@@ -336,7 +465,7 @@ pub fn load_rgba_image_from_bytes(
     }?;
 
     unsafe {
-        device.cmd_pipeline_barrier(
+        allocator.device.cmd_pipeline_barrier(
             command_buffer,
             // See
             // https://www.khronos.org/registry/vulkan/specs/1.0/html/vkspec.html#synchronization-access-types-supported
@@ -355,7 +484,7 @@ pub fn load_rgba_image_from_bytes(
                 .subresource_range(*subresource_range)],
         );
 
-        device.cmd_copy_buffer_to_image(
+        allocator.device.cmd_copy_buffer_to_image(
             command_buffer,
             staging_buffer.buffer,
             image,
@@ -372,7 +501,7 @@ pub fn load_rgba_image_from_bytes(
                 .image_extent(extent)],
         );
 
-        device.cmd_pipeline_barrier(
+        allocator.device.cmd_pipeline_barrier(
             command_buffer,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -398,4 +527,3 @@ pub fn load_rgba_image_from_bytes(
         staging_buffer,
     ))
 }
-*/
