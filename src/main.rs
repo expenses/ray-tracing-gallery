@@ -1,11 +1,12 @@
 use ash::extensions::ext::DebugUtils as DebugUtilsLoader;
+use ash::extensions::khr;
 use ash::extensions::khr::{
     AccelerationStructure as AccelerationStructureLoader, Surface as SurfaceLoader,
     Swapchain as SwapchainLoader,
 };
 use ash::vk;
 use byte_strings::c_str;
-use ultraviolet::Vec3;
+use ultraviolet::{Mat4, Vec3};
 use winit::{event_loop::EventLoop, window::WindowBuilder};
 
 mod utils;
@@ -13,13 +14,13 @@ mod utils;
 use utils::{select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList};
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    simple_logger::SimpleLogger::new().init()?;
 
-    let event_loop = EventLoop::new();
+    /*let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
         .with_title("Vulkan base")
-        .build(&event_loop)?;
+        .build(&event_loop)?;*/
 
     let entry = unsafe { ash::Entry::new() }?;
 
@@ -34,7 +35,7 @@ fn main() -> anyhow::Result<()> {
         .api_version(api_version);
 
     let instance_extensions = CStrList::new({
-        let mut instance_extensions = ash_window::enumerate_required_extensions(&window)?;
+        let mut instance_extensions = vec![khr::Surface::name(), khr::Win32Surface::name()]; //ash_window::enumerate_required_extensions(&window)?;
         instance_extensions.push(DebugUtilsLoader::name());
         instance_extensions
     });
@@ -74,10 +75,10 @@ fn main() -> anyhow::Result<()> {
 
     let surface_loader = SurfaceLoader::new(&entry, &instance);
 
-    let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None) }?;
+    //let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None) }?;
 
     let (physical_device, queue_family, surface_format) =
-        match select_physical_device(&instance, &device_extensions, &surface_loader, surface)? {
+        match select_physical_device(&instance, &device_extensions, &surface_loader)? {
             Some(selection) => selection,
             None => {
                 println!("No suitable device found 💔. Exiting program");
@@ -134,24 +135,55 @@ fn main() -> anyhow::Result<()> {
         .command_pool(command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
         .command_buffer_count(1);
+
     let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
     let (cube_verts, cube_indices) = cube_verts();
 
+    let cube_verts_buffer = Buffer::new(
+        bytemuck::cast_slice(&cube_verts),
+        "cube verts",
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+        &mut allocator,
+    )?;
+
+    let cube_indices_buffer = Buffer::new(
+        bytemuck::cast_slice(&cube_indices),
+        "cube indices",
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+        &mut allocator,
+    )?;
+
+    let cube_verts_buffer_address = unsafe {
+        device.get_buffer_device_address(
+            &vk::BufferDeviceAddressInfo::builder().buffer(cube_verts_buffer.buffer),
+        )
+    };
+
+    let cube_indices_buffer_address = unsafe {
+        device.get_buffer_device_address(
+            &vk::BufferDeviceAddressInfo::builder().buffer(cube_indices_buffer.buffer),
+        )
+    };
+
+    // Create the BLAS
+
     let primitive_count = cube_indices.len() as u32 / 3;
 
     let as_triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
         .vertex_format(vk::Format::R32G32B32_SFLOAT)
         .vertex_data(vk::DeviceOrHostAddressConstKHR {
-            host_address: cube_verts.as_ptr() as *const _,
+            device_address: cube_verts_buffer_address,
         })
         .vertex_stride(std::mem::size_of::<Vertex>() as u64)
         .max_vertex(cube_verts.len() as u32)
         .index_type(vk::IndexType::UINT16)
         .index_data(vk::DeviceOrHostAddressConstKHR {
-            host_address: cube_indices.as_ptr() as *const _,
+            device_address: cube_indices_buffer_address,
         });
 
     let as_geometry = vk::AccelerationStructureGeometryKHR::builder()
@@ -159,18 +191,18 @@ fn main() -> anyhow::Result<()> {
         .geometry(vk::AccelerationStructureGeometryDataKHR {
             triangles: *as_triangles,
         })
-        .flags(vk::GeometryFlagsKHR::OPAQUE)
-        .build();
+        .flags(vk::GeometryFlagsKHR::OPAQUE);
 
     let as_offset =
         vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(primitive_count);
 
-    let as_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+    let geometries = &[*as_geometry];
+
+    let mut as_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-        .geometries(&[as_geometry])
-        .build();
+        .geometries(geometries);
 
     let build_sizes = unsafe {
         as_loader.get_acceleration_structure_build_sizes(
@@ -182,48 +214,214 @@ fn main() -> anyhow::Result<()> {
 
     let scratch_buffer = Buffer::new_of_size(
         build_sizes.build_scratch_size,
-        vk::BufferUsageFlags::STORAGE_BUFFER,
-        &mut allocator,
-    );
-
-    let acceleration_structure = AccelerationStructure::new(
-        build_sizes.acceleration_structure_size,
-        vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-        &as_loader,
+        "scratch buffer",
+        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         &mut allocator,
     )?;
 
-    /*unsafe {
-        device.begin_command_buffer(
-            command_buffer,
-            &vk::CommandBufferBeginInfo::builder()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+    let scratch_buffer_address = unsafe {
+        device.get_buffer_device_address(
+            &vk::BufferDeviceAddressInfo::builder().buffer(scratch_buffer.buffer),
+        )
+    };
+
+    let (blas, blas_built_fence) = {
+        let blas = AccelerationStructure::new(
+            build_sizes.acceleration_structure_size,
+            "blas",
+            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            &as_loader,
+            &mut allocator,
         )?;
 
-        as_loader.create_acceleration_structure()
+        as_geometry_info = as_geometry_info
+            .dst_acceleration_structure(blas.acceleration_structure)
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: scratch_buffer_address,
+            });
 
-        as_loader.cmd_build_acceleration_structures(
-            command_buffer,
-            &[as_geometry_info],
-            &[&[*as_offset]],
-        );
+        let blas_built_fence =
+            unsafe { device.create_fence(&vk::FenceCreateInfo::builder(), None)? };
 
-        device.end_command_buffer(command_buffer)?;
+        unsafe {
+            device.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::builder()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
 
-        let blas_built_fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
+            as_loader.cmd_build_acceleration_structures(
+                command_buffer,
+                &[*as_geometry_info],
+                &[&[*as_offset]],
+            );
 
-        device.queue_submit(
-            queue,
-            &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
-            blas_built_fence,
-        )?;
+            device.end_command_buffer(command_buffer)?;
 
+            device.queue_submit(
+                queue,
+                &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
+                blas_built_fence,
+            )?;
+
+            //device.wait_for_fences(&[blas_built_fence], true, u64::MAX)?;
+            //device.destroy_fence(blas_built_fence, None);
+        }
+
+        (blas, blas_built_fence)
+    };
+
+    unsafe {
         device.wait_for_fences(&[blas_built_fence], true, u64::MAX)?;
 
-        device.destroy_fence(blas_built_fence, None);
-    }*/
+        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+    }
+
+    let (tlas, tlas_built_fence) = {
+        let instance = vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR {
+                matrix: flatted_matrix(Mat4::identity()),
+            },
+            instance_custom_index_and_mask: 0,
+            instance_shader_binding_table_record_offset_and_flags:
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw(),
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                host_handle: blas.acceleration_structure,
+            },
+        };
+
+        let instances = &[instance];
+
+        let instance_count = instances.len() as u32;
+
+        let slice = unsafe {
+            std::slice::from_raw_parts(
+                instances.as_ptr() as *const u8,
+                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
+            )
+        };
+
+        let instances_buffer = Buffer::new_with_custom_alignment(
+            slice,
+            "instances buffer",
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            16,
+            &mut allocator,
+        )?;
+
+        let instances_buffer_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::builder().buffer(instances_buffer.buffer),
+            )
+        };
+
+        let tlas_built_fence =
+            unsafe { device.create_fence(&vk::FenceCreateInfo::builder(), None)? };
+
+        let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
+            vk::DeviceOrHostAddressConstKHR {
+                device_address: instances_buffer_address,
+            },
+        );
+
+        let instances_geo = vk::AccelerationStructureGeometryKHR::builder()
+            .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                instances: *instances_data,
+            });
+
+        let instance_geos = &[*instances_geo];
+
+        let mut instances_build = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .geometries(instance_geos);
+
+        let build_sizes = unsafe {
+            as_loader.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &instances_build,
+                &[instance_count],
+            )
+        };
+
+        let tlas = AccelerationStructure::new(
+            build_sizes.acceleration_structure_size,
+            "tlas",
+            vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            &as_loader,
+            &mut allocator,
+        )?;
+
+        instances_build = instances_build
+            .dst_acceleration_structure(tlas.acceleration_structure)
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: scratch_buffer_address,
+            });
+
+        let as_offset =
+            vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(primitive_count);
+
+        dbg!(());
+
+        unsafe {
+            device.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::builder()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            as_loader.cmd_build_acceleration_structures(
+                command_buffer,
+                &[*instances_build],
+                &[&[*as_offset]],
+            );
+
+            let memory_barrier = vk::MemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
+
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::DependencyFlags::empty(),
+                &[*memory_barrier],
+                &[],
+                &[],
+            );
+
+            device.end_command_buffer(command_buffer)?;
+
+            device.queue_submit(
+                queue,
+                &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
+                tlas_built_fence,
+            )?;
+        }
+
+        (tlas, tlas_built_fence)
+    };
+
+    unsafe {
+        device.wait_for_fences(&[tlas_built_fence], true, u64::MAX)?;
+    }
+
+    blas.buffer.cleanup(&mut allocator)?;
+    scratch_buffer.cleanup(&mut allocator)?;
 
     Ok(())
+}
+
+#[rustfmt::skip]
+fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
+    [
+        matrix.cols[0].x, matrix.cols[1].x, matrix.cols[2].x,
+        matrix.cols[0].y, matrix.cols[1].y, matrix.cols[2].y,
+        matrix.cols[0].z, matrix.cols[1].z, matrix.cols[2].z,
+        matrix.cols[0].w, matrix.cols[1].w, matrix.cols[2].w,
+    ]
 }
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
