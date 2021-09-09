@@ -14,12 +14,12 @@ use winit::{
     window::WindowBuilder,
 };
 
-mod utils;
+mod util_functions;
+mod util_structs;
 
-use utils::{
-    load_shader_module, select_physical_device, set_image_layout, AccelerationStructure, Allocator,
-    Buffer, CStrList, Image, ScratchBuffer,
-};
+use util_structs::{AccelerationStructure, Allocator, Buffer, CStrList, Image, ScratchBuffer};
+
+use util_functions::{load_shader_module, select_physical_device, set_image_layout};
 
 fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().init()?;
@@ -184,10 +184,6 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
-
     // Allocate the instance buffer
 
     let instances = &[vk::AccelerationStructureInstanceKHR {
@@ -213,6 +209,10 @@ fn main() -> anyhow::Result<()> {
 
     // Create the tlas
 
+    unsafe {
+        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+    }
+
     let tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
@@ -229,8 +229,7 @@ fn main() -> anyhow::Result<()> {
     let surface_caps = unsafe {
         surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
     }?;
-    dbg!(surface_caps);
-    let mut image_count = (surface_caps.min_image_count + 1);
+    let mut image_count = surface_caps.min_image_count + 1;
     if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
         image_count = surface_caps.max_image_count;
     }
@@ -257,20 +256,21 @@ fn main() -> anyhow::Result<()> {
         .clipped(true)
         .old_swapchain(vk::SwapchainKHR::null());
 
+    unsafe {
+        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+    }
+
     let storage_image = Image::new_storage_image(
         extent.width,
         extent.height,
         surface_format.format,
+        command_buffer,
+        queue,
         &mut allocator,
     )?;
 
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
-    let mut swapchain = Swapchain::new(
-        swapchain_loader.clone(),
-        &device,
-        swapchain_info,
-        storage_image,
-    )?;
+    let mut swapchain = Swapchain::new(swapchain_loader, swapchain_info)?;
 
     // Create the descriptor set
 
@@ -343,7 +343,7 @@ fn main() -> anyhow::Result<()> {
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .image_info(&[*vk::DescriptorImageInfo::builder()
-                        .image_view(swapchain.storage_image.view)
+                        .image_view(storage_image.view)
                         .image_layout(vk::ImageLayout::GENERAL)]),
             ],
             &[],
@@ -420,6 +420,93 @@ fn main() -> anyhow::Result<()> {
 
     let pipeline = pipelines[0];
 
+    // Shader binding tables
+
+    let ray_tracing_props = {
+        let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+
+        let mut device_props_2 =
+            vk::PhysicalDeviceProperties2::builder().push_next(&mut ray_tracing_props);
+
+        unsafe { instance.get_physical_device_properties2(physical_device, &mut device_props_2) }
+
+        ray_tracing_props
+    };
+
+    fn aligned_size(value: u32, alignment: u32) -> u32 {
+        (value + alignment - 1) & !(alignment - 1)
+    }
+
+    let handle_size = ray_tracing_props.shader_group_handle_size as usize;
+    let handle_size_aligned = aligned_size(
+        ray_tracing_props.shader_group_handle_size,
+        ray_tracing_props.shader_group_handle_alignment,
+    );
+    let num_groups = shader_groups.len() as u32;
+    let shader_binding_table_size = num_groups * handle_size_aligned;
+
+    // We have to fetch the shader group handles as bytes ... then upload them as buffers.
+    // Okay. FIne. Sure.
+
+    let group_handles = unsafe {
+        pipeline_loader.get_ray_tracing_shader_group_handles(
+            pipeline,
+            0,
+            num_groups,
+            shader_binding_table_size as usize,
+        )
+    }?;
+
+    dbg!(ray_tracing_props);
+
+    let alignment = ray_tracing_props.shader_group_base_alignment as u64;
+
+    let shader_binding_tables = [
+        Buffer::new_with_custom_alignment(
+            &group_handles[..handle_size],
+            "raygen shader binding table",
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            alignment,
+            &mut allocator,
+        )?,
+        Buffer::new_with_custom_alignment(
+            &group_handles[handle_size..handle_size * 2],
+            "miss shader binding table",
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            alignment,
+            &mut allocator,
+        )?,
+        Buffer::new_with_custom_alignment(
+            &group_handles[handle_size * 2..],
+            "closest hit shader binding table",
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            alignment,
+            &mut allocator,
+        )?,
+    ];
+
+    let handle_size_aligned = handle_size_aligned as u64;
+
+    let strided_address_regions = [
+        vk::StridedDeviceAddressRegionKHR::builder()
+            .device_address(shader_binding_tables[0].device_address(&device))
+            .stride(handle_size_aligned)
+            .size(handle_size_aligned),
+        vk::StridedDeviceAddressRegionKHR::builder()
+            .device_address(shader_binding_tables[1].device_address(&device))
+            .stride(handle_size_aligned)
+            .size(handle_size_aligned),
+        vk::StridedDeviceAddressRegionKHR::builder()
+            .device_address(shader_binding_tables[2].device_address(&device))
+            .stride(handle_size_aligned)
+            .size(handle_size_aligned),
+    ];
+
+    //return Ok(());
+
     // main loop
 
     let syncronisation = Syncronisation::new(&device);
@@ -462,6 +549,54 @@ fn main() -> anyhow::Result<()> {
                             )
                             .unwrap();
 
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::RAY_TRACING_KHR,
+                            pipeline,
+                        );
+
+                        device.cmd_bind_descriptor_sets(
+                            command_buffer,
+                            vk::PipelineBindPoint::RAY_TRACING_KHR,
+                            pipeline_layout,
+                            0,
+                            &[descriptor_set],
+                            &[],
+                        );
+
+                        let camera_perspective = ultraviolet::projection::perspective_vk(
+                            60.0_f32.to_radians(),
+                            extent.width as f32 / extent.height as f32,
+                            0.1,
+                            512.0,
+                        );
+
+                        let camera_view =
+                            Mat4::look_at(Vec3::new(0.0, 0.0, -2.5), Vec3::zero(), Vec3::unit_y());
+
+                        device.cmd_push_constants(
+                            command_buffer,
+                            pipeline_layout,
+                            vk::ShaderStageFlags::RAYGEN_KHR,
+                            0,
+                            bytemuck::bytes_of(&CameraProperties {
+                                view_inverse: camera_view.inversed(),
+                                proj_inverse: camera_perspective.inversed(),
+                            }),
+                        );
+
+                        pipeline_loader.cmd_trace_rays(
+                            command_buffer,
+                            &strided_address_regions[0],
+                            &strided_address_regions[1],
+                            &strided_address_regions[2],
+                            // We don't use callable shaders here
+                            &Default::default(),
+                            extent.width,
+                            extent.height,
+                            1,
+                        );
+
                         let subresource = *vk::ImageSubresourceLayers::builder()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
                             .mip_level(0)
@@ -487,7 +622,7 @@ fn main() -> anyhow::Result<()> {
                         set_image_layout(
                             &device,
                             command_buffer,
-                            swapchain.storage_image.image,
+                            storage_image.image,
                             vk::ImageLayout::GENERAL,
                             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                             *subresource_range,
@@ -495,7 +630,7 @@ fn main() -> anyhow::Result<()> {
 
                         device.cmd_copy_image(
                             command_buffer,
-                            swapchain.storage_image.image,
+                            storage_image.image,
                             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                             swapchain_image,
                             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -509,7 +644,8 @@ fn main() -> anyhow::Result<()> {
                                 })],
                         );
 
-                        // prepare image to be a destimation
+                        // Reset image layouts
+
                         set_image_layout(
                             &device,
                             command_buffer,
@@ -519,11 +655,10 @@ fn main() -> anyhow::Result<()> {
                             *subresource_range,
                         );
 
-                        // prepare storage image to be a source
                         set_image_layout(
                             &device,
                             command_buffer,
-                            swapchain.storage_image.image,
+                            storage_image.image,
                             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                             vk::ImageLayout::GENERAL,
                             *subresource_range,
@@ -564,17 +699,6 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {}
     });
-
-    // Cleanup
-
-    instances_buffer.cleanup(&mut allocator)?;
-    blas.buffer.cleanup(&mut allocator)?;
-    tlas.buffer.cleanup(&mut allocator)?;
-    scratch_buffer.inner.cleanup(&mut allocator)?;
-    cube_verts_buffer.cleanup(&mut allocator)?;
-    cube_indices_buffer.cleanup(&mut allocator)?;
-
-    Ok(())
 }
 
 struct Syncronisation {
@@ -608,15 +732,12 @@ struct Swapchain {
     swapchain_loader: SwapchainLoader,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
-    storage_image: Image,
 }
 
 impl Swapchain {
     fn new(
         swapchain_loader: SwapchainLoader,
-        device: &ash::Device,
         info: vk::SwapchainCreateInfoKHR,
-        storage_image: Image,
     ) -> anyhow::Result<Self> {
         let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }.unwrap();
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }.unwrap();
@@ -625,7 +746,6 @@ impl Swapchain {
             images,
             swapchain,
             swapchain_loader,
-            storage_image,
         })
     }
 }
