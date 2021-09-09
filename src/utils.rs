@@ -9,7 +9,7 @@ pub fn select_physical_device(
     instance: &ash::Instance,
     required_extensions: &CStrList,
     surface_loader: &SurfaceLoader,
-    //surface: vk::SurfaceKHR,
+    surface: vk::SurfaceKHR,
 ) -> anyhow::Result<Option<(vk::PhysicalDevice, u32, vk::SurfaceFormatKHR)>> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
@@ -37,9 +37,9 @@ pub fn select_physical_device(
                     queue_family_properties
                         .queue_flags
                         .contains(vk::QueueFlags::GRAPHICS)
-                    /*&& surface_loader
-                    .get_physical_device_surface_support(physical_device, i as u32, surface)
-                    .unwrap()*/
+                        && surface_loader
+                            .get_physical_device_surface_support(physical_device, i as u32, surface)
+                            .unwrap()
                 })
                 .map(|queue_family| queue_family as u32);
 
@@ -53,7 +53,6 @@ pub fn select_physical_device(
                 None => return None,
             };
 
-            /*
             let surface_formats = surface_loader
                 .get_physical_device_surface_formats(physical_device, surface)
                 .unwrap();
@@ -61,16 +60,11 @@ pub fn select_physical_device(
             let surface_format = surface_formats
                 .iter()
                 .find(|surface_format| {
-                    surface_format.format == vk::Format::B8G8R8A8_SRGB
+                    // todo: srgb?
+                    surface_format.format == vk::Format::B8G8R8A8_UNORM
                         && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
                 })
                 .or_else(|| surface_formats.get(0));
-            */
-
-            let surface_format = Some(&vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            });
 
             println!(
                 "  Checking for an appropriate surface format: {}",
@@ -423,7 +417,7 @@ impl Buffer {
 }
 
 pub struct Image {
-    image: vk::Image,
+    pub image: vk::Image,
     allocation: Allocation,
     pub view: vk::ImageView,
 }
@@ -511,6 +505,8 @@ impl Image {
                     .mip_levels(1)
                     .array_layers(1)
                     .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .initial_layout(vk::ImageLayout::UNDEFINED)
                     .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE),
                 None,
             )
@@ -694,4 +690,124 @@ pub fn load_rgba_image_from_bytes(
         },
         staging_buffer,
     ))
+}
+
+// Copied pretty much verbatim from:
+// https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/base/VulkanTools.cpp#L119-L123
+//
+// This stuff is super annoying, I wish this image layout to access mask matching was
+// in the api itself.
+pub fn set_image_layout(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    subresource_range: vk::ImageSubresourceRange,
+) {
+    let mut image_memory_barrier = vk::ImageMemoryBarrier::builder()
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .image(image)
+        .subresource_range(subresource_range);
+
+    // Source layouts (old)
+    // Source access mask controls actions that have to be finished on the old layout
+    // before it will be transitioned to the new layout
+    match old_layout {
+        vk::ImageLayout::UNDEFINED => {
+            // Image layout is undefined (or does not matter)
+            // Only valid as initial layout
+            // No flags required, listed only for completeness
+            image_memory_barrier.src_access_mask = vk::AccessFlags::empty();
+        }
+        vk::ImageLayout::PREINITIALIZED => {
+            // Image is preinitialized
+            // Only valid as initial layout for linear images, preserves memory contents
+            // Make sure host writes have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::HOST_WRITE;
+        }
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+            // Image is a color attachment
+            // Make sure any writes to the color buffer have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        }
+        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
+            // Image is a depth/stencil attachment
+            // Make sure any writes to the depth/stencil buffer have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+        }
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => {
+            // Image is a transfer source
+            // Make sure any reads from the image have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+        }
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => {
+            // Image is a transfer destination
+            // Make sure any writes to the image have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        }
+
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
+            // Image is read by a shader
+            // Make sure any shader reads from the image have been finished
+            image_memory_barrier.src_access_mask = vk::AccessFlags::SHADER_READ;
+        }
+        // Other source layouts aren't handled (yet)
+        _ => {}
+    }
+
+    // Target layouts (new)
+    // Destination access mask controls the dependency for the new image layout
+    match new_layout {
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => {
+            // Image will be used as a transfer destination
+            // Make sure any writes to the image have been finished
+            image_memory_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        }
+
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => {
+            // Image will be used as a transfer source
+            // Make sure any reads from the image have been finished
+            image_memory_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+        }
+
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+            // Image will be used as a color attachment
+            // Make sure any writes to the color buffer have been finished
+            image_memory_barrier.dst_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        }
+
+        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
+            // Image layout will be used as a depth/stencil attachment
+            // Make sure any writes to depth/stencil buffer have been finished
+            image_memory_barrier.dst_access_mask = image_memory_barrier.dst_access_mask
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+        }
+
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
+            // Image will be read in a shader (sampler, input attachment)
+            // Make sure any writes to the image have been finished
+            if (image_memory_barrier.src_access_mask == vk::AccessFlags::empty()) {
+                image_memory_barrier.src_access_mask =
+                    vk::AccessFlags::HOST_WRITE | vk::AccessFlags::TRANSFER_WRITE;
+            }
+            image_memory_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+        }
+        _ => {
+            // Other source layouts aren't handled (yet)
+        }
+    }
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[*image_memory_barrier],
+        )
+    }
 }
