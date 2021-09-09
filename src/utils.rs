@@ -68,7 +68,7 @@ pub fn select_physical_device(
             */
 
             let surface_format = Some(&vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_SRGB,
+                format: vk::Format::B8G8R8A8_UNORM,
                 color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
             });
 
@@ -479,6 +479,69 @@ impl Image {
             image,
             allocation,
             view,
+        })
+    }
+
+    pub fn new_storage_image(
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let image = unsafe {
+            allocator.device.create_image(
+                &vk::ImageCreateInfo::builder()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE),
+                None,
+            )
+        }?;
+
+        let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
+
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+            name: "storage image",
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: false,
+        })?;
+
+        unsafe {
+            allocator
+                .device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+        }?;
+
+        let view = unsafe {
+            allocator.device.create_image_view(
+                &vk::ImageViewCreateInfo::builder()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(
+                        vk::ImageSubresourceRange::builder()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .level_count(1)
+                            .layer_count(1)
+                            .build(),
+                    ),
+                None,
+            )
+        }?;
+
+        Ok(Self {
+            image,
+            view,
+            allocation,
         })
     }
 

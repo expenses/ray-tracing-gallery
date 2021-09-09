@@ -14,7 +14,8 @@ use winit::{event_loop::EventLoop, window::WindowBuilder};
 mod utils;
 
 use utils::{
-    select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList, ScratchBuffer,
+    select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList, Image,
+    ScratchBuffer,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -222,12 +223,91 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
+    let storage_image = Image::new_storage_image(512, 512, surface_format.format, &mut allocator)?;
+
+    let descriptor_set_layout = unsafe {
+        device.create_descriptor_set_layout(
+            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+            ]),
+            None,
+        )
+    }?;
+
+    let descriptor_pool = unsafe {
+        device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::builder()
+                .pool_sizes(&[
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                        .descriptor_count(1),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::STORAGE_IMAGE)
+                        .descriptor_count(1),
+                ])
+                .max_sets(1),
+            None,
+        )
+    }?;
+
+    let descriptor_sets = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::builder()
+                .set_layouts(&[descriptor_set_layout])
+                .descriptor_pool(descriptor_pool),
+        )
+    }?;
+
+    let descriptor_set = descriptor_sets[0];
+
+    let structures = &[tlas.acceleration_structure];
+
+    unsafe {
+        device.update_descriptor_sets(
+            &[
+                {
+                    let mut write_acceleration_structures =
+                        vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+                            .acceleration_structures(structures);
+
+                    let mut write_as = *vk::WriteDescriptorSet::builder()
+                        .dst_set(descriptor_set)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                        .push_next(&mut write_acceleration_structures);
+
+                    write_as.descriptor_count = 1;
+
+                    write_as
+                },
+                *vk::WriteDescriptorSet::builder()
+                    .dst_set(descriptor_set)
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(&[*vk::DescriptorImageInfo::builder()
+                        .image_view(storage_image.view)
+                        .image_layout(vk::ImageLayout::GENERAL)]),
+            ],
+            &[],
+        );
+    }
+
     instances_buffer.cleanup(&mut allocator)?;
     blas.buffer.cleanup(&mut allocator)?;
     tlas.buffer.cleanup(&mut allocator)?;
     scratch_buffer.inner.cleanup(&mut allocator)?;
     cube_verts_buffer.cleanup(&mut allocator)?;
     cube_indices_buffer.cleanup(&mut allocator)?;
+    storage_image.cleanup(&mut allocator)?;
 
     Ok(())
 }
