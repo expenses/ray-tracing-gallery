@@ -73,7 +73,8 @@ impl AccelerationStructure {
         let buffer = Buffer::new_of_size(
             size,
             name,
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             allocator,
         )?;
 

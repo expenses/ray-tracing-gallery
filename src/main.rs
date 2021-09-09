@@ -503,8 +503,6 @@ fn main() -> anyhow::Result<()> {
             .size(handle_size_aligned),
     ];
 
-    //return Ok(());
-
     // main loop
 
     let syncronisation = Syncronisation::new(&device);
@@ -1044,61 +1042,3 @@ fn indices() -> [u16; 36] {
         5, 4, 6, 5, 6, 7, // top
     ]
 }
-
-/*
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct Vertex {
-    position: Vec3,
-    colour: Vec3,
-}
-
-impl Vertex {
-    fn attribute_desc() -> [vk::VertexInputAttributeDescription; 2] {
-        [
-            *vk::VertexInputAttributeDescription::builder()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0),
-            *vk::VertexInputAttributeDescription::builder()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::size_of::<Vec3>() as u32),
-        ]
-    }
-}
-
-fn vertex(x: f32, z: f32, y: f32) -> Vertex {
-    let corner = Vec3::new(x, y, z);
-
-    Vertex {
-        position: corner * 2.0 - Vec3::broadcast(1.0),
-        colour: corner,
-    }
-}
-
-fn cube_verts() -> ([Vertex; 8], [u16; 36]) {
-    (
-        [
-            vertex(0.0, 0.0, 0.0),
-            vertex(1.0, 0.0, 0.0),
-            vertex(0.0, 1.0, 0.0),
-            vertex(1.0, 1.0, 0.0),
-            vertex(0.0, 0.0, 1.0),
-            vertex(1.0, 0.0, 1.0),
-            vertex(0.0, 1.0, 1.0),
-            vertex(1.0, 1.0, 1.0),
-        ],
-        [
-            0, 1, 2, 2, 1, 3, // bottom
-            3, 1, 5, 3, 5, 7, // front
-            0, 2, 4, 4, 2, 6, // back
-            1, 0, 4, 1, 4, 5, // left
-            2, 3, 6, 6, 3, 7, // right
-            5, 4, 6, 5, 6, 7, // top
-        ],
-    )
-}
-*/
