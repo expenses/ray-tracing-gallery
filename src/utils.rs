@@ -178,37 +178,22 @@ impl Allocator {
         physical_device: vk::PhysicalDevice,
         queue_family: u32,
     ) -> anyhow::Result<Self> {
-        let buffer_device_address = {
-            let mut bda_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
-
-            let mut physical_device_features_2 =
-                vk::PhysicalDeviceFeatures2::builder().push_next(&mut bda_features);
-
-            unsafe {
-                instance
-                    .get_physical_device_features2(physical_device, &mut physical_device_features_2)
-            };
-
-            bda_features.buffer_device_address == vk::TRUE
-        };
-
-        let allocator = gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
-            instance,
-            device: device.clone(),
-            physical_device,
-            debug_settings: gpu_allocator::AllocatorDebugSettings {
-                log_memory_information: false,
-                log_leaks_on_shutdown: true,
-                store_stack_traces: false,
-                log_allocations: false,
-                log_frees: true,
-                log_stack_traces: false,
-            },
-            buffer_device_address,
-        })?;
-
         Ok(Allocator {
-            inner: allocator,
+            inner: gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
+                instance,
+                device: device.clone(),
+                physical_device,
+                debug_settings: gpu_allocator::AllocatorDebugSettings {
+                    log_memory_information: false,
+                    log_leaks_on_shutdown: true,
+                    store_stack_traces: false,
+                    log_allocations: false,
+                    log_frees: true,
+                    log_stack_traces: false,
+                },
+                // Needed for getting buffer device addresses
+                buffer_device_address: true,
+            })?,
             queue_family,
             device,
         })
@@ -222,7 +207,7 @@ pub struct AccelerationStructure {
 
 impl AccelerationStructure {
     pub fn new(
-        size: u64,
+        size: vk::DeviceSize,
         name: &str,
         ty: vk::AccelerationStructureTypeKHR,
         loader: &AccelerationStructureLoader,
@@ -260,7 +245,7 @@ pub struct ScratchBuffer {
 }
 
 impl ScratchBuffer {
-    pub fn new(size: u64, allocator: &mut Allocator) -> anyhow::Result<Self> {
+    pub fn new(size: vk::DeviceSize, allocator: &mut Allocator) -> anyhow::Result<Self> {
         log::info!("Creating a scratch buffer of {} bytes", size);
 
         Ok(Self {
@@ -273,7 +258,11 @@ impl ScratchBuffer {
         })
     }
 
-    pub fn ensure_size_of(&mut self, size: u64, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn ensure_size_of(
+        &mut self,
+        size: vk::DeviceSize,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<()> {
         if self.inner.allocation.size() < size {
             let old = std::mem::replace(self, Self::new(size, allocator)?);
 
@@ -291,7 +280,7 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new_of_size(
-        size: u64,
+        size: vk::DeviceSize,
         name: &str,
         usage: vk::BufferUsageFlags,
         allocator: &mut Allocator,
@@ -330,7 +319,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
-        let buffer_size = bytes.len() as u64;
+        let buffer_size = bytes.len() as vk::DeviceSize;
 
         let buffer = unsafe {
             allocator.device.create_buffer(
@@ -361,7 +350,7 @@ impl Buffer {
         alignment: vk::DeviceSize,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
-        let buffer_size = bytes.len() as u64;
+        let buffer_size = bytes.len() as vk::DeviceSize;
 
         let buffer = unsafe {
             allocator.device.create_buffer(
@@ -395,7 +384,7 @@ impl Buffer {
     ) -> anyhow::Result<Self> {
         let slice = allocation.mapped_slice_mut().unwrap();
 
-        slice.copy_from_slice(bytes);
+        slice[..bytes.len()].copy_from_slice(bytes);
 
         unsafe {
             allocator
