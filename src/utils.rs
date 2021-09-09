@@ -159,10 +159,20 @@ impl<'a> CStrList<'a> {
     }
 }
 
-pub fn load_shader_module(bytes: &[u8], device: &ash::Device) -> anyhow::Result<vk::ShaderModule> {
+pub fn load_shader_module(
+    bytes: &[u8],
+    stage: vk::ShaderStageFlags,
+    device: &ash::Device,
+) -> anyhow::Result<vk::PipelineShaderStageCreateInfo> {
     let spv = ash::util::read_spv(&mut std::io::Cursor::new(bytes))?;
-    unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spv), None) }
-        .map_err(|err| err.into())
+    let module = unsafe {
+        device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spv), None)
+    }?;
+
+    Ok(*vk::PipelineShaderStageCreateInfo::builder()
+        .module(module)
+        .stage(stage)
+        .name(CStr::from_bytes_with_nul(b"main\0")?))
 }
 
 pub struct Allocator {

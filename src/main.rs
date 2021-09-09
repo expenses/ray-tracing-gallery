@@ -14,8 +14,8 @@ use winit::{event_loop::EventLoop, window::WindowBuilder};
 mod utils;
 
 use utils::{
-    select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList, Image,
-    ScratchBuffer,
+    load_shader_module, select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList,
+    Image, ScratchBuffer,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -187,7 +187,7 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let instance = vk::AccelerationStructureInstanceKHR {
+    let instances = &[vk::AccelerationStructureInstanceKHR {
         transform: vk::TransformMatrixKHR {
             matrix: identity_3x4_matrix(),
         },
@@ -197,9 +197,7 @@ fn main() -> anyhow::Result<()> {
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
             host_handle: blas.acceleration_structure,
         },
-    };
-
-    let instances = &[instance];
+    }];
 
     let instances_buffer = Buffer::new_with_custom_alignment(
         unsafe { instances_as_bytes(instances) },
@@ -224,6 +222,8 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let storage_image = Image::new_storage_image(512, 512, surface_format.format, &mut allocator)?;
+
+    // Create the descriptor set
 
     let descriptor_set_layout = unsafe {
         device.create_descriptor_set_layout(
@@ -301,6 +301,78 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Create pipelines
+
+    let pipeline_loader = RayTracingPipelineLoader::new(&instance, &device);
+
+    let pipeline_layout = unsafe {
+        device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[descriptor_set_layout])
+                .push_constant_ranges(&[*vk::PushConstantRange::builder()
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                    .size(std::mem::size_of::<[Mat4; 2]>() as u32)]),
+            None,
+        )
+    }?;
+
+    let shader_stages = [
+        load_shader_module(
+            include_bytes!("shaders/raygen.rgen.spv"),
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            &device,
+        )?,
+        load_shader_module(
+            include_bytes!("shaders/miss.rmiss.spv"),
+            vk::ShaderStageFlags::MISS_KHR,
+            &device,
+        )?,
+        load_shader_module(
+            include_bytes!("shaders/closesthit.rchit.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
+    ];
+
+    let shader_groups = [
+        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
+            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+            .general_shader(0)
+            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(vk::SHADER_UNUSED_KHR),
+        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
+            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+            .general_shader(1)
+            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(vk::SHADER_UNUSED_KHR),
+        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
+            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+            .closest_hit_shader(2)
+            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+            .intersection_shader(vk::SHADER_UNUSED_KHR),
+    ];
+
+    let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
+        .stages(&shader_stages)
+        .groups(&shader_groups)
+        .max_pipeline_ray_recursion_depth(1)
+        .layout(pipeline_layout);
+
+    let pipelines = unsafe {
+        pipeline_loader.create_ray_tracing_pipelines(
+            vk::DeferredOperationKHR::null(),
+            vk::PipelineCache::null(),
+            &[*create_pipeline],
+            None,
+        )
+    }?;
+
+    let pipeline = pipelines[0];
+
+    // Cleanup
+
     instances_buffer.cleanup(&mut allocator)?;
     blas.buffer.cleanup(&mut allocator)?;
     tlas.buffer.cleanup(&mut allocator)?;
@@ -363,7 +435,7 @@ fn build_blas(
         )
     };
 
-    let mut scratch_buffer = ScratchBuffer::new(build_sizes.build_scratch_size, allocator)?;
+    let scratch_buffer = ScratchBuffer::new(build_sizes.build_scratch_size, allocator)?;
 
     let blas = AccelerationStructure::new(
         build_sizes.acceleration_structure_size,
@@ -376,7 +448,7 @@ fn build_blas(
     geometry_info = geometry_info
         .dst_acceleration_structure(blas.acceleration_structure)
         .scratch_data(vk::DeviceOrHostAddressKHR {
-            device_address: scratch_buffer.inner.device_address(&device),
+            device_address: scratch_buffer.inner.device_address(device),
         });
 
     unsafe {
@@ -421,7 +493,7 @@ fn build_tlas(
 ) -> anyhow::Result<AccelerationStructure> {
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
         vk::DeviceOrHostAddressConstKHR {
-            device_address: instances.device_address(&device),
+            device_address: instances.device_address(device),
         },
     );
 
@@ -462,7 +534,7 @@ fn build_tlas(
     geometry_info = geometry_info
         .dst_acceleration_structure(tlas.acceleration_structure)
         .scratch_data(vk::DeviceOrHostAddressKHR {
-            device_address: scratch_buffer.inner.device_address(&device),
+            device_address: scratch_buffer.inner.device_address(device),
         });
 
     unsafe {
