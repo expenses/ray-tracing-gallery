@@ -174,9 +174,9 @@ fn main() -> anyhow::Result<()> {
 
     let (blas, mut scratch_buffer) = build_blas(
         &cube_verts_buffer,
-        3,
+        vertices().len() as u32,
         &cube_indices_buffer,
-        3,
+        indices().len() as u32,
         &device,
         &as_loader,
         &mut allocator,
@@ -190,11 +190,11 @@ fn main() -> anyhow::Result<()> {
         transform: vk::TransformMatrixKHR {
             matrix: identity_3x4_matrix(),
         },
-        instance_custom_index_and_mask: 0,
+        instance_custom_index_and_mask: 0xFF << 24,
         instance_shader_binding_table_record_offset_and_flags:
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw(),
+            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            host_handle: blas.acceleration_structure,
+            device_handle: blas.buffer.device_address(&device),
         },
     }];
 
@@ -457,8 +457,6 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
-    dbg!(ray_tracing_props);
-
     let alignment = ray_tracing_props.shader_group_base_alignment as u64;
 
     let shader_binding_tables = [
@@ -564,15 +562,14 @@ fn main() -> anyhow::Result<()> {
                             &[],
                         );
 
-                        let camera_perspective = ultraviolet::projection::perspective_vk(
-                            60.0_f32.to_radians(),
+                        let view_matrix =
+                            Mat4::look_at(Vec3::new(0.0, 2.0, -5.0), Vec3::zero(), Vec3::unit_y());
+
+                        let perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
+                            59.0_f32.to_radians(),
                             extent.width as f32 / extent.height as f32,
                             0.1,
-                            512.0,
                         );
-
-                        let camera_view =
-                            Mat4::look_at(Vec3::new(0.0, 0.0, -2.5), Vec3::zero(), Vec3::unit_y());
 
                         device.cmd_push_constants(
                             command_buffer,
@@ -580,8 +577,8 @@ fn main() -> anyhow::Result<()> {
                             vk::ShaderStageFlags::RAYGEN_KHR,
                             0,
                             bytemuck::bytes_of(&CameraProperties {
-                                view_inverse: camera_view.inversed(),
-                                proj_inverse: camera_perspective.inversed(),
+                                view_inverse: view_matrix.inversed(),
+                                proj_inverse: perspective_matrix.inversed(),
                             }),
                         );
 
@@ -874,7 +871,8 @@ fn build_tlas(
         .geometry_type(vk::GeometryTypeKHR::INSTANCES)
         .geometry(vk::AccelerationStructureGeometryDataKHR {
             instances: *instances,
-        });
+        })
+        .flags(vk::GeometryFlagsKHR::OPAQUE);
 
     let offset =
         vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
@@ -884,6 +882,7 @@ fn build_tlas(
     let mut geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .geometries(geometries);
 
     let build_sizes = unsafe {
@@ -1016,22 +1015,34 @@ struct Vertex {
     pos: Vec3,
 }
 
-fn vertices() -> [Vertex; 3] {
+fn vertex(a: f32, b: f32, c: f32) -> Vertex {
+    Vertex {
+        pos: Vec3::new(a, b, c) * 2.0 - Vec3::broadcast(1.0),
+    }
+}
+
+fn vertices() -> [Vertex; 8] {
     [
-        Vertex {
-            pos: Vec3::new(1.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: Vec3::new(-1.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: Vec3::new(0.0, -1.0, 0.0),
-        },
+        vertex(0.0, 0.0, 0.0),
+        vertex(1.0, 0.0, 0.0),
+        vertex(0.0, 1.0, 0.0),
+        vertex(1.0, 1.0, 0.0),
+        vertex(0.0, 0.0, 1.0),
+        vertex(1.0, 0.0, 1.0),
+        vertex(0.0, 1.0, 1.0),
+        vertex(1.0, 1.0, 1.0),
     ]
 }
 
-fn indices() -> [u16; 3] {
-    [0, 1, 2]
+fn indices() -> [u16; 36] {
+    [
+        0, 1, 2, 2, 1, 3, // bottom
+        3, 1, 5, 3, 5, 7, // front
+        0, 2, 4, 4, 2, 6, // back
+        1, 0, 4, 1, 4, 5, // left
+        2, 3, 6, 6, 3, 7, // right
+        5, 4, 6, 5, 6, 7, // top
+    ]
 }
 
 /*
