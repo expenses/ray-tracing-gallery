@@ -1,17 +1,21 @@
 use ash::extensions::ext::DebugUtils as DebugUtilsLoader;
 use ash::extensions::khr;
 use ash::extensions::khr::{
-    AccelerationStructure as AccelerationStructureLoader, Surface as SurfaceLoader,
+    AccelerationStructure as AccelerationStructureLoader,
+    DeferredHostOperations as DeferredHostOperationsLoader,
+    RayTracingPipeline as RayTracingPipelineLoader, Surface as SurfaceLoader,
     Swapchain as SwapchainLoader,
 };
 use ash::vk;
-use byte_strings::c_str;
+use std::ffi::CStr;
 use ultraviolet::{Mat4, Vec3};
 use winit::{event_loop::EventLoop, window::WindowBuilder};
 
 mod utils;
 
-use utils::{select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList};
+use utils::{
+    select_physical_device, AccelerationStructure, Allocator, Buffer, CStrList, ScratchBuffer,
+};
 
 fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().init()?;
@@ -29,7 +33,7 @@ fn main() -> anyhow::Result<()> {
 
     // https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Instance
     let app_info = vk::ApplicationInfo::builder()
-        .application_name(&c_str!("Ray Tracing Gallery"))
+        .application_name(CStr::from_bytes_with_nul(b"Ray Tracing Gallery\0")?)
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_version(vk::make_api_version(0, 0, 1, 0))
         .api_version(api_version);
@@ -40,31 +44,31 @@ fn main() -> anyhow::Result<()> {
         instance_extensions
     });
 
-    let instance_layers = CStrList::new(vec![c_str!("VK_LAYER_KHRONOS_validation")]);
+    let validation_layer_name = CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0")?;
+
+    let instance_layers = CStrList::new(vec![validation_layer_name]);
 
     let device_extensions = CStrList::new(vec![
         SwapchainLoader::name(),
-        vk::KhrDeferredHostOperationsFn::name(),
-        ash::extensions::khr::AccelerationStructure::name(),
-        ash::extensions::khr::RayTracingPipeline::name(),
+        DeferredHostOperationsLoader::name(),
+        AccelerationStructureLoader::name(),
+        RayTracingPipelineLoader::name(),
     ]);
 
-    let device_layers = CStrList::new(vec![c_str!("VK_LAYER_KHRONOS_validation")]);
+    let device_layers = CStrList::new(vec![validation_layer_name]);
 
     let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
         .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
-        .message_type(
-            vk::DebugUtilsMessageTypeFlagsEXT::all() ^ vk::DebugUtilsMessageTypeFlagsEXT::GENERAL,
-        )
+        .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
         .pfn_user_callback(Some(vulkan_debug_utils_callback));
 
     let instance = unsafe {
         entry.create_instance(
             &vk::InstanceCreateInfo::builder()
-                .push_next(&mut debug_messenger_info)
                 .application_info(&app_info)
                 .enabled_extension_names(&instance_extensions.pointers)
-                .enabled_layer_names(&instance_layers.pointers),
+                .enabled_layer_names(&instance_layers.pointers)
+                .push_next(&mut debug_messenger_info),
             None,
         )
     }?;
@@ -86,35 +90,41 @@ fn main() -> anyhow::Result<()> {
             }
         };
 
-    let queue_info = [*vk::DeviceQueueCreateInfo::builder()
-        .queue_family_index(queue_family)
-        .queue_priorities(&[1.0])];
+    let device = {
+        let queue_info = [*vk::DeviceQueueCreateInfo::builder()
+            .queue_family_index(queue_family)
+            .queue_priorities(&[1.0])];
 
-    let device_features = vk::PhysicalDeviceFeatures::builder();
+        let device_features = vk::PhysicalDeviceFeatures::builder();
 
-    let mut vk_12_features =
-        vk::PhysicalDeviceVulkan12Features::builder().buffer_device_address(true);
+        let mut vk_12_features =
+            vk::PhysicalDeviceVulkan12Features::builder().buffer_device_address(true);
 
-    let mut amd_device_coherent_memory =
-        vk::PhysicalDeviceCoherentMemoryFeaturesAMD::builder().device_coherent_memory(true);
+        // We need this because 'device coherent memory' is one of the memory type bits of
+        // `get_buffer_memory_requirements` for some reason, on my machine at-least.
+        let mut amd_device_coherent_memory =
+            vk::PhysicalDeviceCoherentMemoryFeaturesAMD::builder().device_coherent_memory(true);
 
-    let mut ray_tracing_features =
-        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::builder().ray_tracing_pipeline(true);
+        let mut ray_tracing_features =
+            vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::builder().ray_tracing_pipeline(true);
 
-    let mut acceleration_structure_features =
-        vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder().acceleration_structure(true);
+        let mut acceleration_structure_features =
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder()
+                .acceleration_structure(true);
 
-    let device_info = vk::DeviceCreateInfo::builder()
-        .queue_create_infos(&queue_info)
-        .enabled_features(&device_features)
-        .enabled_extension_names(&device_extensions.pointers)
-        .enabled_layer_names(&device_layers.pointers)
-        .push_next(&mut vk_12_features)
-        .push_next(&mut amd_device_coherent_memory)
-        .push_next(&mut ray_tracing_features)
-        .push_next(&mut acceleration_structure_features);
+        let device_info = vk::DeviceCreateInfo::builder()
+            .queue_create_infos(&queue_info)
+            .enabled_features(&device_features)
+            .enabled_extension_names(&device_extensions.pointers)
+            .enabled_layer_names(&device_layers.pointers)
+            .push_next(&mut vk_12_features)
+            .push_next(&mut amd_device_coherent_memory)
+            .push_next(&mut ray_tracing_features)
+            .push_next(&mut acceleration_structure_features);
 
-    let device = unsafe { instance.create_device(physical_device, &device_info, None) }?;
+        unsafe { instance.create_device(physical_device, &device_info, None) }?
+    };
+
     let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
     let mut allocator = Allocator::new(
@@ -158,18 +168,6 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
-    let cube_verts_buffer_address = unsafe {
-        device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::builder().buffer(cube_verts_buffer.buffer),
-        )
-    };
-
-    let cube_indices_buffer_address = unsafe {
-        device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::builder().buffer(cube_indices_buffer.buffer),
-        )
-    };
-
     // Create the BLAS
 
     let primitive_count = cube_indices.len() as u32 / 3;
@@ -177,13 +175,13 @@ fn main() -> anyhow::Result<()> {
     let as_triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
         .vertex_format(vk::Format::R32G32B32_SFLOAT)
         .vertex_data(vk::DeviceOrHostAddressConstKHR {
-            device_address: cube_verts_buffer_address,
+            device_address: cube_verts_buffer.device_address(&device),
         })
         .vertex_stride(std::mem::size_of::<Vertex>() as u64)
         .max_vertex(cube_verts.len() as u32)
         .index_type(vk::IndexType::UINT16)
         .index_data(vk::DeviceOrHostAddressConstKHR {
-            device_address: cube_indices_buffer_address,
+            device_address: cube_indices_buffer.device_address(&device),
         });
 
     let as_geometry = vk::AccelerationStructureGeometryKHR::builder()
@@ -212,18 +210,7 @@ fn main() -> anyhow::Result<()> {
         )
     };
 
-    let scratch_buffer = Buffer::new_of_size(
-        build_sizes.build_scratch_size,
-        "scratch buffer",
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        &mut allocator,
-    )?;
-
-    let scratch_buffer_address = unsafe {
-        device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::builder().buffer(scratch_buffer.buffer),
-        )
-    };
+    let mut scratch_buffer = ScratchBuffer::new(build_sizes.build_scratch_size, &mut allocator)?;
 
     let blas = {
         let blas = AccelerationStructure::new(
@@ -237,7 +224,7 @@ fn main() -> anyhow::Result<()> {
         as_geometry_info = as_geometry_info
             .dst_acceleration_structure(blas.acceleration_structure)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_buffer_address,
+                device_address: scratch_buffer.inner.device_address(&device),
             });
 
         let blas_built_fence =
@@ -291,12 +278,7 @@ fn main() -> anyhow::Result<()> {
 
         let instance_count = instances.len() as u32;
 
-        let slice = unsafe {
-            std::slice::from_raw_parts(
-                instances.as_ptr() as *const u8,
-                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-            )
-        };
+        let slice = unsafe { instances_as_bytes(instances) };
 
         let instances_buffer = Buffer::new_with_custom_alignment(
             slice,
@@ -307,18 +289,9 @@ fn main() -> anyhow::Result<()> {
             &mut allocator,
         )?;
 
-        let instances_buffer_address = unsafe {
-            device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::builder().buffer(instances_buffer.buffer),
-            )
-        };
-
-        let tlas_built_fence =
-            unsafe { device.create_fence(&vk::FenceCreateInfo::builder(), None)? };
-
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
             vk::DeviceOrHostAddressConstKHR {
-                device_address: instances_buffer_address,
+                device_address: instances_buffer.device_address(&device),
             },
         );
 
@@ -343,6 +316,8 @@ fn main() -> anyhow::Result<()> {
             )
         };
 
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, &mut allocator)?;
+
         let tlas = AccelerationStructure::new(
             build_sizes.acceleration_structure_size,
             "tlas",
@@ -354,11 +329,14 @@ fn main() -> anyhow::Result<()> {
         instances_build = instances_build
             .dst_acceleration_structure(tlas.acceleration_structure)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_buffer_address,
+                device_address: scratch_buffer.inner.device_address(&device),
             });
 
         let as_offset =
             vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(primitive_count);
+
+        let tlas_built_fence =
+            unsafe { device.create_fence(&vk::FenceCreateInfo::builder(), None)? };
 
         unsafe {
             device.begin_command_buffer(
@@ -405,11 +383,19 @@ fn main() -> anyhow::Result<()> {
 
     blas.buffer.cleanup(&mut allocator)?;
     tlas.buffer.cleanup(&mut allocator)?;
-    scratch_buffer.cleanup(&mut allocator)?;
+    scratch_buffer.inner.cleanup(&mut allocator)?;
     cube_verts_buffer.cleanup(&mut allocator)?;
     cube_indices_buffer.cleanup(&mut allocator)?;
 
     Ok(())
+}
+
+// This is lazy because I could really just write a bytemuck'd struct for this.
+unsafe fn instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
+    std::slice::from_raw_parts(
+        instances.as_ptr() as *const u8,
+        instances.len() * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
+    )
 }
 
 #[rustfmt::skip]
@@ -428,6 +414,17 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
     p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
     _p_user_data: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
+    let filter_out = (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+        && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
+        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
+        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION);
+
+    if filter_out {
+        return vk::FALSE;
+    }
+
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
     let severity = format!("{:?}", message_severity).to_lowercase();
     let ty = format!("{:?}", message_type).to_lowercase();

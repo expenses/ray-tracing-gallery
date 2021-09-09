@@ -14,7 +14,7 @@ pub fn select_physical_device(
     let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
     println!(
-        "\nFound {} device{}:",
+        "Found {} device{}",
         physical_devices.len(),
         if physical_devices.len() == 1 { "" } else { "s" }
     );
@@ -116,7 +116,7 @@ pub fn select_physical_device(
             _ => 0,
         });
 
-    println!("");
+    println!();
 
     Ok(match selection {
         Some((physical_device, queue_family, surface_format, properties)) => {
@@ -141,7 +141,7 @@ fn tick(supported: bool) -> &'static str {
     }
 }
 
-unsafe fn cstr_from_array<'a>(array: &'a [c_char]) -> &'a CStr {
+unsafe fn cstr_from_array(array: &[c_char]) -> &CStr {
     CStr::from_ptr(array.as_ptr())
 }
 
@@ -189,18 +189,18 @@ impl Allocator {
                     .get_physical_device_features2(physical_device, &mut physical_device_features_2)
             };
 
-            bda_features.buffer_device_address != 0
+            bda_features.buffer_device_address == vk::TRUE
         };
 
-        let mut allocator = gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
+        let allocator = gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
             instance,
             device: device.clone(),
             physical_device,
             debug_settings: gpu_allocator::AllocatorDebugSettings {
-                log_memory_information: true,
+                log_memory_information: false,
                 log_leaks_on_shutdown: true,
                 store_stack_traces: false,
-                log_allocations: true,
+                log_allocations: false,
                 log_frees: true,
                 log_stack_traces: false,
             },
@@ -228,6 +228,8 @@ impl AccelerationStructure {
         loader: &AccelerationStructureLoader,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
+        log::info!("Creating a {} of {} bytes", name, size);
+
         let buffer = Buffer::new_of_size(
             size,
             name,
@@ -250,6 +252,35 @@ impl AccelerationStructure {
             buffer,
             acceleration_structure,
         })
+    }
+}
+
+pub struct ScratchBuffer {
+    pub inner: Buffer,
+}
+
+impl ScratchBuffer {
+    pub fn new(size: u64, allocator: &mut Allocator) -> anyhow::Result<Self> {
+        log::info!("Creating a scratch buffer of {} bytes", size);
+
+        Ok(Self {
+            inner: Buffer::new_of_size(
+                size,
+                "scratch buffer",
+                vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                allocator,
+            )?,
+        })
+    }
+
+    pub fn ensure_size_of(&mut self, size: u64, allocator: &mut Allocator) -> anyhow::Result<()> {
+        if self.inner.allocation.size() < size {
+            let old = std::mem::replace(self, Self::new(size, allocator)?);
+
+            old.inner.cleanup(allocator)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -277,7 +308,7 @@ impl Buffer {
 
         let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
 
-        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -313,24 +344,14 @@ impl Buffer {
 
         let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
 
-        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
             linear: true,
         })?;
 
-        let slice = allocation.mapped_slice_mut().unwrap();
-
-        slice.copy_from_slice(bytes);
-
-        unsafe {
-            allocator
-                .device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-        }?;
-
-        Ok(Self { buffer, allocation })
+        Self::from_parts(allocation, buffer, bytes, allocator)
     }
 
     pub fn new_with_custom_alignment(
@@ -356,13 +377,22 @@ impl Buffer {
 
         requirements.alignment = alignment;
 
-        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
             linear: true,
         })?;
 
+        Self::from_parts(allocation, buffer, bytes, allocator)
+    }
+
+    fn from_parts(
+        mut allocation: Allocation,
+        buffer: vk::Buffer,
+        bytes: &[u8],
+        allocator: &Allocator,
+    ) -> anyhow::Result<Self> {
         let slice = allocation.mapped_slice_mut().unwrap();
 
         slice.copy_from_slice(bytes);
@@ -374,6 +404,14 @@ impl Buffer {
         }?;
 
         Ok(Self { buffer, allocation })
+    }
+
+    pub fn device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
+        unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::builder().buffer(self.buffer),
+            )
+        }
     }
 
     pub fn cleanup(self, allocator: &mut Allocator) -> anyhow::Result<()> {
@@ -418,7 +456,7 @@ impl Image {
 
         let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
 
-        let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
@@ -503,8 +541,8 @@ pub fn load_rgba_image_from_bytes(
 
     let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
 
-    let mut allocation = allocator.inner.allocate(&AllocationCreateDesc {
-        name: name,
+    let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        name,
         requirements,
         location: gpu_allocator::MemoryLocation::GpuOnly,
         linear: false,
