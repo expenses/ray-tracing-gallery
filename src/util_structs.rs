@@ -42,7 +42,7 @@ impl Allocator {
                     log_memory_information: false,
                     log_leaks_on_shutdown: true,
                     store_stack_traces: false,
-                    log_allocations: true,
+                    log_allocations: false,
                     log_frees: true,
                     log_stack_traces: false,
                 },
@@ -120,9 +120,8 @@ impl ScratchBuffer {
         allocator: &mut Allocator,
     ) -> anyhow::Result<()> {
         if self.inner.allocation.size() < size {
-            let old = std::mem::replace(self, Self::new(size, allocator)?);
-
-            old.inner.cleanup(allocator)?;
+            self.inner.cleanup(allocator)?;
+            *self = Self::new(size, allocator)?;
         }
 
         Ok(())
@@ -259,11 +258,18 @@ impl Buffer {
         }
     }
 
-    pub fn cleanup(self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.inner.free(self.allocation)?;
+    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        allocator.inner.free(self.allocation.clone())?;
 
         unsafe { allocator.device.destroy_buffer(self.buffer, None) };
 
+        Ok(())
+    }
+
+    // Prefer using this when practical.
+    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        self.cleanup(allocator)?;
+        drop(self);
         Ok(())
     }
 }
@@ -275,7 +281,7 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new_depth_buffer(
+    pub fn _new_depth_buffer(
         width: u32,
         height: u32,
         name: &str,
@@ -442,8 +448,8 @@ impl Image {
         })
     }
 
-    pub fn cleanup(self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.inner.free(self.allocation)?;
+    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        allocator.inner.free(self.allocation.clone())?;
 
         unsafe { allocator.device.destroy_image_view(self.view, None) };
 

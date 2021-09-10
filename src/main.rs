@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     }?;
 
     let debug_utils_loader = DebugUtilsLoader::new(&entry, &instance);
-    let debug_messenger =
+    let _debug_messenger =
         unsafe { debug_utils_loader.create_debug_utils_messenger(&debug_messenger_info, None) }?;
 
     let surface_loader = SurfaceLoader::new(&entry, &instance);
@@ -184,6 +184,9 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
+    cube_verts_buffer.cleanup_and_drop(&mut allocator)?;
+    cube_indices_buffer.cleanup_and_drop(&mut allocator)?;
+
     // Allocate the instance buffer
 
     let instances = &[vk::AccelerationStructureInstanceKHR {
@@ -224,15 +227,10 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
-    // Create swapchain
+    instances_buffer.cleanup_and_drop(&mut allocator)?;
+    scratch_buffer.inner.cleanup_and_drop(&mut allocator)?;
 
-    let surface_caps = unsafe {
-        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
-    }?;
-    let mut image_count = surface_caps.min_image_count + 1;
-    if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
-        image_count = surface_caps.max_image_count;
-    }
+    // Create storage image
 
     let window_size = window.inner_size();
 
@@ -241,26 +239,11 @@ fn main() -> anyhow::Result<()> {
         height: window_size.height,
     };
 
-    let mut swapchain_info = *vk::SwapchainCreateInfoKHR::builder()
-        .surface(surface)
-        .min_image_count(image_count)
-        .image_format(surface_format.format)
-        .image_color_space(surface_format.color_space)
-        .image_extent(extent)
-        .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(surface_caps.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(vk::PresentModeKHR::FIFO)
-        .clipped(true)
-        .old_swapchain(vk::SwapchainKHR::null());
-
     unsafe {
         device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
     }
 
-    let storage_image = Image::new_storage_image(
+    let mut storage_image = Image::new_storage_image(
         extent.width,
         extent.height,
         surface_format.format,
@@ -268,9 +251,6 @@ fn main() -> anyhow::Result<()> {
         queue,
         &mut allocator,
     )?;
-
-    let swapchain_loader = SwapchainLoader::new(&instance, &device);
-    let mut swapchain = Swapchain::new(swapchain_loader, swapchain_info)?;
 
     // Create the descriptor set
 
@@ -503,13 +483,102 @@ fn main() -> anyhow::Result<()> {
             .size(handle_size_aligned),
     ];
 
+    // Create swapchain
+
+    let surface_caps = unsafe {
+        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
+    }?;
+    let mut image_count = surface_caps.min_image_count + 1;
+    if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
+        image_count = surface_caps.max_image_count;
+    }
+
+    let mut swapchain_info = *vk::SwapchainCreateInfoKHR::builder()
+        .surface(surface)
+        .min_image_count(image_count)
+        .image_format(surface_format.format)
+        .image_color_space(surface_format.color_space)
+        .image_extent(extent)
+        .image_array_layers(1)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .pre_transform(surface_caps.current_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(vk::PresentModeKHR::FIFO)
+        .clipped(true)
+        .old_swapchain(vk::SwapchainKHR::null());
+
+    let swapchain_loader = SwapchainLoader::new(&instance, &device);
+    let mut swapchain = Swapchain::new(swapchain_loader.clone(), swapchain_info)?;
+
     // main loop
 
     let syncronisation = Syncronisation::new(&device);
 
+    let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
+        59.0_f32.to_radians(),
+        extent.width as f32 / extent.height as f32,
+        0.1,
+    );
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+            WindowEvent::Resized(size) => {
+                extent.width = size.width as u32;
+                extent.height = size.height as u32;
+
+                perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
+                    59.0_f32.to_radians(),
+                    extent.width as f32 / extent.height as f32,
+                    0.1,
+                );
+
+                unsafe {
+                    device.device_wait_idle().unwrap();
+
+                    device
+                        .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())
+                        .unwrap();
+                }
+
+                // Free the old storage image, create a new one and write it to the descriptor set.
+
+                storage_image.cleanup(&mut allocator).unwrap();
+
+                storage_image = Image::new_storage_image(
+                    extent.width,
+                    extent.height,
+                    surface_format.format,
+                    command_buffer,
+                    queue,
+                    &mut allocator,
+                )
+                .unwrap();
+
+                unsafe {
+                    device.update_descriptor_sets(
+                        &[*vk::WriteDescriptorSet::builder()
+                            .dst_set(descriptor_set)
+                            .dst_binding(1)
+                            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                            .image_info(&[*vk::DescriptorImageInfo::builder()
+                                .image_view(storage_image.view)
+                                .image_layout(vk::ImageLayout::GENERAL)])],
+                        &[],
+                    );
+                }
+
+                // Replace the swapchain.
+
+                swapchain_info.image_extent = extent;
+
+                unsafe {
+                    swapchain.cleanup();
+                }
+
+                swapchain = Swapchain::new(swapchain_loader.clone(), swapchain_info).unwrap();
+            }
             _ => {}
         },
         Event::MainEventsCleared => {
@@ -562,12 +631,6 @@ fn main() -> anyhow::Result<()> {
 
                         let view_matrix =
                             Mat4::look_at(Vec3::new(0.0, 2.0, -5.0), Vec3::zero(), Vec3::unit_y());
-
-                        let perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
-                            59.0_f32.to_radians(),
-                            extent.width as f32 / extent.height as f32,
-                            0.1,
-                        );
 
                         device.cmd_push_constants(
                             command_buffer,
@@ -692,8 +755,19 @@ fn main() -> anyhow::Result<()> {
                 Err(error) => println!("Next frame error: {:?}", error),
             }
         }
+        Event::LoopDestroyed => unsafe {
+            device.device_wait_idle().unwrap();
+
+            tlas.buffer.cleanup(&mut allocator).unwrap();
+            blas.buffer.cleanup(&mut allocator).unwrap();
+            storage_image.cleanup(&mut allocator).unwrap();
+
+            for table in &shader_binding_tables {
+                table.cleanup(&mut allocator).unwrap();
+            }
+        },
         _ => {}
-    });
+    })
 }
 
 struct Syncronisation {
@@ -716,7 +790,7 @@ impl Syncronisation {
         }
     }
 
-    unsafe fn cleanup(&self, device: &ash::Device) {
+    unsafe fn _cleanup(&self, device: &ash::Device) {
         device.destroy_semaphore(self.present_complete_semaphore, None);
         device.destroy_semaphore(self.rendering_complete_semaphore, None);
         device.destroy_fence(self.draw_commands_fence, None)
@@ -742,6 +816,11 @@ impl Swapchain {
             swapchain,
             swapchain_loader,
         })
+    }
+
+    unsafe fn cleanup(&self) {
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
     }
 }
 
