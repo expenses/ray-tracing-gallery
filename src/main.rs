@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
 
     let validation_layer_name = CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0")?;
 
-    let instance_layers = CStrList::new(vec![validation_layer_name]);
+    let enabled_layers = CStrList::new(vec![validation_layer_name]);
 
     let device_extensions = CStrList::new(vec![
         SwapchainLoader::name(),
@@ -60,8 +60,6 @@ fn main() -> anyhow::Result<()> {
         AccelerationStructureLoader::name(),
         RayTracingPipelineLoader::name(),
     ]);
-
-    let device_layers = CStrList::new(vec![validation_layer_name]);
 
     let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
         .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
@@ -73,7 +71,7 @@ fn main() -> anyhow::Result<()> {
             &vk::InstanceCreateInfo::builder()
                 .application_info(&app_info)
                 .enabled_extension_names(&instance_extensions.pointers)
-                .enabled_layer_names(&instance_layers.pointers)
+                .enabled_layer_names(&enabled_layers.pointers)
                 .push_next(&mut debug_messenger_info),
             None,
         )
@@ -122,7 +120,7 @@ fn main() -> anyhow::Result<()> {
             .queue_create_infos(&queue_info)
             .enabled_features(&device_features)
             .enabled_extension_names(&device_extensions.pointers)
-            .enabled_layer_names(&device_layers.pointers)
+            .enabled_layer_names(&enabled_layers.pointers)
             .push_next(&mut vk_12_features)
             .push_next(&mut amd_device_coherent_memory)
             .push_next(&mut ray_tracing_features)
@@ -175,6 +173,7 @@ fn main() -> anyhow::Result<()> {
     // Create the BLAS
 
     let (blas, mut scratch_buffer) = build_blas(
+        std::mem::size_of::<Vertex>() as u64,
         &cube_verts_buffer,
         vertices().len() as u32,
         &cube_indices_buffer,
@@ -191,17 +190,30 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let instances = &[vk::AccelerationStructureInstanceKHR {
-        transform: vk::TransformMatrixKHR {
-            matrix: identity_3x4_matrix(),
+    let instances = &[
+        vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR {
+                matrix: identity_3x4_matrix(),
+            },
+            instance_custom_index_and_mask: 0xFF << 24,
+            instance_shader_binding_table_record_offset_and_flags:
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: blas.buffer.device_address(&device),
+            },
         },
-        instance_custom_index_and_mask: 0xFF << 24,
-        instance_shader_binding_table_record_offset_and_flags:
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
-        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: blas.buffer.device_address(&device),
+        vk::AccelerationStructureInstanceKHR {
+            transform: vk::TransformMatrixKHR {
+                matrix: flatted_matrix(Mat4::from_translation(Vec3::broadcast(1.0))),
+            },
+            instance_custom_index_and_mask: 0xFF << 24,
+            instance_shader_binding_table_record_offset_and_flags:
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: blas.buffer.device_address(&device),
+            },
         },
-    }];
+    ];
 
     let instances_buffer = Buffer::new_with_custom_alignment(
         unsafe { instances_as_bytes(instances) },
@@ -820,6 +832,7 @@ struct CameraProperties {
 }
 
 fn build_blas(
+    stride: u64,
     vertices: &Buffer,
     num_vertices: u32,
     indices: &Buffer,
@@ -837,7 +850,7 @@ fn build_blas(
         .vertex_data(vk::DeviceOrHostAddressConstKHR {
             device_address: vertices.device_address(device),
         })
-        .vertex_stride(std::mem::size_of::<Vertex>() as u64)
+        .vertex_stride(stride)
         .max_vertex(num_vertices)
         .index_type(vk::IndexType::UINT16)
         .index_data(vk::DeviceOrHostAddressConstKHR {
@@ -968,11 +981,8 @@ fn identity_3x4_matrix() -> [f32; 12] {
 
 #[rustfmt::skip]
 fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
-    [
-        matrix.cols[0].x, matrix.cols[0].y, matrix.cols[0].z, matrix.cols[0].w,
-        matrix.cols[1].x, matrix.cols[1].y, matrix.cols[1].z, matrix.cols[1].w,
-        matrix.cols[2].x, matrix.cols[2].y, matrix.cols[2].z, matrix.cols[2].w,
-    ]
+    use std::convert::TryInto;
+    matrix.transposed().as_array()[..12].try_into().unwrap()
 }
 
 #[test]
