@@ -856,7 +856,7 @@ fn build_blas(
 
     let geometries = &[*geometry];
 
-    let mut geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -877,41 +877,14 @@ fn build_blas(
         "blas",
         vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
         as_loader,
+        device,
         allocator,
+        command_buffer,
+        queue,
+        &scratch_buffer,
+        geometry_info,
+        offset,
     )?;
-
-    geometry_info = geometry_info
-        .dst_acceleration_structure(blas.acceleration_structure)
-        .scratch_data(vk::DeviceOrHostAddressKHR {
-            device_address: scratch_buffer.inner.device_address(device),
-        });
-
-    unsafe {
-        device.begin_command_buffer(
-            command_buffer,
-            &vk::CommandBufferBeginInfo::builder()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-        )?;
-
-        as_loader.cmd_build_acceleration_structures(
-            command_buffer,
-            &[*geometry_info],
-            &[&[*offset]],
-        );
-
-        device.end_command_buffer(command_buffer)?;
-
-        let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
-
-        device.queue_submit(
-            queue,
-            &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
-            fence,
-        )?;
-
-        device.wait_for_fences(&[fence], true, u64::MAX)?;
-        device.destroy_fence(fence, None);
-    }
 
     Ok((blas, scratch_buffer))
 }
@@ -944,7 +917,7 @@ fn build_tlas(
 
     let geometries = &[*geometry];
 
-    let mut geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -960,62 +933,19 @@ fn build_tlas(
 
     scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
 
-    let tlas = AccelerationStructure::new(
+    AccelerationStructure::new(
         build_sizes.acceleration_structure_size,
         "tlas",
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
         as_loader,
+        device,
         allocator,
-    )?;
-
-    geometry_info = geometry_info
-        .dst_acceleration_structure(tlas.acceleration_structure)
-        .scratch_data(vk::DeviceOrHostAddressKHR {
-            device_address: scratch_buffer.inner.device_address(device),
-        });
-
-    unsafe {
-        device.begin_command_buffer(
-            command_buffer,
-            &vk::CommandBufferBeginInfo::builder()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-        )?;
-
-        let memory_barrier = vk::MemoryBarrier::builder()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
-
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-            vk::DependencyFlags::empty(),
-            &[*memory_barrier],
-            &[],
-            &[],
-        );
-
-        as_loader.cmd_build_acceleration_structures(
-            command_buffer,
-            &[*geometry_info],
-            &[&[*offset]],
-        );
-
-        device.end_command_buffer(command_buffer)?;
-
-        let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
-
-        device.queue_submit(
-            queue,
-            &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
-            fence,
-        )?;
-
-        device.wait_for_fences(&[fence], true, u64::MAX)?;
-        device.destroy_fence(fence, None);
-    }
-
-    Ok(tlas)
+        command_buffer,
+        queue,
+        &scratch_buffer,
+        geometry_info,
+        offset,
+    )
 }
 
 // This is lazy because I could really just write a bytemuck'd struct for this.

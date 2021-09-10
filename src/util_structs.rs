@@ -66,7 +66,13 @@ impl AccelerationStructure {
         name: &str,
         ty: vk::AccelerationStructureTypeKHR,
         loader: &AccelerationStructureLoader,
+        device: &ash::Device,
         allocator: &mut Allocator,
+        command_buffer: vk::CommandBuffer,
+        queue: vk::Queue,
+        scratch_buffer: &ScratchBuffer,
+        mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
+        offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
     ) -> anyhow::Result<Self> {
         log::info!("Creating a {} of {} bytes", name, size);
 
@@ -88,6 +94,39 @@ impl AccelerationStructure {
                 None,
             )
         }?;
+
+        geometry_info = geometry_info
+            .dst_acceleration_structure(acceleration_structure)
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: scratch_buffer.inner.device_address(device),
+            });
+
+        unsafe {
+            device.begin_command_buffer(
+                command_buffer,
+                &vk::CommandBufferBeginInfo::builder()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+
+            loader.cmd_build_acceleration_structures(
+                command_buffer,
+                &[*geometry_info],
+                &[&[*offset]],
+            );
+
+            device.end_command_buffer(command_buffer)?;
+
+            let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
+
+            device.queue_submit(
+                queue,
+                &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
+                fence,
+            )?;
+
+            device.wait_for_fences(&[fence], true, u64::MAX)?;
+            device.destroy_fence(fence, None);
+        }
 
         Ok(Self {
             buffer,
