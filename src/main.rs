@@ -191,28 +191,12 @@ fn main() -> anyhow::Result<()> {
     // Allocate the instance buffer
 
     let instances = &[
-        vk::AccelerationStructureInstanceKHR {
-            transform: vk::TransformMatrixKHR {
-                matrix: identity_3x4_matrix(),
-            },
-            instance_custom_index_and_mask: 0xFF << 24,
-            instance_shader_binding_table_record_offset_and_flags:
-                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
-            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                device_handle: blas.buffer.device_address(&device),
-            },
-        },
-        vk::AccelerationStructureInstanceKHR {
-            transform: vk::TransformMatrixKHR {
-                matrix: flatted_matrix(Mat4::from_translation(Vec3::broadcast(1.0))),
-            },
-            instance_custom_index_and_mask: 0xFF << 24,
-            instance_shader_binding_table_record_offset_and_flags:
-                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
-            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                device_handle: blas.buffer.device_address(&device),
-            },
-        },
+        tlas_instance(Mat4::identity(), &blas, &device),
+        tlas_instance(
+            Mat4::from_translation(Vec3::broadcast(1.0)) * Mat4::from_rotation_y(1.0),
+            &blas,
+            &device,
+        ),
     ];
 
     let instances_buffer = Buffer::new_with_custom_alignment(
@@ -969,17 +953,24 @@ unsafe fn instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR])
     )
 }
 
-// https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/examples/raytracingbasic/raytracingbasic.cpp#L275
-#[rustfmt::skip]
-fn identity_3x4_matrix() -> [f32; 12] {
-    [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-    ]
+fn tlas_instance(
+    transform: Mat4,
+    blas: &AccelerationStructure,
+    device: &ash::Device,
+) -> vk::AccelerationStructureInstanceKHR {
+    vk::AccelerationStructureInstanceKHR {
+        transform: vk::TransformMatrixKHR {
+            matrix: flatted_matrix(transform),
+        },
+        instance_custom_index_and_mask: 0xFF << 24,
+        instance_shader_binding_table_record_offset_and_flags:
+            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
+        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+            device_handle: blas.buffer.device_address(&device),
+        },
+    }
 }
 
-#[rustfmt::skip]
 fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
     use std::convert::TryInto;
     matrix.transposed().as_array()[..12].try_into().unwrap()
