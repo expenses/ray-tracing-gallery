@@ -976,11 +976,6 @@ fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
     matrix.transposed().as_array()[..12].try_into().unwrap()
 }
 
-#[test]
-fn did_i_do_matrices_right() {
-    assert_eq!(identity_3x4_matrix(), flatted_matrix(Mat4::identity()));
-}
-
 unsafe extern "system" fn vulkan_debug_utils_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
