@@ -17,7 +17,9 @@ use winit::{
 mod util_functions;
 mod util_structs;
 
-use util_structs::{AccelerationStructure, Allocator, Buffer, CStrList, Image, ScratchBuffer};
+use util_structs::{
+    AccelerationStructure, Allocator, Buffer, CStrList, Image, ScratchBuffer, ShaderBindingTable,
+};
 
 use util_functions::{load_shader_module, select_physical_device, set_image_layout};
 
@@ -413,6 +415,8 @@ fn main() -> anyhow::Result<()> {
         ray_tracing_props
     };
 
+    // Copied from:
+    // https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/base/VulkanTools.cpp#L383
     fn aligned_size(value: u32, alignment: u32) -> u32 {
         (value + alignment - 1) & !(alignment - 1)
     }
@@ -438,49 +442,33 @@ fn main() -> anyhow::Result<()> {
     }?;
 
     let alignment = ray_tracing_props.shader_group_base_alignment as u64;
-
-    let shader_binding_tables = [
-        Buffer::new_with_custom_alignment(
-            &group_handles[..handle_size],
-            "raygen shader binding table",
-            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            alignment,
-            &mut allocator,
-        )?,
-        Buffer::new_with_custom_alignment(
-            &group_handles[handle_size..handle_size * 2],
-            "miss shader binding table",
-            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            alignment,
-            &mut allocator,
-        )?,
-        Buffer::new_with_custom_alignment(
-            &group_handles[handle_size * 2..],
-            "closest hit shader binding table",
-            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            alignment,
-            &mut allocator,
-        )?,
-    ];
-
     let handle_size_aligned = handle_size_aligned as u64;
 
-    let strided_address_regions = [
-        vk::StridedDeviceAddressRegionKHR::builder()
-            .device_address(shader_binding_tables[0].device_address(&device))
-            .stride(handle_size_aligned)
-            .size(handle_size_aligned),
-        vk::StridedDeviceAddressRegionKHR::builder()
-            .device_address(shader_binding_tables[1].device_address(&device))
-            .stride(handle_size_aligned)
-            .size(handle_size_aligned),
-        vk::StridedDeviceAddressRegionKHR::builder()
-            .device_address(shader_binding_tables[2].device_address(&device))
-            .stride(handle_size_aligned)
-            .size(handle_size_aligned),
+    let shader_binding_tables = [
+        ShaderBindingTable::new(
+            &group_handles[..handle_size],
+            "raygen shader binding table",
+            alignment,
+            handle_size_aligned,
+            &device,
+            &mut allocator,
+        )?,
+        ShaderBindingTable::new(
+            &group_handles[handle_size..handle_size * 2],
+            "miss shader binding table",
+            alignment,
+            handle_size_aligned,
+            &device,
+            &mut allocator,
+        )?,
+        ShaderBindingTable::new(
+            &group_handles[handle_size * 2..],
+            "closest hit shader binding table",
+            alignment,
+            handle_size_aligned,
+            &device,
+            &mut allocator,
+        )?,
     ];
 
     // Create swapchain
@@ -645,9 +633,9 @@ fn main() -> anyhow::Result<()> {
 
                         pipeline_loader.cmd_trace_rays(
                             command_buffer,
-                            &strided_address_regions[0],
-                            &strided_address_regions[1],
-                            &strided_address_regions[2],
+                            &shader_binding_tables[0].address_region,
+                            &shader_binding_tables[1].address_region,
+                            &shader_binding_tables[2].address_region,
                             // We don't use callable shaders here
                             &Default::default(),
                             extent.width,
@@ -763,7 +751,7 @@ fn main() -> anyhow::Result<()> {
             storage_image.cleanup(&mut allocator).unwrap();
 
             for table in &shader_binding_tables {
-                table.cleanup(&mut allocator).unwrap();
+                table.buffer.cleanup(&mut allocator).unwrap();
             }
         },
         _ => {}

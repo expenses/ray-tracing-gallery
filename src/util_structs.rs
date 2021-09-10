@@ -128,6 +128,41 @@ impl ScratchBuffer {
     }
 }
 
+pub struct ShaderBindingTable {
+    pub buffer: Buffer,
+    pub address_region: vk::StridedDeviceAddressRegionKHR,
+}
+
+impl ShaderBindingTable {
+    pub fn new(
+        bytes: &[u8],
+        name: &str,
+        alignment: u64,
+        handle_size_aligned: u64,
+        device: &ash::Device,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let buffer = Buffer::new_with_custom_alignment(
+            bytes,
+            name,
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            alignment,
+            allocator,
+        )?;
+
+        let address_region = vk::StridedDeviceAddressRegionKHR::builder()
+            .device_address(buffer.device_address(device))
+            .stride(handle_size_aligned)
+            .size(handle_size_aligned);
+
+        Ok(Self {
+            buffer,
+            address_region: *address_region,
+        })
+    }
+}
+
 pub struct Buffer {
     pub allocation: Allocation,
     pub buffer: vk::Buffer,
