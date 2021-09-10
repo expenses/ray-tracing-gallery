@@ -302,14 +302,14 @@ fn main() -> anyhow::Result<()> {
 
     let structures = &[tlas.acceleration_structure];
 
+    let mut write_acceleration_structures =
+        vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+            .acceleration_structures(structures);
+
     unsafe {
         device.update_descriptor_sets(
             &[
                 {
-                    let mut write_acceleration_structures =
-                        vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-                            .acceleration_structures(structures);
-
                     let mut write_as = *vk::WriteDescriptorSet::builder()
                         .dst_set(descriptor_set)
                         .dst_binding(0)
