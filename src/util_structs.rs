@@ -568,8 +568,8 @@ impl Image {
 }
 
 pub struct ModelBuffers {
-    vertices: Buffer,
-    indices: Buffer,
+    pub vertices: Buffer,
+    pub indices: Buffer,
     pub triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
     pub primitive_count: u32,
 }
@@ -590,6 +590,7 @@ impl ModelBuffers {
             bytemuck::cast_slice(vertices),
             &format!("{} vertices", name),
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             allocator,
         )?;
@@ -598,6 +599,7 @@ impl ModelBuffers {
             bytemuck::cast_slice(indices),
             &format!("{} indices", name),
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             allocator,
         )?;

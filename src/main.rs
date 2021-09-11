@@ -101,7 +101,10 @@ fn main() -> anyhow::Result<()> {
             .queue_family_index(queue_family)
             .queue_priorities(&[1.0])];
 
-        let device_features = vk::PhysicalDeviceFeatures::builder();
+        let device_features = vk::PhysicalDeviceFeatures::builder().shader_int16(true);
+
+        let mut storage16_features =
+            vk::PhysicalDevice16BitStorageFeatures::builder().storage_buffer16_bit_access(true);
 
         let mut vk_12_features =
             vk::PhysicalDeviceVulkan12Features::builder().buffer_device_address(true);
@@ -126,7 +129,8 @@ fn main() -> anyhow::Result<()> {
             .push_next(&mut vk_12_features)
             .push_next(&mut amd_device_coherent_memory)
             .push_next(&mut ray_tracing_features)
-            .push_next(&mut acceleration_structure_features);
+            .push_next(&mut acceleration_structure_features)
+            .push_next(&mut storage16_features);
 
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
@@ -216,22 +220,22 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
-    tori_buffers.cleanup_and_drop(&mut allocator)?;
+    //tori_buffers.cleanup_and_drop(&mut allocator)?;
 
     // Allocate the instance buffer
 
     let instances = &[
-        tlas_instance(Mat4::identity(), &plane_blas, &device),
+        //tlas_instance(Mat4::identity(), &plane_blas, &device),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
         ),
-        tlas_instance(
+        /*tlas_instance(
             Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_y(1.0),
             &cube_blas,
             &device,
-        ),
+        ),*/
     ];
 
     let instances_buffer = Buffer::new_with_custom_alignment(
@@ -300,6 +304,16 @@ fn main() -> anyhow::Result<()> {
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             ]),
             None,
         )
@@ -314,6 +328,12 @@ fn main() -> anyhow::Result<()> {
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
+                        .descriptor_count(1),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1),
                 ])
                 .max_sets(1),
@@ -358,6 +378,20 @@ fn main() -> anyhow::Result<()> {
                     .image_info(&[*vk::DescriptorImageInfo::builder()
                         .image_view(storage_image.view)
                         .image_layout(vk::ImageLayout::GENERAL)]),
+                *vk::WriteDescriptorSet::builder()
+                    .dst_set(descriptor_set)
+                    .dst_binding(2)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
+                        .buffer(tori_buffers.vertices.buffer)
+                        .range(vk::WHOLE_SIZE)]),
+                *vk::WriteDescriptorSet::builder()
+                    .dst_set(descriptor_set)
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
+                        .buffer(tori_buffers.indices.buffer)
+                        .range(vk::WHOLE_SIZE)]),
             ],
             &[],
         );
@@ -1052,11 +1086,17 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 #[repr(C)]
 struct Vertex {
     pos: Vec3,
+    _padding0: u32,
+    normal: Vec3,
+    _padding1: u32,
 }
 
 fn vertex(a: f32, b: f32, c: f32) -> Vertex {
     Vertex {
         pos: Vec3::new(a, b, c) * 2.0 - Vec3::broadcast(1.0),
+        normal: Vec3::unit_y(),
+        _padding0: 0,
+        _padding1: 0,
     }
 }
 

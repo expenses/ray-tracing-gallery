@@ -439,10 +439,14 @@ pub fn load_gltf(
             indices.extend(read_indices.map(|index| index + num_vertices));
 
             let positions = reader.read_positions().unwrap();
+            let normals = reader.read_normals().unwrap();
 
-            positions.for_each(|position| {
+            positions.zip(normals).for_each(|(position, normal)| {
                 vertices.push(Vertex {
                     pos: Vec3::from(position) * size_modifier,
+                    normal: normal.into(),
+                    _padding0: 0,
+                    _padding1: 0,
                 });
             })
         }
