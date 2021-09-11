@@ -1,10 +1,12 @@
 use crate::SurfaceLoader;
+use crate::Vertex;
 use ash::vk;
 use gpu_allocator::vulkan::AllocationCreateDesc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use ultraviolet::Vec3;
 
-use crate::util_structs::{Allocator, Buffer, CStrList, Image};
+use crate::util_structs::{Allocator, Buffer, CStrList, Image, ModelBuffers};
 
 pub fn select_physical_device(
     instance: &ash::Instance,
@@ -403,4 +405,48 @@ pub fn set_image_layout(
             &[*image_memory_barrier],
         )
     }
+}
+
+pub fn load_gltf(
+    bytes: &[u8],
+    name: &str,
+    size_modifier: f32,
+    allocator: &mut Allocator,
+) -> anyhow::Result<ModelBuffers> {
+    let gltf = gltf::Gltf::from_slice(bytes)?;
+
+    let buffer_blob = gltf.blob.as_ref().unwrap();
+
+    let mut indices = Vec::new();
+    let mut vertices = Vec::new();
+
+    for mesh in gltf.meshes() {
+        for primitive in mesh.primitives() {
+            let reader = primitive.reader(|buffer| {
+                debug_assert_eq!(buffer.index(), 0);
+                Some(buffer_blob)
+            });
+
+            let read_indices = match reader.read_indices().unwrap() {
+                gltf::mesh::util::ReadIndices::U16(indices) => indices,
+                gltf::mesh::util::ReadIndices::U32(_) => {
+                    return Err(anyhow::anyhow!("U32 indices not supported"))
+                }
+                _ => unreachable!(),
+            };
+
+            let num_vertices = vertices.len() as u16;
+            indices.extend(read_indices.map(|index| index + num_vertices));
+
+            let positions = reader.read_positions().unwrap();
+
+            positions.for_each(|position| {
+                vertices.push(Vertex {
+                    pos: Vec3::from(position) * size_modifier,
+                });
+            })
+        }
+    }
+
+    ModelBuffers::new(&vertices, &indices, name, allocator)
 }

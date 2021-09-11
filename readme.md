@@ -1,8 +1,8 @@
 # Ray Tracing Gallery
 
-(Although currently just a ray-traced cube)
+A work-in-progress
 
-![](screenshot.png)
+![](screenshots/tori.png)
 
 ## Acknowledgements and sources
 

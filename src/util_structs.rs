@@ -43,7 +43,7 @@ impl Allocator {
                     log_leaks_on_shutdown: true,
                     store_stack_traces: false,
                     log_allocations: false,
-                    log_frees: true,
+                    log_frees: false,
                     log_stack_traces: false,
                 },
                 // Needed for getting buffer device addresses

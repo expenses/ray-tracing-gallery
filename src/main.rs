@@ -23,7 +23,7 @@ use util_structs::{
     ShaderBindingTable,
 };
 
-use util_functions::{load_shader_module, select_physical_device, set_image_layout};
+use util_functions::{load_gltf, load_shader_module, select_physical_device, set_image_layout};
 
 fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().init()?;
@@ -158,46 +158,13 @@ fn main() -> anyhow::Result<()> {
 
     let cube_buffers = ModelBuffers::new(&vertices(), &indices(), "cube", &mut allocator)?;
 
-    let plane_buffers = {
-        let bytes = include_bytes!("../plane.glb");
-
-        let gltf = gltf::Gltf::from_slice(bytes)?;
-
-        let buffer_blob = gltf.blob.as_ref().unwrap();
-
-        let mut indices = Vec::new();
-        let mut vertices = Vec::new();
-
-        for mesh in gltf.meshes() {
-            for primitive in mesh.primitives() {
-                let reader = primitive.reader(|buffer| {
-                    assert_eq!(buffer.index(), 0);
-                    Some(buffer_blob)
-                });
-
-                let read_indices = match reader.read_indices().unwrap() {
-                    gltf::mesh::util::ReadIndices::U16(indices) => indices,
-                    gltf::mesh::util::ReadIndices::U32(_) => {
-                        return Err(anyhow::anyhow!("U32 indices not supported"))
-                    }
-                    _ => unreachable!(),
-                };
-
-                let num_vertices = vertices.len() as u16;
-                indices.extend(read_indices.map(|index| index + num_vertices));
-
-                let positions = reader.read_positions().unwrap();
-
-                positions.for_each(|position| {
-                    vertices.push(Vertex {
-                        pos: Vec3::from(position) * 10.0,
-                    });
-                })
-            }
-        }
-
-        ModelBuffers::new(&vertices, &indices, "plane", &mut allocator)?
-    };
+    let plane_buffers = load_gltf(
+        include_bytes!("../plane.glb"),
+        "plane",
+        10.0,
+        &mut allocator,
+    )?;
+    let tori_buffers = load_gltf(include_bytes!("../tori.glb"), "tori", 1.0, &mut allocator)?;
 
     // Create the BLAS
 
@@ -233,13 +200,30 @@ fn main() -> anyhow::Result<()> {
 
     plane_buffers.cleanup_and_drop(&mut allocator)?;
 
+    unsafe {
+        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+    }
+
+    let tori_blas = build_blas(
+        &tori_buffers,
+        "tori blas",
+        &device,
+        &as_loader,
+        &mut scratch_buffer,
+        &mut allocator,
+        command_buffer,
+        queue,
+    )?;
+
+    tori_buffers.cleanup_and_drop(&mut allocator)?;
+
     // Allocate the instance buffer
 
     let instances = &[
         tlas_instance(Mat4::identity(), &plane_blas, &device),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            &cube_blas,
+            &tori_blas,
             &device,
         ),
         tlas_instance(
@@ -811,6 +795,7 @@ fn main() -> anyhow::Result<()> {
             tlas.buffer.cleanup(&mut allocator).unwrap();
             cube_blas.buffer.cleanup(&mut allocator).unwrap();
             plane_blas.buffer.cleanup(&mut allocator).unwrap();
+            tori_blas.buffer.cleanup(&mut allocator).unwrap();
             storage_image.cleanup(&mut allocator).unwrap();
 
             for table in &shader_binding_tables {
