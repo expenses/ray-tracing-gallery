@@ -156,19 +156,11 @@ fn main() -> anyhow::Result<()> {
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
-    let cube_buffers = ModelBuffers::new(&vertices(), &indices(), "cube", &mut allocator)?;
-
-    let plane_buffers = load_gltf(
-        include_bytes!("../plane.glb"),
-        "plane",
-        10.0,
-        &mut allocator,
-    )?;
-    let tori_buffers = load_gltf(include_bytes!("../tori.glb"), "tori", 1.0, &mut allocator)?;
-
-    // Create the BLAS
+    // Create the BLASes
 
     let mut scratch_buffer = ScratchBuffer::new();
+
+    let cube_buffers = ModelBuffers::new(&vertices(), &indices(), "cube", &mut allocator)?;
 
     let cube_blas = build_blas(
         &cube_buffers,
@@ -187,6 +179,13 @@ fn main() -> anyhow::Result<()> {
         device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
     }
 
+    let plane_buffers = load_gltf(
+        include_bytes!("../plane.glb"),
+        "plane",
+        10.0,
+        &mut allocator,
+    )?;
+
     let plane_blas = build_blas(
         &plane_buffers,
         "plane blas",
@@ -203,6 +202,8 @@ fn main() -> anyhow::Result<()> {
     unsafe {
         device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
     }
+
+    let tori_buffers = load_gltf(include_bytes!("../tori.glb"), "tori", 1.0, &mut allocator)?;
 
     let tori_blas = build_blas(
         &tori_buffers,
@@ -527,11 +528,11 @@ fn main() -> anyhow::Result<()> {
         .old_swapchain(vk::SwapchainKHR::null());
 
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
-    let mut swapchain = Swapchain::new(swapchain_loader.clone(), swapchain_info)?;
+    let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info)?;
 
     // main loop
 
-    let syncronisation = Syncronisation::new(&device);
+    let syncronisation = Syncronisation::new(&device)?;
 
     let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
         59.0_f32.to_radians(),
@@ -552,47 +553,53 @@ fn main() -> anyhow::Result<()> {
                     0.1,
                 );
 
-                unsafe {
-                    device.device_wait_idle().unwrap();
+                let mut resize = || -> anyhow::Result<()> {
+                    unsafe {
+                        device.device_wait_idle()?;
 
-                    device
-                        .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())
-                        .unwrap();
+                        device
+                            .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+                    }
+
+                    // Free the old storage image, create a new one and write it to the descriptor set.
+
+                    storage_image.cleanup(&mut allocator)?;
+
+                    storage_image = Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        surface_format.format,
+                        command_buffer,
+                        queue,
+                        &mut allocator,
+                    )?;
+
+                    unsafe {
+                        device.update_descriptor_sets(
+                            &[*vk::WriteDescriptorSet::builder()
+                                .dst_set(descriptor_set)
+                                .dst_binding(1)
+                                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                                .image_info(&[*vk::DescriptorImageInfo::builder()
+                                    .image_view(storage_image.view)
+                                    .image_layout(vk::ImageLayout::GENERAL)])],
+                            &[],
+                        );
+                    }
+
+                    // Replace the swapchain.
+
+                    swapchain_info.image_extent = extent;
+                    swapchain_info.old_swapchain = swapchain.swapchain;
+
+                    swapchain = Swapchain::new(&swapchain_loader, swapchain_info)?;
+
+                    Ok(())
+                };
+
+                if let Err(resize_error) = resize() {
+                    eprintln!("Error while resizing: {}", resize_error);
                 }
-
-                // Free the old storage image, create a new one and write it to the descriptor set.
-
-                storage_image.cleanup(&mut allocator).unwrap();
-
-                storage_image = Image::new_storage_image(
-                    extent.width,
-                    extent.height,
-                    surface_format.format,
-                    command_buffer,
-                    queue,
-                    &mut allocator,
-                )
-                .unwrap();
-
-                unsafe {
-                    device.update_descriptor_sets(
-                        &[*vk::WriteDescriptorSet::builder()
-                            .dst_set(descriptor_set)
-                            .dst_binding(1)
-                            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                            .image_info(&[*vk::DescriptorImageInfo::builder()
-                                .image_view(storage_image.view)
-                                .image_layout(vk::ImageLayout::GENERAL)])],
-                        &[],
-                    );
-                }
-
-                // Replace the swapchain.
-
-                swapchain_info.image_extent = extent;
-                swapchain_info.old_swapchain = swapchain.swapchain;
-
-                swapchain = Swapchain::new(swapchain_loader.clone(), swapchain_info).unwrap();
             }
             WindowEvent::KeyboardInput {
                 input:
@@ -617,7 +624,7 @@ fn main() -> anyhow::Result<()> {
         },
         Event::MainEventsCleared => {
             match unsafe {
-                swapchain.swapchain_loader.acquire_next_image(
+                swapchain_loader.acquire_next_image(
                     swapchain.swapchain,
                     u64::MAX,
                     syncronisation.present_complete_semaphore,
@@ -625,141 +632,143 @@ fn main() -> anyhow::Result<()> {
                 )
             } {
                 Ok((image_index, _suboptimal)) => {
-                    let swapchain_image = swapchain.images[image_index as usize];
+                    let render = || -> anyhow::Result<()> {
+                        let swapchain_image = swapchain.images[image_index as usize];
 
-                    unsafe {
-                        device
-                            .wait_for_fences(&[syncronisation.draw_commands_fence], true, u64::MAX)
-                            .unwrap();
+                        unsafe {
+                            device.wait_for_fences(
+                                &[syncronisation.draw_commands_fence],
+                                true,
+                                u64::MAX,
+                            )?;
 
-                        device
-                            .reset_fences(&[syncronisation.draw_commands_fence])
-                            .unwrap();
+                            device.reset_fences(&[syncronisation.draw_commands_fence])?;
 
-                        device
-                            .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())
-                            .unwrap();
+                            device.reset_command_pool(
+                                command_pool,
+                                vk::CommandPoolResetFlags::empty(),
+                            )?;
 
-                        device
-                            .begin_command_buffer(
+                            device.begin_command_buffer(
                                 command_buffer,
                                 &vk::CommandBufferBeginInfo::builder()
                                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                            )
-                            .unwrap();
+                            )?;
 
-                        device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::RAY_TRACING_KHR,
-                            pipeline,
-                        );
+                            device.cmd_bind_pipeline(
+                                command_buffer,
+                                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                pipeline,
+                            );
 
-                        device.cmd_bind_descriptor_sets(
-                            command_buffer,
-                            vk::PipelineBindPoint::RAY_TRACING_KHR,
-                            pipeline_layout,
-                            0,
-                            &[descriptor_set],
-                            &[],
-                        );
+                            device.cmd_bind_descriptor_sets(
+                                command_buffer,
+                                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                pipeline_layout,
+                                0,
+                                &[descriptor_set],
+                                &[],
+                            );
 
-                        let view_matrix =
-                            Mat4::look_at(Vec3::new(0.0, 2.0, -5.0), Vec3::zero(), Vec3::unit_y());
+                            let view_matrix = Mat4::look_at(
+                                Vec3::new(0.0, 2.0, -5.0),
+                                Vec3::zero(),
+                                Vec3::unit_y(),
+                            );
 
-                        device.cmd_push_constants(
-                            command_buffer,
-                            pipeline_layout,
-                            vk::ShaderStageFlags::RAYGEN_KHR,
-                            0,
-                            bytemuck::bytes_of(&CameraProperties {
-                                view_inverse: view_matrix.inversed(),
-                                proj_inverse: perspective_matrix.inversed(),
-                            }),
-                        );
+                            device.cmd_push_constants(
+                                command_buffer,
+                                pipeline_layout,
+                                vk::ShaderStageFlags::RAYGEN_KHR,
+                                0,
+                                bytemuck::bytes_of(&CameraProperties {
+                                    view_inverse: view_matrix.inversed(),
+                                    proj_inverse: perspective_matrix.inversed(),
+                                }),
+                            );
 
-                        pipeline_loader.cmd_trace_rays(
-                            command_buffer,
-                            &shader_binding_tables[0].address_region,
-                            &shader_binding_tables[1].address_region,
-                            &shader_binding_tables[2].address_region,
-                            // We don't use callable shaders here
-                            &Default::default(),
-                            extent.width,
-                            extent.height,
-                            1,
-                        );
+                            pipeline_loader.cmd_trace_rays(
+                                command_buffer,
+                                &shader_binding_tables[0].address_region,
+                                &shader_binding_tables[1].address_region,
+                                &shader_binding_tables[2].address_region,
+                                // We don't use callable shaders here
+                                &Default::default(),
+                                extent.width,
+                                extent.height,
+                                1,
+                            );
 
-                        let subresource = *vk::ImageSubresourceLayers::builder()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .mip_level(0)
-                            .base_array_layer(0)
-                            .layer_count(1);
+                            let subresource = *vk::ImageSubresourceLayers::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .mip_level(0)
+                                .base_array_layer(0)
+                                .layer_count(1);
 
-                        let subresource_range = vk::ImageSubresourceRange::builder()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .level_count(1)
-                            .layer_count(1);
+                            let subresource_range = vk::ImageSubresourceRange::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .level_count(1)
+                                .layer_count(1);
 
-                        // prepare image to be a destimation
-                        set_image_layout(
-                            &device,
-                            command_buffer,
-                            swapchain_image,
-                            vk::ImageLayout::UNDEFINED,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            *subresource_range,
-                        );
+                            // prepare image to be a destimation
+                            set_image_layout(
+                                &device,
+                                command_buffer,
+                                swapchain_image,
+                                vk::ImageLayout::UNDEFINED,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                *subresource_range,
+                            );
 
-                        // prepare storage image to be a source
-                        set_image_layout(
-                            &device,
-                            command_buffer,
-                            storage_image.image,
-                            vk::ImageLayout::GENERAL,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            *subresource_range,
-                        );
+                            // prepare storage image to be a source
+                            set_image_layout(
+                                &device,
+                                command_buffer,
+                                storage_image.image,
+                                vk::ImageLayout::GENERAL,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                *subresource_range,
+                            );
 
-                        device.cmd_copy_image(
-                            command_buffer,
-                            storage_image.image,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            swapchain_image,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[*vk::ImageCopy::builder()
-                                .src_subresource(subresource)
-                                .dst_subresource(subresource)
-                                .extent(vk::Extent3D {
-                                    width: extent.width,
-                                    height: extent.height,
-                                    depth: 1,
-                                })],
-                        );
+                            device.cmd_copy_image(
+                                command_buffer,
+                                storage_image.image,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                swapchain_image,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[*vk::ImageCopy::builder()
+                                    .src_subresource(subresource)
+                                    .dst_subresource(subresource)
+                                    .extent(vk::Extent3D {
+                                        width: extent.width,
+                                        height: extent.height,
+                                        depth: 1,
+                                    })],
+                            );
 
-                        // Reset image layouts
+                            // Reset image layouts
 
-                        set_image_layout(
-                            &device,
-                            command_buffer,
-                            swapchain_image,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            vk::ImageLayout::PRESENT_SRC_KHR,
-                            *subresource_range,
-                        );
+                            set_image_layout(
+                                &device,
+                                command_buffer,
+                                swapchain_image,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                vk::ImageLayout::PRESENT_SRC_KHR,
+                                *subresource_range,
+                            );
 
-                        set_image_layout(
-                            &device,
-                            command_buffer,
-                            storage_image.image,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            vk::ImageLayout::GENERAL,
-                            *subresource_range,
-                        );
+                            set_image_layout(
+                                &device,
+                                command_buffer,
+                                storage_image.image,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                vk::ImageLayout::GENERAL,
+                                *subresource_range,
+                            );
 
-                        device.end_command_buffer(command_buffer).unwrap();
+                            device.end_command_buffer(command_buffer)?;
 
-                        device
-                            .queue_submit(
+                            device.queue_submit(
                                 queue,
                                 &[*vk::SubmitInfo::builder()
                                     .wait_semaphores(&[syncronisation.present_complete_semaphore])
@@ -771,35 +780,46 @@ fn main() -> anyhow::Result<()> {
                                         syncronisation.rendering_complete_semaphore
                                     ])],
                                 syncronisation.draw_commands_fence,
-                            )
-                            .unwrap();
+                            )?;
 
-                        swapchain
-                            .swapchain_loader
-                            .queue_present(
+                            swapchain_loader.queue_present(
                                 queue,
                                 &vk::PresentInfoKHR::builder()
                                     .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
                                     .swapchains(&[swapchain.swapchain])
                                     .image_indices(&[image_index]),
-                            )
-                            .expect("Presenting failed. This is very unlikely to happen.");
+                            )?;
+                        }
+
+                        Ok(())
+                    };
+
+                    if let Err(render_error) = render() {
+                        eprintln!("Error while rendering or presenting: {}", render_error);
                     }
                 }
                 Err(error) => println!("Next frame error: {:?}", error),
             }
         }
         Event::LoopDestroyed => unsafe {
-            device.device_wait_idle().unwrap();
+            let mut cleanup = || -> anyhow::Result<()> {
+                device.device_wait_idle()?;
 
-            tlas.buffer.cleanup(&mut allocator).unwrap();
-            cube_blas.buffer.cleanup(&mut allocator).unwrap();
-            plane_blas.buffer.cleanup(&mut allocator).unwrap();
-            tori_blas.buffer.cleanup(&mut allocator).unwrap();
-            storage_image.cleanup(&mut allocator).unwrap();
+                tlas.buffer.cleanup(&mut allocator)?;
+                cube_blas.buffer.cleanup(&mut allocator)?;
+                plane_blas.buffer.cleanup(&mut allocator)?;
+                tori_blas.buffer.cleanup(&mut allocator)?;
+                storage_image.cleanup(&mut allocator)?;
 
-            for table in &shader_binding_tables {
-                table.buffer.cleanup(&mut allocator).unwrap();
+                for table in &shader_binding_tables {
+                    table.buffer.cleanup(&mut allocator)?;
+                }
+
+                Ok(())
+            };
+
+            if let Err(cleanup_error) = cleanup() {
+                eprintln!("Clean up error: {}", cleanup_error);
             }
         },
         _ => {}
@@ -813,17 +833,17 @@ struct Syncronisation {
 }
 
 impl Syncronisation {
-    fn new(device: &ash::Device) -> Self {
+    fn new(device: &ash::Device) -> anyhow::Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
-        Self {
-            present_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }
-                .unwrap(),
-            rendering_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }
-                .unwrap(),
-            draw_commands_fence: unsafe { device.create_fence(&fence_info, None) }.unwrap(),
-        }
+        Ok(Self {
+            present_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
+            rendering_complete_semaphore: unsafe {
+                device.create_semaphore(&semaphore_info, None)
+            }?,
+            draw_commands_fence: unsafe { device.create_fence(&fence_info, None) }?,
+        })
     }
 
     unsafe fn _cleanup(&self, device: &ash::Device) {
@@ -834,24 +854,19 @@ impl Syncronisation {
 }
 
 struct Swapchain {
-    swapchain_loader: SwapchainLoader,
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
 }
 
 impl Swapchain {
     fn new(
-        swapchain_loader: SwapchainLoader,
+        swapchain_loader: &SwapchainLoader,
         info: vk::SwapchainCreateInfoKHR,
     ) -> anyhow::Result<Self> {
-        let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }.unwrap();
-        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }.unwrap();
+        let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }?;
+        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
 
-        Ok(Self {
-            images,
-            swapchain,
-            swapchain_loader,
-        })
+        Ok(Self { images, swapchain })
     }
 }
 
