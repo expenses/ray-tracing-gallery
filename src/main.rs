@@ -201,8 +201,6 @@ fn main() -> anyhow::Result<()> {
         queue,
     )?;
 
-    plane_buffers.cleanup_and_drop(&mut allocator)?;
-
     unsafe {
         device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
     }
@@ -225,11 +223,12 @@ fn main() -> anyhow::Result<()> {
     // Allocate the instance buffer
 
     let instances = &[
-        //tlas_instance(Mat4::identity(), &plane_blas, &device),
+        tlas_instance(Mat4::identity(), &plane_blas, &device, 1),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
+            0,
         ),
         /*tlas_instance(
             Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_y(1.0),
@@ -291,6 +290,8 @@ fn main() -> anyhow::Result<()> {
 
     // Create the descriptor set
 
+    let buffer_descriptor_count = 2;
+
     let descriptor_set_layout = unsafe {
         device.create_descriptor_set_layout(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
@@ -307,12 +308,12 @@ fn main() -> anyhow::Result<()> {
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(2)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
+                    .descriptor_count(buffer_descriptor_count)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
+                    .descriptor_count(buffer_descriptor_count)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             ]),
             None,
@@ -331,10 +332,10 @@ fn main() -> anyhow::Result<()> {
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
+                        .descriptor_count(buffer_descriptor_count),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
+                        .descriptor_count(buffer_descriptor_count),
                 ])
                 .max_sets(1),
             None,
@@ -382,16 +383,26 @@ fn main() -> anyhow::Result<()> {
                     .dst_set(descriptor_set)
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(tori_buffers.vertices.buffer)
-                        .range(vk::WHOLE_SIZE)]),
+                    .buffer_info(&[
+                        *vk::DescriptorBufferInfo::builder()
+                            .buffer(tori_buffers.vertices.buffer)
+                            .range(vk::WHOLE_SIZE),
+                        *vk::DescriptorBufferInfo::builder()
+                            .buffer(plane_buffers.vertices.buffer)
+                            .range(vk::WHOLE_SIZE),
+                    ]),
                 *vk::WriteDescriptorSet::builder()
                     .dst_set(descriptor_set)
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(tori_buffers.indices.buffer)
-                        .range(vk::WHOLE_SIZE)]),
+                    .buffer_info(&[
+                        *vk::DescriptorBufferInfo::builder()
+                            .buffer(tori_buffers.indices.buffer)
+                            .range(vk::WHOLE_SIZE),
+                        *vk::DescriptorBufferInfo::builder()
+                            .buffer(plane_buffers.indices.buffer)
+                            .range(vk::WHOLE_SIZE),
+                    ]),
             ],
             &[],
         );
@@ -1039,12 +1050,13 @@ fn tlas_instance(
     transform: Mat4,
     blas: &AccelerationStructure,
     device: &ash::Device,
+    custom_index: u32,
 ) -> vk::AccelerationStructureInstanceKHR {
     vk::AccelerationStructureInstanceKHR {
         transform: vk::TransformMatrixKHR {
             matrix: flatted_matrix(transform),
         },
-        instance_custom_index_and_mask: 0xFF << 24,
+        instance_custom_index_and_mask: custom_index | (0xFF << 24),
         instance_shader_binding_table_record_offset_and_flags:
             vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {

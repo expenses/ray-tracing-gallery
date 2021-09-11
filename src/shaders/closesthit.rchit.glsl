@@ -12,22 +12,22 @@ struct Vertex {
 };
 
 layout(set = 0, binding = 2) buffer Vertices {
-    float vertices[];
+    float vertices[][2];
 };
 
 layout(set = 0, binding = 3) buffer Indices {
-    uint16_t indices[];
+    uint16_t indices[][2];
 };
 
-Vertex load_vertex(uint index) {
+Vertex load_vertex(uint index, uint model_index) {
     Vertex vertex;
  
     const uint VERTEX_SIZE = 6;
 
     uint offset = index * VERTEX_SIZE;
 
-    vertex.pos = vec3(vertices[offset], vertices[offset + 1], vertices[offset + 2]);
-    vertex.normal = vec3(vertices[offset + 3], vertices[offset + 4], vertices[offset + 5]);
+    vertex.pos = vec3(vertices[model_index][offset], vertices[model_index][offset + 1], vertices[model_index][offset + 2]);
+    vertex.normal = vec3(vertices[model_index][offset + 3], vertices[model_index][offset + 4], vertices[model_index][offset + 5]);
 
     return vertex;
 }
@@ -38,13 +38,17 @@ vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
 
 void main()
 {
-    uvec3 index = uvec3(indices[3 * gl_PrimitiveID], indices[3 * gl_PrimitiveID + 1], indices[3 * gl_PrimitiveID + 2]);
+    uint model_index = gl_InstanceCustomIndexEXT;
+
+    uint index_offset = gl_PrimitiveID * 3;
+
+    uvec3 index = uvec3(indices[model_index][index_offset], indices[model_index][index_offset + 1], indices[model_index][index_offset + 2]);
 
     const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
         
-    Vertex v0 = load_vertex(index.x);
-    Vertex v1 = load_vertex(index.y);
-    Vertex v2 = load_vertex(index.z);
+    Vertex v0 = load_vertex(index.x, model_index);
+    Vertex v1 = load_vertex(index.y, model_index);
+    Vertex v2 = load_vertex(index.z, model_index);
 
     vec3 normal = normalize(interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords));
 
