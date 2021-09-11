@@ -8,9 +8,10 @@ use ash::extensions::khr::{
 use ash::vk;
 use std::ffi::CStr;
 use ultraviolet::{Mat4, Vec3};
-use winit::event::{Event, WindowEvent};
+use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::{
     event_loop::{ControlFlow, EventLoop},
+    window::Fullscreen,
     window::WindowBuilder,
 };
 
@@ -18,7 +19,8 @@ mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    AccelerationStructure, Allocator, Buffer, CStrList, Image, ScratchBuffer, ShaderBindingTable,
+    AccelerationStructure, Allocator, Buffer, CStrList, Image, ModelBuffers, ScratchBuffer,
+    ShaderBindingTable,
 };
 
 use util_functions::{load_shader_module, select_physical_device, set_image_layout};
@@ -154,47 +156,95 @@ fn main() -> anyhow::Result<()> {
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
-    let cube_verts_buffer = Buffer::new(
-        bytemuck::cast_slice(&vertices()),
-        "cube verts",
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-        &mut allocator,
-    )?;
+    let cube_buffers = ModelBuffers::new(&vertices(), &indices(), "cube", &mut allocator)?;
 
-    let cube_indices_buffer = Buffer::new(
-        bytemuck::cast_slice(&indices()),
-        "cube indices",
-        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-        &mut allocator,
-    )?;
+    let plane_buffers = {
+        let bytes = include_bytes!("../plane.glb");
+
+        let gltf = gltf::Gltf::from_slice(bytes)?;
+
+        let buffer_blob = gltf.blob.as_ref().unwrap();
+
+        let mut indices = Vec::new();
+        let mut vertices = Vec::new();
+
+        for mesh in gltf.meshes() {
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|buffer| {
+                    assert_eq!(buffer.index(), 0);
+                    Some(buffer_blob)
+                });
+
+                let read_indices = match reader.read_indices().unwrap() {
+                    gltf::mesh::util::ReadIndices::U16(indices) => indices,
+                    gltf::mesh::util::ReadIndices::U32(_) => {
+                        return Err(anyhow::anyhow!("U32 indices not supported"))
+                    }
+                    _ => unreachable!(),
+                };
+
+                let num_vertices = vertices.len() as u16;
+                indices.extend(read_indices.map(|index| index + num_vertices));
+
+                let positions = reader.read_positions().unwrap();
+
+                positions.for_each(|position| {
+                    vertices.push(Vertex {
+                        pos: Vec3::from(position) * 10.0,
+                    });
+                })
+            }
+        }
+
+        ModelBuffers::new(&vertices, &indices, "plane", &mut allocator)?
+    };
 
     // Create the BLAS
 
-    let (blas, mut scratch_buffer) = build_blas(
-        std::mem::size_of::<Vertex>() as u64,
-        &cube_verts_buffer,
-        vertices().len() as u32,
-        &cube_indices_buffer,
-        indices().len() as u32,
+    let mut scratch_buffer = ScratchBuffer::new();
+
+    let cube_blas = build_blas(
+        &cube_buffers,
+        "cube blas",
         &device,
         &as_loader,
+        &mut scratch_buffer,
         &mut allocator,
         command_buffer,
         queue,
     )?;
 
-    cube_verts_buffer.cleanup_and_drop(&mut allocator)?;
-    cube_indices_buffer.cleanup_and_drop(&mut allocator)?;
+    cube_buffers.cleanup_and_drop(&mut allocator)?;
+
+    unsafe {
+        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+    }
+
+    let plane_blas = build_blas(
+        &plane_buffers,
+        "plane blas",
+        &device,
+        &as_loader,
+        &mut scratch_buffer,
+        &mut allocator,
+        command_buffer,
+        queue,
+    )?;
+
+    plane_buffers.cleanup_and_drop(&mut allocator)?;
 
     // Allocate the instance buffer
 
     let instances = &[
-        tlas_instance(Mat4::identity(), &blas, &device),
+        tlas_instance(Mat4::identity(), &plane_blas, &device),
         tlas_instance(
-            Mat4::from_translation(Vec3::broadcast(1.0)) * Mat4::from_rotation_y(1.0),
-            &blas,
+            Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+            &cube_blas,
+            &device,
+        ),
+        tlas_instance(
+            Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_y(1.0),
+            &cube_blas,
             &device,
         ),
     ];
@@ -226,7 +276,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     instances_buffer.cleanup_and_drop(&mut allocator)?;
-    scratch_buffer.inner.cleanup_and_drop(&mut allocator)?;
+    scratch_buffer.cleanup_and_drop(&mut allocator)?;
 
     // Create storage image
 
@@ -556,12 +606,28 @@ fn main() -> anyhow::Result<()> {
                 // Replace the swapchain.
 
                 swapchain_info.image_extent = extent;
-
-                unsafe {
-                    swapchain.cleanup();
-                }
+                swapchain_info.old_swapchain = swapchain.swapchain;
 
                 swapchain = Swapchain::new(swapchain_loader.clone(), swapchain_info).unwrap();
+            }
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state,
+                        virtual_keycode: Some(key),
+                        ..
+                    },
+                ..
+            } => {
+                let pressed = state == ElementState::Pressed;
+
+                if key == VirtualKeyCode::F11 && pressed {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    } else {
+                        window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                    }
+                }
             }
             _ => {}
         },
@@ -743,7 +809,8 @@ fn main() -> anyhow::Result<()> {
             device.device_wait_idle().unwrap();
 
             tlas.buffer.cleanup(&mut allocator).unwrap();
-            blas.buffer.cleanup(&mut allocator).unwrap();
+            cube_blas.buffer.cleanup(&mut allocator).unwrap();
+            plane_blas.buffer.cleanup(&mut allocator).unwrap();
             storage_image.cleanup(&mut allocator).unwrap();
 
             for table in &shader_binding_tables {
@@ -801,11 +868,6 @@ impl Swapchain {
             swapchain_loader,
         })
     }
-
-    unsafe fn cleanup(&self) {
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
-    }
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
@@ -816,40 +878,24 @@ struct CameraProperties {
 }
 
 fn build_blas(
-    stride: u64,
-    vertices: &Buffer,
-    num_vertices: u32,
-    indices: &Buffer,
-    num_indices: u32,
+    model_buffers: &ModelBuffers,
+    name: &str,
     device: &ash::Device,
     as_loader: &AccelerationStructureLoader,
+    scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
     command_buffer: vk::CommandBuffer,
     queue: vk::Queue,
-) -> anyhow::Result<(AccelerationStructure, ScratchBuffer)> {
-    let primitive_count = num_indices / 3;
-
-    let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
-        .vertex_format(vk::Format::R32G32B32_SFLOAT)
-        .vertex_data(vk::DeviceOrHostAddressConstKHR {
-            device_address: vertices.device_address(device),
-        })
-        .vertex_stride(stride)
-        .max_vertex(num_vertices)
-        .index_type(vk::IndexType::UINT16)
-        .index_data(vk::DeviceOrHostAddressConstKHR {
-            device_address: indices.device_address(device),
-        });
-
+) -> anyhow::Result<AccelerationStructure> {
     let geometry = vk::AccelerationStructureGeometryKHR::builder()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
         .geometry(vk::AccelerationStructureGeometryDataKHR {
-            triangles: *triangles,
+            triangles: model_buffers.triangles_data,
         })
         .flags(vk::GeometryFlagsKHR::OPAQUE);
 
-    let offset =
-        vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(primitive_count);
+    let offset = vk::AccelerationStructureBuildRangeInfoKHR::builder()
+        .primitive_count(model_buffers.primitive_count);
 
     let geometries = &[*geometry];
 
@@ -863,15 +909,16 @@ fn build_blas(
         as_loader.get_acceleration_structure_build_sizes(
             vk::AccelerationStructureBuildTypeKHR::DEVICE,
             &geometry_info,
-            &[primitive_count],
+            &[model_buffers.primitive_count],
         )
     };
 
-    let scratch_buffer = ScratchBuffer::new(build_sizes.build_scratch_size, allocator)?;
+    let scratch_buffer =
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
 
     let blas = AccelerationStructure::new(
         build_sizes.acceleration_structure_size,
-        "blas",
+        name,
         vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
         as_loader,
         device,
@@ -883,7 +930,7 @@ fn build_blas(
         offset,
     )?;
 
-    Ok((blas, scratch_buffer))
+    Ok(blas)
 }
 
 fn build_tlas(
@@ -928,7 +975,8 @@ fn build_tlas(
         )
     };
 
-    scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
+    let scratch_buffer =
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
 
     AccelerationStructure::new(
         build_sizes.acceleration_structure_size,

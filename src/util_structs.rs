@@ -70,7 +70,7 @@ impl AccelerationStructure {
         allocator: &mut Allocator,
         command_buffer: vk::CommandBuffer,
         queue: vk::Queue,
-        scratch_buffer: &ScratchBuffer,
+        scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
         offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
     ) -> anyhow::Result<Self> {
@@ -98,7 +98,7 @@ impl AccelerationStructure {
         geometry_info = geometry_info
             .dst_acceleration_structure(acceleration_structure)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_buffer.inner.device_address(device),
+                device_address: scratch_buffer.device_address(device),
             });
 
         unsafe {
@@ -135,32 +135,66 @@ impl AccelerationStructure {
     }
 }
 
+enum ScratchBufferInner {
+    Unallocated,
+    Allocated(Buffer),
+}
+
 pub struct ScratchBuffer {
-    pub inner: Buffer,
+    inner: ScratchBufferInner,
 }
 
 impl ScratchBuffer {
-    pub fn new(size: vk::DeviceSize, allocator: &mut Allocator) -> anyhow::Result<Self> {
-        log::info!("Creating a scratch buffer of {} bytes", size);
-
-        Ok(Self {
-            inner: Buffer::new_of_size(
-                size,
-                "scratch buffer",
-                vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                allocator,
-            )?,
-        })
+    pub fn new() -> Self {
+        Self {
+            inner: ScratchBufferInner::Unallocated,
+        }
     }
 
     pub fn ensure_size_of(
         &mut self,
         size: vk::DeviceSize,
         allocator: &mut Allocator,
-    ) -> anyhow::Result<()> {
-        if self.inner.allocation.size() < size {
-            self.inner.cleanup(allocator)?;
-            *self = Self::new(size, allocator)?;
+    ) -> anyhow::Result<&Buffer> {
+        match &mut self.inner {
+            ScratchBufferInner::Unallocated => {
+                log::info!("Creating a scratch buffer of {} bytes", size);
+
+                self.inner = ScratchBufferInner::Allocated(Buffer::new_of_size(
+                    size,
+                    "scratch buffer",
+                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    allocator,
+                )?);
+            }
+            ScratchBufferInner::Allocated(buffer) => {
+                if buffer.allocation.size() < size {
+                    buffer.cleanup(allocator)?;
+                    log::info!(
+                        "Resizing scratch buffer from {} bytes to {} bytes",
+                        buffer.allocation.size(),
+                        size
+                    );
+
+                    *buffer = Buffer::new_of_size(
+                        size,
+                        "scratch buffer",
+                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                        allocator,
+                    )?;
+                }
+            }
+        }
+
+        match &self.inner {
+            ScratchBufferInner::Allocated(buffer) => Ok(buffer),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        if let ScratchBufferInner::Allocated(buffer) = self.inner {
+            buffer.cleanup_and_drop(allocator)?;
         }
 
         Ok(())
@@ -529,6 +563,68 @@ impl Image {
 
         unsafe { allocator.device.destroy_image(self.image, None) };
 
+        Ok(())
+    }
+}
+
+pub struct ModelBuffers {
+    vertices: Buffer,
+    indices: Buffer,
+    pub triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
+    pub primitive_count: u32,
+}
+
+impl ModelBuffers {
+    pub fn new<T: bytemuck::Pod>(
+        vertices: &[T],
+        indices: &[u16],
+        name: &str,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let num_vertices = vertices.len() as u32;
+        let num_indices = indices.len() as u32;
+        let primitive_count = num_indices / 3;
+        let stride = std::mem::size_of::<T>() as u64;
+
+        let vertices = Buffer::new(
+            bytemuck::cast_slice(vertices),
+            &format!("{} vertices", name),
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            allocator,
+        )?;
+
+        let indices = Buffer::new(
+            bytemuck::cast_slice(indices),
+            &format!("{} indices", name),
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            allocator,
+        )?;
+
+        let triangles_data = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
+            .vertex_format(vk::Format::R32G32B32_SFLOAT)
+            .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: vertices.device_address(&allocator.device),
+            })
+            .vertex_stride(stride)
+            .max_vertex(num_vertices)
+            .index_type(vk::IndexType::UINT16)
+            .index_data(vk::DeviceOrHostAddressConstKHR {
+                device_address: indices.device_address(&allocator.device),
+            });
+
+        Ok(Self {
+            vertices,
+            indices,
+            triangles_data: *triangles_data,
+            primitive_count,
+        })
+    }
+
+    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        self.vertices.cleanup_and_drop(allocator)?;
+        self.indices.cleanup_and_drop(allocator)?;
         Ok(())
     }
 }
