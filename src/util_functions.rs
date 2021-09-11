@@ -445,8 +445,6 @@ pub fn load_gltf(
                 vertices.push(Vertex {
                     pos: Vec3::from(position) * size_modifier,
                     normal: normal.into(),
-                    _padding0: 0,
-                    _padding1: 0,
                 });
             })
         }

@@ -1086,17 +1086,13 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 #[repr(C)]
 struct Vertex {
     pos: Vec3,
-    _padding0: u32,
     normal: Vec3,
-    _padding1: u32,
 }
 
 fn vertex(a: f32, b: f32, c: f32) -> Vertex {
     Vertex {
         pos: Vec3::new(a, b, c) * 2.0 - Vec3::broadcast(1.0),
         normal: Vec3::unit_y(),
-        _padding0: 0,
-        _padding1: 0,
     }
 }
 
