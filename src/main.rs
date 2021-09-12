@@ -539,7 +539,7 @@ fn main() -> anyhow::Result<()> {
     let surface_caps = unsafe {
         surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
     }?;
-    let mut image_count = surface_caps.min_image_count + 1;
+    let mut image_count = (surface_caps.min_image_count + 1).max(3);
     if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
         image_count = surface_caps.max_image_count;
     }

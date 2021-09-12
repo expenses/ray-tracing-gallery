@@ -165,7 +165,8 @@ impl ScratchBuffer {
                 self.inner = ScratchBufferInner::Allocated(Buffer::new_of_size(
                     size,
                     "scratch buffer",
-                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                        | vk::BufferUsageFlags::STORAGE_BUFFER,
                     allocator,
                 )?);
             }
@@ -181,7 +182,8 @@ impl ScratchBuffer {
                     *buffer = Buffer::new_of_size(
                         size,
                         "scratch buffer",
-                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                            | vk::BufferUsageFlags::STORAGE_BUFFER,
                         allocator,
                     )?;
                 }
