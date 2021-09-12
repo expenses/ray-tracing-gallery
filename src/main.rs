@@ -321,7 +321,7 @@ fn main() -> anyhow::Result<()> {
 
     let uniform_buffer = Buffer::new(
         bytemuck::bytes_of(&Uniforms {
-            sun_dir: Vec3::new(0.0, 0.25, 0.5).normalized(),
+            sun_dir: Vec3::new(0.0, 0.25, -0.5).normalized(),
         }),
         "uniforms",
         vk::BufferUsageFlags::UNIFORM_BUFFER,

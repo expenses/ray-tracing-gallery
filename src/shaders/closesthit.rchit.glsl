@@ -26,6 +26,9 @@ struct ModelInfo {
     uint64_t index_buffer_address;
 };
 
+// Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
+// https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
+
 layout(buffer_reference, scalar) buffer Vertices {
     float inner[];
 };
@@ -74,7 +77,9 @@ void main()
     Vertex v1 = load_vertex(index.y, info);
     Vertex v2 = load_vertex(index.z, info);
 
-    vec3 normal = normalize(interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords));
+    vec3 interpolated_normal = interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords);
+
+    vec3 normal = normalize(vec3(interpolated_normal * gl_WorldToObjectEXT));
 
     float lighting = max(dot(normal, sun_dir), 0.0);
 
