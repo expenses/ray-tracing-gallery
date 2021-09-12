@@ -248,8 +248,8 @@ fn main() -> anyhow::Result<()> {
             1,
         ),
         tlas_instance(
-            Mat4::from_translation(Vec3::new(-2.0, 0.0, -2.0))
-                * Mat4::from_rotation_y(180.0_f32.to_radians())
+            Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0))
+                * Mat4::from_rotation_y(150.0_f32.to_radians())
                 * Mat4::from_scale(0.5),
             &lain_blas,
             &device,
@@ -867,6 +867,10 @@ fn main() -> anyhow::Result<()> {
                 plane_blas.buffer.cleanup(&mut allocator)?;
                 tori_blas.buffer.cleanup(&mut allocator)?;
                 tori_buffers.cleanup(&mut allocator)?;
+                lain_blas.buffer.cleanup(&mut allocator)?;
+                lain_buffers.cleanup(&mut allocator)?;
+
+                model_info_buffer.cleanup(&mut allocator)?;
                 storage_image.cleanup(&mut allocator)?;
                 uniform_buffer.cleanup(&mut allocator)?;
 
