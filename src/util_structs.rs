@@ -636,6 +636,13 @@ impl ModelBuffers {
         })
     }
 
+    pub fn model_info(&self, device: &ash::Device) -> crate::ModelInfo {
+        crate::ModelInfo {
+            vertex_buffer_address: self.vertices.device_address(device),
+            index_buffer_address: self.indices.device_address(device),
+        }
+    }
+
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         self.vertices.cleanup(allocator)?;
         self.indices.cleanup(allocator)?;
