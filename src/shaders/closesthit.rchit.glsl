@@ -57,6 +57,38 @@ vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
+// https://www.shadertoy.com/view/4djSRW
+vec2 hash22(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx+33.33);
+    return fract((p3.xx+p3.yz)*p3.zy);
+
+}
+
+float shadow_multiplier(vec2 rng) {
+    float light_radius = 0.05;
+    float pointRadius = light_radius * sqrt(rng.x);
+    float pointAngle = rng.y * 2.0f * 3.1415;
+    vec2 diskPoint = vec2(pointRadius*cos(pointAngle), pointRadius*sin(pointAngle));
+
+    vec3 lightTangent = normalize(cross(sun_dir, vec3(0.0f, 1.0f, 0.0f)));
+    vec3 lightBitangent = normalize(cross(lightTangent, sun_dir));
+
+    // Shadow casting
+	float tmin = 0.001;
+	float tmax = 10000.0;
+	vec3 origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+	shadowed = true;  
+
+    vec3 rayTarget = origin + sun_dir + diskPoint.x * lightTangent + diskPoint.y * lightBitangent;
+    vec3 shadowRayDir = normalize(rayTarget - origin);
+
+    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
+	traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xFF, 1, 0, 1, origin, tmin, shadowRayDir, tmax, 1);
+
+    return float(!shadowed);
+}
+
 void main()
 {
     uint model_index = gl_InstanceCustomIndexEXT;
@@ -78,15 +110,9 @@ void main()
 
     float lighting = max(dot(normal, sun_dir), 0.0);
 
-    // Shadow casting
-	float tmin = 0.001;
-	float tmax = 10000.0;
-	vec3 origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-	shadowed = true;  
-    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
-	traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xFF, 1, 0, 1, origin, tmin, sun_dir, tmax, 1);
+    float shadow_sum = shadow_multiplier(hash22(attribs * 1000.0));
 	
-    lighting *= float(!shadowed);
+    lighting *= shadow_sum;
 
     hitValue = (normal * 0.5) + 0.5;
 
