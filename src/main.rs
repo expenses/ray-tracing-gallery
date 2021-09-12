@@ -20,10 +20,13 @@ mod util_structs;
 
 use util_structs::{
     AccelerationStructure, Allocator, Buffer, CStrList, Image, ModelBuffers, ScratchBuffer,
-    ShaderBindingTable,
+    ShaderBindingTable, Swapchain, Syncronisation,
 };
 
-use util_functions::{load_gltf, load_shader_module, select_physical_device, set_image_layout};
+use util_functions::{
+    load_gltf, load_shader_module, sbt_aligned_size, select_physical_device, set_image_layout,
+    shader_group_for_type,
+};
 
 fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().init()?;
@@ -164,25 +167,6 @@ fn main() -> anyhow::Result<()> {
 
     let mut scratch_buffer = ScratchBuffer::new();
 
-    let cube_buffers = ModelBuffers::new(&vertices(), &indices(), "cube", &mut allocator)?;
-
-    let cube_blas = build_blas(
-        &cube_buffers,
-        "cube blas",
-        &device,
-        &as_loader,
-        &mut scratch_buffer,
-        &mut allocator,
-        command_buffer,
-        queue,
-    )?;
-
-    cube_buffers.cleanup_and_drop(&mut allocator)?;
-
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
-
     let plane_buffers = load_gltf(
         include_bytes!("../plane.glb"),
         "plane",
@@ -230,11 +214,6 @@ fn main() -> anyhow::Result<()> {
             &device,
             0,
         ),
-        /*tlas_instance(
-            Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_y(1.0),
-            &cube_blas,
-            &device,
-        ),*/
     ];
 
     let instances_buffer = Buffer::new_with_custom_alignment(
@@ -288,6 +267,15 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
+    let uniform_buffer = Buffer::new(
+        bytemuck::bytes_of(&Uniforms {
+            sun_dir: Vec3::new(0.0, 1.0, 0.5).normalized(),
+        }),
+        "uniforms",
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        &mut allocator,
+    )?;
+
     // Create the descriptor set
 
     let buffer_descriptor_count = 2;
@@ -299,7 +287,9 @@ fn main() -> anyhow::Result<()> {
                     .binding(0)
                     .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                    .stage_flags(
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    ),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
@@ -314,6 +304,11 @@ fn main() -> anyhow::Result<()> {
                     .binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(buffer_descriptor_count)
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(4)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             ]),
             None,
@@ -336,6 +331,9 @@ fn main() -> anyhow::Result<()> {
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(buffer_descriptor_count),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1),
                 ])
                 .max_sets(1),
             None,
@@ -403,6 +401,13 @@ fn main() -> anyhow::Result<()> {
                             .buffer(plane_buffers.indices.buffer)
                             .range(vk::WHOLE_SIZE),
                     ]),
+                *vk::WriteDescriptorSet::builder()
+                    .dst_set(descriptor_set)
+                    .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
+                        .buffer(uniform_buffer.buffer)
+                        .range(vk::WHOLE_SIZE)]),
             ],
             &[],
         );
@@ -418,7 +423,7 @@ fn main() -> anyhow::Result<()> {
                 .set_layouts(&[descriptor_set_layout])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                    .size(std::mem::size_of::<CameraProperties>() as u32)]),
+                    .size(std::mem::size_of::<PushConstants>() as u32)]),
             None,
         )
     }?;
@@ -430,35 +435,27 @@ fn main() -> anyhow::Result<()> {
             &device,
         )?,
         load_shader_module(
+            include_bytes!("shaders/closesthit.rchit.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
+        load_shader_module(
             include_bytes!("shaders/miss.rmiss.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,
         )?,
         load_shader_module(
-            include_bytes!("shaders/closesthit.rchit.spv"),
-            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            include_bytes!("shaders/shadow.rmiss.spv"),
+            vk::ShaderStageFlags::MISS_KHR,
             &device,
         )?,
     ];
 
     let shader_groups = [
-        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
-            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
-            .general_shader(0)
-            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
-            .any_hit_shader(vk::SHADER_UNUSED_KHR)
-            .intersection_shader(vk::SHADER_UNUSED_KHR),
-        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
-            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
-            .general_shader(1)
-            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
-            .any_hit_shader(vk::SHADER_UNUSED_KHR)
-            .intersection_shader(vk::SHADER_UNUSED_KHR),
-        *vk::RayTracingShaderGroupCreateInfoKHR::builder()
-            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-            .closest_hit_shader(2)
-            .any_hit_shader(vk::SHADER_UNUSED_KHR)
-            .intersection_shader(vk::SHADER_UNUSED_KHR),
+        shader_group_for_type(0, vk::ShaderGroupShaderKHR::GENERAL),
+        shader_group_for_type(1, vk::ShaderGroupShaderKHR::CLOSEST_HIT),
+        shader_group_for_type(2, vk::ShaderGroupShaderKHR::GENERAL),
+        shader_group_for_type(3, vk::ShaderGroupShaderKHR::GENERAL),
     ];
 
     let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
@@ -491,22 +488,11 @@ fn main() -> anyhow::Result<()> {
         ray_tracing_props
     };
 
-    // Copied from:
-    // https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/base/VulkanTools.cpp#L383
-    fn aligned_size(value: u32, alignment: u32) -> u32 {
-        (value + alignment - 1) & !(alignment - 1)
-    }
-
-    let handle_size = ray_tracing_props.shader_group_handle_size as usize;
-    let handle_size_aligned = aligned_size(
-        ray_tracing_props.shader_group_handle_size,
-        ray_tracing_props.shader_group_handle_alignment,
-    );
+    let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
     let num_groups = shader_groups.len() as u32;
     let shader_binding_table_size = num_groups * handle_size_aligned;
 
-    // We have to fetch the shader group handles as bytes ... then upload them as buffers.
-    // Okay. FIne. Sure.
+    // Fetch the SBT handles and upload them to buffers.
 
     let group_handles = unsafe {
         pipeline_loader.get_ray_tracing_shader_group_handles(
@@ -517,35 +503,36 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
-    let alignment = ray_tracing_props.shader_group_base_alignment as u64;
-    let handle_size_aligned = handle_size_aligned as u64;
+    let raygen_sbt = ShaderBindingTable::new(
+        &group_handles,
+        "raygen shader binding table",
+        &ray_tracing_props,
+        0,
+        1,
+        &device,
+        &mut allocator,
+    )?;
 
-    let shader_binding_tables = [
-        ShaderBindingTable::new(
-            &group_handles[..handle_size],
-            "raygen shader binding table",
-            alignment,
-            handle_size_aligned,
-            &device,
-            &mut allocator,
-        )?,
-        ShaderBindingTable::new(
-            &group_handles[handle_size..handle_size * 2],
-            "miss shader binding table",
-            alignment,
-            handle_size_aligned,
-            &device,
-            &mut allocator,
-        )?,
-        ShaderBindingTable::new(
-            &group_handles[handle_size * 2..],
-            "closest hit shader binding table",
-            alignment,
-            handle_size_aligned,
-            &device,
-            &mut allocator,
-        )?,
-    ];
+    let closest_hit_sbt = ShaderBindingTable::new(
+        &group_handles,
+        "closest hit shader binding table",
+        &ray_tracing_props,
+        1,
+        1,
+        &device,
+        &mut allocator,
+    )?;
+
+    // 2 miss shaders
+    let miss_sbt = ShaderBindingTable::new(
+        &group_handles,
+        "miss shader binding table",
+        &ray_tracing_props,
+        2,
+        2,
+        &device,
+        &mut allocator,
+    )?;
 
     // Create swapchain
 
@@ -726,7 +713,7 @@ fn main() -> anyhow::Result<()> {
                                 pipeline_layout,
                                 vk::ShaderStageFlags::RAYGEN_KHR,
                                 0,
-                                bytemuck::bytes_of(&CameraProperties {
+                                bytemuck::bytes_of(&PushConstants {
                                     view_inverse: view_matrix.inversed(),
                                     proj_inverse: perspective_matrix.inversed(),
                                 }),
@@ -734,9 +721,9 @@ fn main() -> anyhow::Result<()> {
 
                             pipeline_loader.cmd_trace_rays(
                                 command_buffer,
-                                &shader_binding_tables[0].address_region,
-                                &shader_binding_tables[1].address_region,
-                                &shader_binding_tables[2].address_region,
+                                &raygen_sbt.address_region,
+                                &miss_sbt.address_region,
+                                &closest_hit_sbt.address_region,
                                 // We don't use callable shaders here
                                 &Default::default(),
                                 extent.width,
@@ -851,14 +838,16 @@ fn main() -> anyhow::Result<()> {
                 device.device_wait_idle()?;
 
                 tlas.buffer.cleanup(&mut allocator)?;
-                cube_blas.buffer.cleanup(&mut allocator)?;
+                plane_buffers.cleanup(&mut allocator)?;
                 plane_blas.buffer.cleanup(&mut allocator)?;
                 tori_blas.buffer.cleanup(&mut allocator)?;
+                tori_buffers.cleanup(&mut allocator)?;
                 storage_image.cleanup(&mut allocator)?;
+                uniform_buffer.cleanup(&mut allocator)?;
 
-                for table in &shader_binding_tables {
-                    table.buffer.cleanup(&mut allocator)?;
-                }
+                raygen_sbt.buffer.cleanup(&mut allocator)?;
+                miss_sbt.buffer.cleanup(&mut allocator)?;
+                closest_hit_sbt.buffer.cleanup(&mut allocator)?;
 
                 Ok(())
             };
@@ -871,55 +860,17 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
-struct Syncronisation {
-    present_complete_semaphore: vk::Semaphore,
-    rendering_complete_semaphore: vk::Semaphore,
-    draw_commands_fence: vk::Fence,
-}
-
-impl Syncronisation {
-    fn new(device: &ash::Device) -> anyhow::Result<Self> {
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
-
-        Ok(Self {
-            present_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
-            rendering_complete_semaphore: unsafe {
-                device.create_semaphore(&semaphore_info, None)
-            }?,
-            draw_commands_fence: unsafe { device.create_fence(&fence_info, None) }?,
-        })
-    }
-
-    unsafe fn _cleanup(&self, device: &ash::Device) {
-        device.destroy_semaphore(self.present_complete_semaphore, None);
-        device.destroy_semaphore(self.rendering_complete_semaphore, None);
-        device.destroy_fence(self.draw_commands_fence, None)
-    }
-}
-
-struct Swapchain {
-    swapchain: vk::SwapchainKHR,
-    images: Vec<vk::Image>,
-}
-
-impl Swapchain {
-    fn new(
-        swapchain_loader: &SwapchainLoader,
-        info: vk::SwapchainCreateInfoKHR,
-    ) -> anyhow::Result<Self> {
-        let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }?;
-        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
-
-        Ok(Self { images, swapchain })
-    }
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+struct PushConstants {
+    view_inverse: Mat4,
+    proj_inverse: Mat4,
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]
-struct CameraProperties {
-    view_inverse: Mat4,
-    proj_inverse: Mat4,
+struct Uniforms {
+    sun_dir: Vec3,
 }
 
 fn build_blas(
@@ -1052,13 +1003,19 @@ fn tlas_instance(
     device: &ash::Device,
     custom_index: u32,
 ) -> vk::AccelerationStructureInstanceKHR {
+    fn merge_fields(lower: u32, upper: u8) -> u32 {
+        ((upper as u32) << 24) | lower
+    }
+
     vk::AccelerationStructureInstanceKHR {
         transform: vk::TransformMatrixKHR {
             matrix: flatted_matrix(transform),
         },
-        instance_custom_index_and_mask: custom_index | (0xFF << 24),
-        instance_shader_binding_table_record_offset_and_flags:
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() << 24,
+        instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
+        instance_shader_binding_table_record_offset_and_flags: merge_fields(
+            0,
+            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+        ),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
             device_handle: blas.buffer.device_address(&device),
         },
@@ -1099,35 +1056,4 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 struct Vertex {
     pos: Vec3,
     normal: Vec3,
-}
-
-fn vertex(a: f32, b: f32, c: f32) -> Vertex {
-    Vertex {
-        pos: Vec3::new(a, b, c) * 2.0 - Vec3::broadcast(1.0),
-        normal: Vec3::unit_y(),
-    }
-}
-
-fn vertices() -> [Vertex; 8] {
-    [
-        vertex(0.0, 0.0, 0.0),
-        vertex(1.0, 0.0, 0.0),
-        vertex(0.0, 1.0, 0.0),
-        vertex(1.0, 1.0, 0.0),
-        vertex(0.0, 0.0, 1.0),
-        vertex(1.0, 0.0, 1.0),
-        vertex(0.0, 1.0, 1.0),
-        vertex(1.0, 1.0, 1.0),
-    ]
-}
-
-fn indices() -> [u16; 36] {
-    [
-        0, 1, 2, 2, 1, 3, // bottom
-        3, 1, 5, 3, 5, 7, // front
-        0, 2, 4, 4, 2, 6, // back
-        1, 0, 4, 1, 4, 5, // left
-        2, 3, 6, 6, 3, 7, // right
-        5, 4, 6, 5, 6, 7, // top
-    ]
 }

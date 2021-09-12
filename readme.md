@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/tori.png)
+![](screenshots/stencil_shadows.png)
 
 ## Acknowledgements and sources
 

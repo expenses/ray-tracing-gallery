@@ -3,8 +3,15 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
 
+layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
+layout(location = 1) rayPayloadEXT bool shadowed;
 hitAttributeEXT vec2 attribs;
+
+layout(set = 0, binding = 4) uniform Uniforms {
+    vec3 sun_dir;
+};
 
 struct Vertex {
     vec3 pos;
@@ -52,5 +59,19 @@ void main()
 
     vec3 normal = normalize(interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords));
 
+    float lighting = max(dot(normal, sun_dir), 0.0);
+
+    // Shadow casting
+	float tmin = 0.001;
+	float tmax = 10000.0;
+	vec3 origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+	shadowed = true;  
+    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
+	traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xFF, 1, 0, 1, origin, tmin, sun_dir, tmax, 1);
+	
+    lighting *= float(!shadowed);
+
     hitValue = (normal * 0.5) + 0.5;
+
+    hitValue *= (lighting * 0.6) + 0.4;
 }

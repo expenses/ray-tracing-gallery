@@ -1,10 +1,12 @@
-use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
+use ash::extensions::khr::{
+    AccelerationStructure as AccelerationStructureLoader, Swapchain as SwapchainLoader,
+};
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDesc};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::util_functions::set_image_layout;
+use crate::util_functions::{sbt_aligned_size, set_image_layout};
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -208,26 +210,34 @@ pub struct ShaderBindingTable {
 
 impl ShaderBindingTable {
     pub fn new(
-        bytes: &[u8],
+        group_handles: &[u8],
         name: &str,
-        alignment: u64,
-        handle_size_aligned: u64,
+        props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
+        offset: u32,
+        num_shaders: u64,
         device: &ash::Device,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
+        let handle_size_aligned = sbt_aligned_size(props);
+
+        let offset = (handle_size_aligned * offset) as usize;
+        let size = handle_size_aligned as usize * num_shaders as usize;
+
+        let slice = &group_handles[offset..offset + size];
+
         let buffer = Buffer::new_with_custom_alignment(
-            bytes,
+            slice,
             name,
             vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            alignment,
+            props.shader_group_base_alignment as u64,
             allocator,
         )?;
 
         let address_region = vk::StridedDeviceAddressRegionKHR::builder()
             .device_address(buffer.device_address(device))
-            .stride(handle_size_aligned)
-            .size(handle_size_aligned);
+            .stride(handle_size_aligned as u64)
+            .size(handle_size_aligned as u64 * num_shaders);
 
         Ok(Self {
             buffer,
@@ -624,9 +634,53 @@ impl ModelBuffers {
         })
     }
 
-    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        self.vertices.cleanup_and_drop(allocator)?;
-        self.indices.cleanup_and_drop(allocator)?;
+    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        self.vertices.cleanup(allocator)?;
+        self.indices.cleanup(allocator)?;
         Ok(())
+    }
+}
+
+pub struct Syncronisation {
+    pub present_complete_semaphore: vk::Semaphore,
+    pub rendering_complete_semaphore: vk::Semaphore,
+    pub draw_commands_fence: vk::Fence,
+}
+
+impl Syncronisation {
+    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+
+        Ok(Self {
+            present_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
+            rendering_complete_semaphore: unsafe {
+                device.create_semaphore(&semaphore_info, None)
+            }?,
+            draw_commands_fence: unsafe { device.create_fence(&fence_info, None) }?,
+        })
+    }
+
+    unsafe fn _cleanup(&self, device: &ash::Device) {
+        device.destroy_semaphore(self.present_complete_semaphore, None);
+        device.destroy_semaphore(self.rendering_complete_semaphore, None);
+        device.destroy_fence(self.draw_commands_fence, None)
+    }
+}
+
+pub struct Swapchain {
+    pub swapchain: vk::SwapchainKHR,
+    pub images: Vec<vk::Image>,
+}
+
+impl Swapchain {
+    pub fn new(
+        swapchain_loader: &SwapchainLoader,
+        info: vk::SwapchainCreateInfoKHR,
+    ) -> anyhow::Result<Self> {
+        let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }?;
+        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
+
+        Ok(Self { images, swapchain })
     }
 }

@@ -452,3 +452,51 @@ pub fn load_gltf(
 
     ModelBuffers::new(&vertices, &indices, name, allocator)
 }
+
+pub fn shader_group_for_type(
+    index: u32,
+    ty: vk::ShaderGroupShaderKHR,
+) -> vk::RayTracingShaderGroupCreateInfoKHR {
+    let mut info = vk::RayTracingShaderGroupCreateInfoKHR {
+        general_shader: vk::SHADER_UNUSED_KHR,
+        closest_hit_shader: vk::SHADER_UNUSED_KHR,
+        any_hit_shader: vk::SHADER_UNUSED_KHR,
+        intersection_shader: vk::SHADER_UNUSED_KHR,
+        ..Default::default()
+    };
+
+    match ty {
+        vk::ShaderGroupShaderKHR::GENERAL => {
+            info.ty = vk::RayTracingShaderGroupTypeKHR::GENERAL;
+            info.general_shader = index;
+        }
+        vk::ShaderGroupShaderKHR::CLOSEST_HIT => {
+            info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
+            info.closest_hit_shader = index;
+        }
+        vk::ShaderGroupShaderKHR::ANY_HIT => {
+            info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
+            info.any_hit_shader = index;
+        }
+        vk::ShaderGroupShaderKHR::INTERSECTION => {
+            info.ty = vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP;
+            info.intersection_shader = index;
+        }
+        _ => {}
+    }
+
+    info
+}
+
+pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR) -> u32 {
+    // Copied from:
+    // https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/base/VulkanTools.cpp#L383
+    fn aligned_size(value: u32, alignment: u32) -> u32 {
+        (value + alignment - 1) & !(alignment - 1)
+    }
+
+    aligned_size(
+        props.shader_group_handle_size,
+        props.shader_group_handle_alignment,
+    )
+}
