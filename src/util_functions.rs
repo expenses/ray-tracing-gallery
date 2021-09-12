@@ -16,7 +16,7 @@ pub fn select_physical_device(
 ) -> anyhow::Result<Option<(vk::PhysicalDevice, u32, vk::SurfaceFormatKHR)>> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
 
-    println!(
+    log::info!(
         "Found {} device{}",
         physical_devices.len(),
         if physical_devices.len() == 1 { "" } else { "s" }
@@ -27,10 +27,13 @@ pub fn select_physical_device(
         .filter_map(|physical_device| unsafe {
             let properties = instance.get_physical_device_properties(physical_device);
 
-            println!(
-                "\nChecking Device: {:?}",
+            log::info!("");
+            log::info!(
+                "Checking Device: {:?}",
                 cstr_from_array(&properties.device_name)
             );
+
+            log::debug!("Api version: {}", properties.api_version);
 
             let queue_family = instance
                 .get_physical_device_queue_family_properties(physical_device)
@@ -46,7 +49,7 @@ pub fn select_physical_device(
                 })
                 .map(|queue_family| queue_family as u32);
 
-            println!(
+            log::info!(
                 "  Checking for a graphics queue family: {}",
                 tick(queue_family.is_some())
             );
@@ -69,7 +72,7 @@ pub fn select_physical_device(
                 })
                 .or_else(|| surface_formats.get(0));
 
-            println!(
+            log::info!(
                 "  Checking for an appropriate surface format: {}",
                 tick(surface_format.is_some())
             );
@@ -79,7 +82,7 @@ pub fn select_physical_device(
                 None => return None,
             };
 
-            println!("  Checking for required extensions:");
+            log::info!("  Checking for required extensions:");
 
             let supported_device_extensions = instance
                 .enumerate_device_extension_properties(physical_device)
@@ -92,13 +95,20 @@ pub fn select_physical_device(
                     &cstr_from_array(&extension.extension_name) == required_extension
                 });
 
-                println!(
+                log::info!(
                     "    * {:?}: {}",
                     required_extension,
                     tick(device_has_extension)
                 );
 
                 has_required_extensions &= device_has_extension;
+            }
+
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!("  Supported extensions:");
+                supported_device_extensions.iter().for_each(|extension| {
+                    log::debug!("    * {:?}", &cstr_from_array(&extension.extension_name));
+                });
             }
 
             if !has_required_extensions {
@@ -113,12 +123,12 @@ pub fn select_physical_device(
             _ => 0,
         });
 
-    println!();
+    log::info!("");
 
     Ok(match selection {
         Some((physical_device, queue_family, surface_format, properties)) => {
             unsafe {
-                println!(
+                log::info!(
                     "Using device {:?}",
                     cstr_from_array(&properties.device_name)
                 );

@@ -29,7 +29,23 @@ use util_functions::{
 };
 
 fn main() -> anyhow::Result<()> {
-    simple_logger::SimpleLogger::new().init()?;
+    {
+        use simplelog::*;
+
+        CombinedLogger::init(vec![
+            TermLogger::new(
+                LevelFilter::Info,
+                Config::default(),
+                TerminalMode::Mixed,
+                ColorChoice::Auto,
+            ),
+            WriteLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                std::fs::File::create("run.log")?,
+            ),
+        ])?;
+    }
 
     let event_loop = EventLoop::new();
 
@@ -40,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     let entry = unsafe { ash::Entry::new() }?;
 
     // Vulkan 1.2, hell yea
-    let api_version = vk::make_api_version(0, 1, 2, 0);
+    let api_version = vk::API_VERSION_1_2;
 
     // https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Instance
     let app_info = vk::ApplicationInfo::builder()
@@ -94,7 +110,7 @@ fn main() -> anyhow::Result<()> {
         match select_physical_device(&instance, &device_extensions, &surface_loader, surface)? {
             Some(selection) => selection,
             None => {
-                println!("No suitable device found 💔. Exiting program");
+                log::info!("No suitable device found 💔. Exiting program");
                 return Ok(());
             }
         };
@@ -630,7 +646,7 @@ fn main() -> anyhow::Result<()> {
                 };
 
                 if let Err(resize_error) = resize() {
-                    eprintln!("Error while resizing: {}", resize_error);
+                    log::error!("Error while resizing: {}", resize_error);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -827,10 +843,10 @@ fn main() -> anyhow::Result<()> {
                     };
 
                     if let Err(render_error) = render() {
-                        eprintln!("Error while rendering or presenting: {}", render_error);
+                        log::error!("Error while rendering or presenting: {}", render_error);
                     }
                 }
-                Err(error) => println!("Next frame error: {:?}", error),
+                Err(error) => log::warn!("Next frame error: {:?}", error),
             }
         }
         Event::LoopDestroyed => unsafe {
@@ -853,7 +869,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             if let Err(cleanup_error) = cleanup() {
-                eprintln!("Clean up error: {}", cleanup_error);
+                log::error!("Clean up error: {}", cleanup_error);
             }
         },
         _ => {}
@@ -1047,7 +1063,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
     let severity = format!("{:?}", message_severity).to_lowercase();
     let ty = format!("{:?}", message_type).to_lowercase();
-    println!("[Debug Msg][{}][{}] {:?}", severity, ty, message);
+    log::info!("[Debug Msg][{}][{}] {:?}", severity, ty, message);
     vk::FALSE
 }
 

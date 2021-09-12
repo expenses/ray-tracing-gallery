@@ -13,6 +13,6 @@ bytemuck = { version = "1.7.2", features = ["derive"] }
 gltf = { version = "0.16.0", default-features = false, features = ["utils"] }
 gpu-allocator = "0.9.0"
 log = "0.4.14"
-simple_logger = "1.13.0"
+simplelog = "0.10.0"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
