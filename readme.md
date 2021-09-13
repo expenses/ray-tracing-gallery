@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/stencil_shadows.png)
+![](screenshots/lain.png)
 
 ## Acknowledgements and sources
 

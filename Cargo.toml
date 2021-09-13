@@ -12,7 +12,11 @@ ash-window = "0.7.0"
 bytemuck = { version = "1.7.2", features = ["derive"] }
 gltf = { version = "0.16.0", default-features = false, features = ["utils"] }
 gpu-allocator = "0.9.0"
+image = { version = "0.23.14", features = ["png"], default-features = false }
 log = "0.4.14"
 simplelog = "0.10.0"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
+
+[profile.dev.package."*"]
+opt-level = 3

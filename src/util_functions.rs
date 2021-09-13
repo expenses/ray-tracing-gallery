@@ -4,9 +4,10 @@ use ash::vk;
 use gpu_allocator::vulkan::AllocationCreateDesc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use ultraviolet::Vec3;
 
-use crate::util_structs::{Allocator, Buffer, CStrList, Image, ModelBuffers};
+use crate::util_structs::{
+    Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager, ModelBuffers,
+};
 
 pub fn select_physical_device(
     instance: &ash::Instance,
@@ -168,24 +169,26 @@ pub fn load_shader_module(
         .name(CStr::from_bytes_with_nul(b"main\0")?))
 }
 
-pub fn load_rgba_image_from_bytes(
+pub fn load_rgba_png_image_from_bytes(
     bytes: &[u8],
     name: &str,
-    width: u32,
-    height: u32,
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
 ) -> anyhow::Result<(Image, Buffer)> {
+    let decoded_image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)?;
+
+    let rgba_image = decoded_image.to_rgba8();
+
     let staging_buffer = Buffer::new(
-        bytes,
+        &rgba_image,
         &format!("{} staging buffer", name),
         vk::BufferUsageFlags::TRANSFER_SRC,
         allocator,
     )?;
 
     let extent = vk::Extent3D {
-        width,
-        height,
+        width: rgba_image.width(),
+        height: rgba_image.height(),
         depth: 1,
     };
 
@@ -193,7 +196,7 @@ pub fn load_rgba_image_from_bytes(
         allocator.device.create_image(
             &vk::ImageCreateInfo::builder()
                 .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(vk::Format::R8G8B8A8_UNORM)
                 .extent(extent)
                 .mip_levels(1)
                 .array_layers(1)
@@ -228,40 +231,30 @@ pub fn load_rgba_image_from_bytes(
             &vk::ImageViewCreateInfo::builder()
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(vk::Format::R8G8B8A8_UNORM)
                 .subresource_range(*subresource_range),
             None,
         )
     }?;
 
-    unsafe {
-        allocator.device.cmd_pipeline_barrier(
-            command_buffer,
-            // See
-            // https://www.khronos.org/registry/vulkan/specs/1.0/html/vkspec.html#synchronization-access-types-supported
-            // https://vulkan-tutorial.com/Texture_mapping/Images
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[*vk::ImageMemoryBarrier::builder()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(image)
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .subresource_range(*subresource_range)],
-        );
+    set_image_layout(
+        &allocator.device,
+        command_buffer,
+        image,
+        vk::ImageLayout::UNDEFINED,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        *subresource_range,
+    );
 
+    unsafe {
         allocator.device.cmd_copy_buffer_to_image(
             command_buffer,
             staging_buffer.buffer,
             image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             &[*vk::BufferImageCopy::builder()
-                .buffer_row_length(width)
-                .buffer_image_height(height)
+                .buffer_row_length(extent.width)
+                .buffer_image_height(extent.height)
                 .image_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     mip_level: 0,
@@ -270,23 +263,16 @@ pub fn load_rgba_image_from_bytes(
                 })
                 .image_extent(extent)],
         );
-
-        allocator.device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[*vk::ImageMemoryBarrier::builder()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(image)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .subresource_range(*subresource_range)],
-        );
     }
+
+    set_image_layout(
+        &allocator.device,
+        command_buffer,
+        image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        *subresource_range,
+    );
 
     Ok((
         Image {
@@ -420,8 +406,10 @@ pub fn set_image_layout(
 pub fn load_gltf(
     bytes: &[u8],
     name: &str,
-    size_modifier: f32,
+    fallback_image_index: u32,
     allocator: &mut Allocator,
+    image_manager: &mut ImageManager,
+    command_buffer_and_queue: &CommandBufferAndQueue,
 ) -> anyhow::Result<ModelBuffers> {
     let gltf = gltf::Gltf::from_slice(bytes)?;
 
@@ -450,17 +438,69 @@ pub fn load_gltf(
 
             let positions = reader.read_positions().unwrap();
             let normals = reader.read_normals().unwrap();
+            let uvs = reader.read_tex_coords(0).unwrap().into_f32();
 
-            positions.zip(normals).for_each(|(position, normal)| {
-                vertices.push(Vertex {
-                    pos: Vec3::from(position) * size_modifier,
-                    normal: normal.into(),
-                });
-            })
+            positions
+                .zip(normals)
+                .zip(uvs)
+                .for_each(|((position, normal), uv)| {
+                    vertices.push(Vertex {
+                        pos: position.into(),
+                        normal: normal.into(),
+                        uv: uv.into(),
+                    });
+                })
         }
     }
 
-    ModelBuffers::new(&vertices, &indices, name, allocator)
+    let mut image_index = || -> Option<anyhow::Result<u32>> {
+        let material = gltf.materials().next()?;
+
+        let diffuse_texture = material
+            .pbr_metallic_roughness()
+            .base_color_texture()?
+            .texture();
+
+        let image_view = match diffuse_texture.source().source() {
+            gltf::image::Source::View { view, .. } => view,
+            _ => return None,
+        };
+
+        let image_start = image_view.offset();
+        let image_end = image_start + image_view.length();
+        let image_bytes = &buffer_blob[image_start..image_end];
+
+        if let Err(error) = command_buffer_and_queue.begin(&allocator.device) {
+            return Some(Err(error.into()));
+        }
+
+        let (image, staging_buffer) = match load_rgba_png_image_from_bytes(
+            image_bytes,
+            &format!("{} image", name),
+            command_buffer_and_queue.buffer,
+            allocator,
+        ) {
+            Ok((image, staging_buffer)) => (image, staging_buffer),
+            Err(error) => return Some(Err(error)),
+        };
+
+        if let Err(error) = command_buffer_and_queue.finish_block_and_reset(&allocator.device) {
+            return Some(Err(error.into()));
+        }
+
+        if let Err(error) = staging_buffer.cleanup_and_drop(allocator) {
+            return Some(Err(error));
+        }
+
+        Some(Ok(image_manager.push_image(image)))
+    };
+
+    let image_index = match image_index() {
+        Some(result) => result?,
+        None => fallback_image_index,
+    };
+
+    ModelBuffers::new(&vertices, &indices, image_index, name, allocator)
 }
 
 pub fn shader_group_for_type(

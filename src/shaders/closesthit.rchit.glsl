@@ -19,12 +19,17 @@ layout(set = 0, binding = 3) uniform Uniforms {
 struct Vertex {
     vec3 pos;
     vec3 normal;
+    vec2 uv;
 };
 
 struct ModelInfo {
     uint64_t vertex_buffer_address;
     uint64_t index_buffer_address;
+    uint texture_index;
 };
+
+// Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
+// https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
 
 layout(buffer_reference, scalar) buffer Vertices {
     float inner[];
@@ -38,22 +43,29 @@ layout(set = 0, binding = 2) buffer ModelInformations {
     ModelInfo model_info[];
 };
 
+layout(set = 0, binding = 4) uniform sampler2D textures[];
+
 Vertex load_vertex(uint index, ModelInfo info) {
     Vertex vertex;
  
     Vertices vertices = Vertices(info.vertex_buffer_address);
 
-    const uint VERTEX_SIZE = 6;
+    const uint VERTEX_SIZE = 8;
 
     uint offset = index * VERTEX_SIZE;
 
     vertex.pos = vec3(vertices.inner[offset], vertices.inner[offset + 1], vertices.inner[offset + 2]);
     vertex.normal = vec3(vertices.inner[offset + 3], vertices.inner[offset + 4], vertices.inner[offset + 5]);
+    vertex.uv = vec2(vertices.inner[offset + 6], vertices.inner[offset + 7]);
 
     return vertex;
 }
 
 vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
+    return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
+}
+
+vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
@@ -89,8 +101,7 @@ float shadow_multiplier(vec2 rng) {
     return float(!shadowed);
 }
 
-void main()
-{
+void main() {
     uint model_index = gl_InstanceCustomIndexEXT;
     ModelInfo info = model_info[model_index];
 
@@ -106,7 +117,15 @@ void main()
     Vertex v1 = load_vertex(index.y, info);
     Vertex v2 = load_vertex(index.z, info);
 
-    vec3 normal = normalize(interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords));
+    vec3 interpolated_normal = interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords);
+
+    vec3 normal = normalize(vec3(interpolated_normal * gl_WorldToObjectEXT));
+
+    vec2 uv = interpolate(v0.uv, v1.uv, v2.uv, barycentric_coords);
+
+    // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
+    // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
+    vec3 colour = texture(textures[nonuniformEXT(info.texture_index)], uv).rgb;
 
     float lighting = max(dot(normal, sun_dir), 0.0);
 
@@ -114,7 +133,7 @@ void main()
 	
     lighting *= shadow_sum;
 
-    hitValue = (normal * 0.5) + 0.5;
+    hitValue = colour;
 
     hitValue *= (lighting * 0.6) + 0.4;
 }
