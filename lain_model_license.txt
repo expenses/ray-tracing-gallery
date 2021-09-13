@@ -1,0 +1,11 @@
+Model Information:
+* title:	Lain
+* source:	https://sketchfab.com/3d-models/lain-bf255be16da34df08d48abb5443a6706
+* author:	woopoodle (https://sketchfab.com/woopoodle)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Lain" (https://sketchfab.com/3d-models/lain-bf255be16da34df08d48abb5443a6706) by woopoodle (https://sketchfab.com/woopoodle) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
