@@ -47,8 +47,8 @@ impl Allocator {
                     log_memory_information: false,
                     log_leaks_on_shutdown: true,
                     store_stack_traces: false,
-                    log_allocations: false,
-                    log_frees: false,
+                    log_allocations: true,
+                    log_frees: true,
                     log_stack_traces: false,
                 },
                 // Needed for getting buffer device addresses
@@ -93,7 +93,7 @@ impl AccelerationStructure {
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
         offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
-        command_buffer_and_queue: &CommandBufferAndQueue,
+        command_buffer: vk::CommandBuffer,
     ) -> anyhow::Result<Self> {
         log::info!("Creating a {} of {} bytes", name, size);
 
@@ -126,17 +126,13 @@ impl AccelerationStructure {
                 device_address: scratch_buffer.device_address(device),
             });
 
-        command_buffer_and_queue.begin(device)?;
-
         unsafe {
             loader.cmd_build_acceleration_structures(
-                command_buffer_and_queue.buffer,
+                command_buffer,
                 &[*geometry_info],
                 &[&[*offset]],
             );
         }
-
-        command_buffer_and_queue.finish_block_and_reset(device)?;
 
         Ok(Self {
             buffer,
@@ -733,6 +729,7 @@ impl CommandBufferAndQueue {
         Ok(CommandBufferAndQueueRaii {
             inner: self,
             device,
+            already_finished: false,
         })
     }
 
@@ -761,6 +758,7 @@ impl CommandBufferAndQueue {
 pub struct CommandBufferAndQueueRaii<'a> {
     inner: &'a mut CommandBufferAndQueue,
     device: ash::Device,
+    already_finished: bool,
 }
 
 impl<'a> CommandBufferAndQueueRaii<'a> {
@@ -768,13 +766,22 @@ impl<'a> CommandBufferAndQueueRaii<'a> {
         self.inner.buffer
     }
 
-    pub fn finish(self) -> anyhow::Result<()> {
+    pub fn finish(mut self) -> anyhow::Result<()> {
+        self.already_finished = true;
         self.inner.finish_block_and_reset(&self.device)
     }
 }
 
 impl<'a> Drop for CommandBufferAndQueueRaii<'a> {
     fn drop(&mut self) {
+        log::debug!("Dropping RAII Command Buffer");
+
+        if self.already_finished {
+            return;
+        }
+
+        log::warn!("RAII Command Buffer not finished explicitly.");
+
         if let Err(error) = self.inner.finish_block_and_reset(&self.device) {
             log::error!("Error while submitting command buffer to queue: {}", error);
         }

@@ -190,9 +190,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let as_loader = AccelerationStructureLoader::new(&instance, &device);
-
-    // Create the BLASes
+    // Load images and models
 
     let mut image_manager = ImageManager::new(&device)?;
 
@@ -247,23 +245,9 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
-    init_command_buffer.finish()?;
+    // Create the BLASes
 
-    {
-        for staging_buffer in image_staging_buffers {
-            staging_buffer.cleanup_and_drop(&mut allocator)?;
-        }
-
-        for staging_buffer in [
-            plane_staging_buffer,
-            tori_staging_buffer,
-            lain_staging_buffer,
-        ] {
-            if let Some(staging_buffer) = staging_buffer {
-                staging_buffer.cleanup_and_drop(&mut allocator)?;
-            }
-        }
-    }
+    let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
     let mut scratch_buffer = ScratchBuffer::new();
 
@@ -274,7 +258,7 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
     let tori_blas = build_blas(
@@ -284,7 +268,7 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
     let lain_blas = build_blas(
@@ -294,7 +278,7 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
     // Allocate the instance buffer
@@ -328,6 +312,10 @@ fn main() -> anyhow::Result<()> {
 
     // Create the tlas
 
+    init_command_buffer.finish()?;
+
+    let tlas_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
+
     let tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
@@ -335,11 +323,30 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
-        &command_buffer_and_queue,
+        tlas_command_buffer.buffer(),
     )?;
 
-    instances_buffer.cleanup_and_drop(&mut allocator)?;
-    scratch_buffer.cleanup_and_drop(&mut allocator)?;
+    tlas_command_buffer.finish()?;
+
+    // Clean up from initialisation.
+    {
+        for staging_buffer in image_staging_buffers {
+            staging_buffer.cleanup_and_drop(&mut allocator)?;
+        }
+
+        for staging_buffer in [
+            plane_staging_buffer,
+            tori_staging_buffer,
+            lain_staging_buffer,
+        ] {
+            if let Some(staging_buffer) = staging_buffer {
+                staging_buffer.cleanup_and_drop(&mut allocator)?;
+            }
+        }
+
+        instances_buffer.cleanup_and_drop(&mut allocator)?;
+        scratch_buffer.cleanup_and_drop(&mut allocator)?;
+    }
 
     // Create storage image
 
@@ -973,7 +980,7 @@ fn build_blas(
     as_loader: &AccelerationStructureLoader,
     scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
-    command_buffer_and_queue: &CommandBufferAndQueue,
+    command_buffer: vk::CommandBuffer,
 ) -> anyhow::Result<AccelerationStructure> {
     let geometry = vk::AccelerationStructureGeometryKHR::builder()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
@@ -1014,7 +1021,7 @@ fn build_blas(
         scratch_buffer,
         geometry_info,
         offset,
-        command_buffer_and_queue,
+        command_buffer,
     )?;
 
     Ok(blas)
@@ -1027,7 +1034,7 @@ fn build_tlas(
     as_loader: &AccelerationStructureLoader,
     allocator: &mut Allocator,
     scratch_buffer: &mut ScratchBuffer,
-    command_buffer_and_queue: &CommandBufferAndQueue,
+    command_buffer: vk::CommandBuffer,
 ) -> anyhow::Result<AccelerationStructure> {
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
         vk::DeviceOrHostAddressConstKHR {
@@ -1074,7 +1081,7 @@ fn build_tlas(
         scratch_buffer,
         geometry_info,
         offset,
-        command_buffer_and_queue,
+        command_buffer,
     )
 }
 
