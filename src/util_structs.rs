@@ -684,11 +684,11 @@ impl ImageManager {
         index
     }
 
-    pub fn write_descriptor_set<'a>(
-        &'a self,
+    pub fn write_descriptor_set(
+        &self,
         set: vk::DescriptorSet,
         binding: u32,
-    ) -> vk::WriteDescriptorSetBuilder<'a> {
+    ) -> vk::WriteDescriptorSetBuilder {
         vk::WriteDescriptorSet::builder()
             .dst_set(set)
             .dst_binding(binding)
@@ -724,6 +724,18 @@ impl CommandBufferAndQueue {
         Ok(())
     }
 
+    pub fn begin_buffer_guard(
+        &mut self,
+        device: ash::Device,
+    ) -> anyhow::Result<CommandBufferAndQueueRaii> {
+        self.begin(&device)?;
+
+        Ok(CommandBufferAndQueueRaii {
+            inner: self,
+            device,
+        })
+    }
+
     pub fn finish_block_and_reset(&self, device: &ash::Device) -> anyhow::Result<()> {
         unsafe {
             device.end_command_buffer(self.buffer)?;
@@ -742,6 +754,29 @@ impl CommandBufferAndQueue {
             device.reset_command_pool(self.pool, vk::CommandPoolResetFlags::empty())?;
 
             Ok(())
+        }
+    }
+}
+
+pub struct CommandBufferAndQueueRaii<'a> {
+    inner: &'a mut CommandBufferAndQueue,
+    device: ash::Device,
+}
+
+impl<'a> CommandBufferAndQueueRaii<'a> {
+    pub fn buffer(&self) -> vk::CommandBuffer {
+        self.inner.buffer
+    }
+
+    pub fn finish(self) -> anyhow::Result<()> {
+        self.inner.finish_block_and_reset(&self.device)
+    }
+}
+
+impl<'a> Drop for CommandBufferAndQueueRaii<'a> {
+    fn drop(&mut self) {
+        if let Err(error) = self.inner.finish_block_and_reset(&self.device) {
+            log::error!("Error while submitting command buffer to queue: {}", error);
         }
     }
 }

@@ -158,8 +158,6 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
-    let queue = unsafe { device.get_device_queue(queue_family, 0) };
-
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
@@ -168,24 +166,28 @@ fn main() -> anyhow::Result<()> {
         queue_family,
     )?;
 
-    let command_pool = unsafe {
-        device.create_command_pool(
-            &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
-            None,
-        )
-    }?;
+    let mut command_buffer_and_queue = {
+        let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
-    let cmd_buf_allocate_info = vk::CommandBufferAllocateInfo::builder()
-        .command_pool(command_pool)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(1);
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
+                None,
+            )
+        }?;
 
-    let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
+        let cmd_buf_allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
 
-    let command_buffer_and_queue = CommandBufferAndQueue {
-        buffer: command_buffer,
-        queue,
-        pool: command_pool,
+        let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
+
+        CommandBufferAndQueue {
+            buffer: command_buffer,
+            queue,
+            pool: command_pool,
+        }
     };
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
@@ -194,13 +196,13 @@ fn main() -> anyhow::Result<()> {
 
     let mut image_manager = ImageManager::new(&device)?;
 
-    {
-        command_buffer_and_queue.begin(&device)?;
+    let init_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
+    let image_staging_buffers = {
         let (green_texture, green_texture_staging_buffer) = load_rgba_png_image_from_bytes(
             include_bytes!("../green.png"),
             "green texture",
-            command_buffer,
+            init_command_buffer.buffer(),
             &mut allocator,
         )?;
 
@@ -209,28 +211,61 @@ fn main() -> anyhow::Result<()> {
         let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
             include_bytes!("../pink.png"),
             "pink texture",
-            command_buffer,
+            init_command_buffer.buffer(),
             &mut allocator,
         )?;
 
         image_manager.push_image(pink_texture);
 
-        command_buffer_and_queue.finish_block_and_reset(&device)?;
+        [green_texture_staging_buffer, pink_texture_staging_buffer]
+    };
 
-        green_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
-        pink_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
-    }
-
-    let mut scratch_buffer = ScratchBuffer::new();
-
-    let plane_buffers = load_gltf(
+    let (plane_buffers, plane_staging_buffer) = load_gltf(
         include_bytes!("../plane.glb"),
         "plane",
         0,
         &mut allocator,
         &mut image_manager,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
+
+    let (tori_buffers, tori_staging_buffer) = load_gltf(
+        include_bytes!("../tori.glb"),
+        "tori",
+        1,
+        &mut allocator,
+        &mut image_manager,
+        init_command_buffer.buffer(),
+    )?;
+
+    let (lain_buffers, lain_staging_buffer) = load_gltf(
+        include_bytes!("../lain.glb"),
+        "lain",
+        1,
+        &mut allocator,
+        &mut image_manager,
+        init_command_buffer.buffer(),
+    )?;
+
+    init_command_buffer.finish()?;
+
+    {
+        for staging_buffer in image_staging_buffers {
+            staging_buffer.cleanup_and_drop(&mut allocator)?;
+        }
+
+        for staging_buffer in [
+            plane_staging_buffer,
+            tori_staging_buffer,
+            lain_staging_buffer,
+        ] {
+            if let Some(staging_buffer) = staging_buffer {
+                staging_buffer.cleanup_and_drop(&mut allocator)?;
+            }
+        }
+    }
+
+    let mut scratch_buffer = ScratchBuffer::new();
 
     let plane_blas = build_blas(
         &plane_buffers,
@@ -242,15 +277,6 @@ fn main() -> anyhow::Result<()> {
         &command_buffer_and_queue,
     )?;
 
-    let tori_buffers = load_gltf(
-        include_bytes!("../tori.glb"),
-        "tori",
-        1,
-        &mut allocator,
-        &mut image_manager,
-        &command_buffer_and_queue,
-    )?;
-
     let tori_blas = build_blas(
         &tori_buffers,
         "tori blas",
@@ -258,15 +284,6 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
-    )?;
-
-    let lain_buffers = load_gltf(
-        include_bytes!("../lain.glb"),
-        "lain",
-        1,
-        &mut allocator,
-        &mut image_manager,
         &command_buffer_and_queue,
     )?;
 
@@ -657,8 +674,10 @@ fn main() -> anyhow::Result<()> {
                     unsafe {
                         device.device_wait_idle()?;
 
-                        device
-                            .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+                        device.reset_command_pool(
+                            command_buffer_and_queue.pool,
+                            vk::CommandPoolResetFlags::empty(),
+                        )?;
                     }
 
                     // Free the old storage image, create a new one and write it to the descriptor set.
@@ -745,24 +764,24 @@ fn main() -> anyhow::Result<()> {
                             device.reset_fences(&[syncronisation.draw_commands_fence])?;
 
                             device.reset_command_pool(
-                                command_pool,
+                                command_buffer_and_queue.pool,
                                 vk::CommandPoolResetFlags::empty(),
                             )?;
 
                             device.begin_command_buffer(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 &vk::CommandBufferBeginInfo::builder()
                                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                             )?;
 
                             device.cmd_bind_pipeline(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                                 pipeline,
                             );
 
                             device.cmd_bind_descriptor_sets(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                                 pipeline_layout,
                                 0,
@@ -777,7 +796,7 @@ fn main() -> anyhow::Result<()> {
                             );
 
                             device.cmd_push_constants(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 pipeline_layout,
                                 vk::ShaderStageFlags::RAYGEN_KHR,
                                 0,
@@ -788,7 +807,7 @@ fn main() -> anyhow::Result<()> {
                             );
 
                             pipeline_loader.cmd_trace_rays(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 &raygen_sbt.address_region,
                                 &miss_sbt.address_region,
                                 &closest_hit_sbt.address_region,
@@ -813,7 +832,7 @@ fn main() -> anyhow::Result<()> {
                             // prepare image to be a destimation
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 swapchain_image,
                                 vk::ImageLayout::UNDEFINED,
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -823,7 +842,7 @@ fn main() -> anyhow::Result<()> {
                             // prepare storage image to be a source
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::GENERAL,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
@@ -831,7 +850,7 @@ fn main() -> anyhow::Result<()> {
                             );
 
                             device.cmd_copy_image(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                 swapchain_image,
@@ -850,7 +869,7 @@ fn main() -> anyhow::Result<()> {
 
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 swapchain_image,
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                 vk::ImageLayout::PRESENT_SRC_KHR,
@@ -859,23 +878,23 @@ fn main() -> anyhow::Result<()> {
 
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                 vk::ImageLayout::GENERAL,
                                 *subresource_range,
                             );
 
-                            device.end_command_buffer(command_buffer)?;
+                            device.end_command_buffer(command_buffer_and_queue.buffer)?;
 
                             device.queue_submit(
-                                queue,
+                                command_buffer_and_queue.queue,
                                 &[*vk::SubmitInfo::builder()
                                     .wait_semaphores(&[syncronisation.present_complete_semaphore])
                                     .wait_dst_stage_mask(&[
                                         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                                     ])
-                                    .command_buffers(&[command_buffer])
+                                    .command_buffers(&[command_buffer_and_queue.buffer])
                                     .signal_semaphores(&[
                                         syncronisation.rendering_complete_semaphore
                                     ])],
@@ -883,7 +902,7 @@ fn main() -> anyhow::Result<()> {
                             )?;
 
                             swapchain_loader.queue_present(
-                                queue,
+                                command_buffer_and_queue.queue,
                                 &vk::PresentInfoKHR::builder()
                                     .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
                                     .swapchains(&[swapchain.swapchain])
@@ -992,7 +1011,7 @@ fn build_blas(
         as_loader,
         device,
         allocator,
-        &scratch_buffer,
+        scratch_buffer,
         geometry_info,
         offset,
         command_buffer_and_queue,
@@ -1052,7 +1071,7 @@ fn build_tlas(
         as_loader,
         device,
         allocator,
-        &scratch_buffer,
+        scratch_buffer,
         geometry_info,
         offset,
         command_buffer_and_queue,
@@ -1087,7 +1106,7 @@ fn tlas_instance(
             vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
         ),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: blas.buffer.device_address(&device),
+            device_handle: blas.buffer.device_address(device),
         },
     }
 }
