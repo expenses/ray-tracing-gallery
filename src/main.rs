@@ -163,6 +163,7 @@ fn main() -> anyhow::Result<()> {
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
+        debug_utils_loader,
         physical_device,
         queue_family,
     )?;
@@ -346,9 +347,9 @@ fn main() -> anyhow::Result<()> {
     let mut storage_image = Image::new_storage_image(
         extent.width,
         extent.height,
+        "storage image",
         surface_format.format,
-        command_buffer,
-        queue,
+        &command_buffer_and_queue,
         &mut allocator,
     )?;
 
@@ -627,7 +628,7 @@ fn main() -> anyhow::Result<()> {
         .old_swapchain(vk::SwapchainKHR::null());
 
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
-    let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info)?;
+    let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
     // main loop
 
@@ -667,9 +668,9 @@ fn main() -> anyhow::Result<()> {
                     storage_image = Image::new_storage_image(
                         extent.width,
                         extent.height,
+                        "storage image",
                         surface_format.format,
-                        command_buffer,
-                        queue,
+                        &command_buffer_and_queue,
                         &mut allocator,
                     )?;
 
@@ -691,7 +692,7 @@ fn main() -> anyhow::Result<()> {
                     swapchain_info.image_extent = extent;
                     swapchain_info.old_swapchain = swapchain.swapchain;
 
-                    swapchain = Swapchain::new(&swapchain_loader, swapchain_info)?;
+                    swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
                     Ok(())
                 };
@@ -1113,10 +1114,17 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
         return vk::FALSE;
     }
 
+    let level = match message_severity {
+        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
+        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
+        _ => log::Level::Info,
+    };
+
     let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
-    let severity = format!("{:?}", message_severity).to_lowercase();
     let ty = format!("{:?}", message_type).to_lowercase();
-    log::info!("[Debug Msg][{}][{}] {:?}", severity, ty, message);
+    log::log!(level, "[Debug Msg][{}] {:?}", ty, message);
     vk::FALSE
 }
 

@@ -1,9 +1,10 @@
+use ash::extensions::ext::DebugUtils as DebugUtilsLoader;
 use ash::extensions::khr::{
     AccelerationStructure as AccelerationStructureLoader, Swapchain as SwapchainLoader,
 };
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDesc};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
 use crate::util_functions::{sbt_aligned_size, set_image_layout};
@@ -26,12 +27,14 @@ pub struct Allocator {
     pub inner: gpu_allocator::vulkan::Allocator,
     pub device: ash::Device,
     queue_family: u32,
+    debug_utils_loader: DebugUtilsLoader,
 }
 
 impl Allocator {
     pub fn new(
         instance: ash::Instance,
         device: ash::Device,
+        debug_utils_loader: DebugUtilsLoader,
         physical_device: vk::PhysicalDevice,
         queue_family: u32,
     ) -> anyhow::Result<Self> {
@@ -53,7 +56,24 @@ impl Allocator {
             })?,
             queue_family,
             device,
+            debug_utils_loader,
         })
+    }
+
+    pub unsafe fn set_object_name<T: vk::Handle>(
+        &self,
+        handle: T,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        self.debug_utils_loader.debug_utils_set_object_name(
+            self.device.handle(),
+            &*vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(T::TYPE)
+                .object_handle(handle.as_raw())
+                .object_name(&CString::new(name)?),
+        )?;
+
+        Ok(())
     }
 }
 
@@ -95,6 +115,10 @@ impl AccelerationStructure {
                 None,
             )
         }?;
+
+        unsafe {
+            allocator.set_object_name(acceleration_structure, name)?;
+        }
 
         geometry_info = geometry_info
             .dst_acceleration_structure(acceleration_structure)
@@ -264,10 +288,14 @@ impl Buffer {
         })?;
 
         unsafe {
-            allocator
-                .device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-        }?;
+            allocator.device.bind_buffer_memory(
+                buffer,
+                allocation.memory(),
+                allocation.offset(),
+            )?;
+
+            allocator.set_object_name(buffer, name)?;
+        };
 
         Ok(Self { buffer, allocation })
     }
@@ -299,7 +327,7 @@ impl Buffer {
             linear: true,
         })?;
 
-        Self::from_parts(allocation, buffer, bytes, allocator)
+        Self::from_parts(allocation, buffer, bytes, name, allocator)
     }
 
     pub fn new_with_custom_alignment(
@@ -332,13 +360,14 @@ impl Buffer {
             linear: true,
         })?;
 
-        Self::from_parts(allocation, buffer, bytes, allocator)
+        Self::from_parts(allocation, buffer, bytes, name, allocator)
     }
 
     fn from_parts(
         mut allocation: Allocation,
         buffer: vk::Buffer,
         bytes: &[u8],
+        name: &str,
         allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let slice = allocation.mapped_slice_mut().unwrap();
@@ -346,10 +375,14 @@ impl Buffer {
         slice[..bytes.len()].copy_from_slice(bytes);
 
         unsafe {
-            allocator
-                .device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-        }?;
+            allocator.device.bind_buffer_memory(
+                buffer,
+                allocation.memory(),
+                allocation.offset(),
+            )?;
+
+            allocator.set_object_name(buffer, name)?;
+        };
 
         Ok(Self { buffer, allocation })
     }
@@ -385,75 +418,12 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn _new_depth_buffer(
-        width: u32,
-        height: u32,
-        name: &str,
-        allocator: &mut Allocator,
-    ) -> anyhow::Result<Self> {
-        let image = unsafe {
-            allocator.device.create_image(
-                &vk::ImageCreateInfo::builder()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(vk::Format::D32_SFLOAT)
-                    .extent(vk::Extent3D {
-                        width,
-                        height,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT),
-                None,
-            )
-        }?;
-
-        let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
-
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
-            name,
-            requirements,
-            location: gpu_allocator::MemoryLocation::CpuToGpu,
-            linear: false,
-        })?;
-
-        unsafe {
-            allocator
-                .device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())
-        }?;
-
-        let view = unsafe {
-            allocator.device.create_image_view(
-                &vk::ImageViewCreateInfo::builder()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::D32_SFLOAT)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::builder()
-                            .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                            .level_count(1)
-                            .layer_count(1)
-                            .build(),
-                    ),
-                None,
-            )
-        }?;
-
-        Ok(Self {
-            image,
-            allocation,
-            view,
-        })
-    }
-
     pub fn new_storage_image(
         width: u32,
         height: u32,
+        name: &str,
         format: vk::Format,
-        command_buffer: vk::CommandBuffer,
-        queue: vk::Queue,
+        command_buffer_and_queue: &CommandBufferAndQueue,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
         let image = unsafe {
@@ -479,7 +449,7 @@ impl Image {
         let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
 
         let allocation = allocator.inner.allocate(&AllocationCreateDesc {
-            name: "storage image",
+            name,
             requirements,
             location: gpu_allocator::MemoryLocation::GpuOnly,
             linear: false,
@@ -488,8 +458,10 @@ impl Image {
         unsafe {
             allocator
                 .device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())
-        }?;
+                .bind_image_memory(image, allocation.memory(), allocation.offset())?;
+
+            allocator.set_object_name(image, name)?;
+        };
 
         let view = unsafe {
             allocator.device.create_image_view(
@@ -513,37 +485,18 @@ impl Image {
             .level_count(1)
             .layer_count(1);
 
-        unsafe {
-            allocator.device.begin_command_buffer(
-                command_buffer,
-                &vk::CommandBufferBeginInfo::builder()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?;
+        command_buffer_and_queue.begin(&allocator.device)?;
 
-            set_image_layout(
-                &allocator.device,
-                command_buffer,
-                image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::GENERAL,
-                *subresource_range,
-            );
+        set_image_layout(
+            &allocator.device,
+            command_buffer_and_queue.buffer,
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            *subresource_range,
+        );
 
-            allocator.device.end_command_buffer(command_buffer)?;
-
-            let fence = allocator
-                .device
-                .create_fence(&vk::FenceCreateInfo::builder(), None)?;
-
-            allocator.device.queue_submit(
-                queue,
-                &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
-                fence,
-            )?;
-
-            allocator.device.wait_for_fences(&[fence], true, u64::MAX)?;
-            allocator.device.destroy_fence(fence, None);
-        }
+        command_buffer_and_queue.finish_block_and_reset(&allocator.device)?;
 
         Ok(Self {
             image,
@@ -675,11 +628,18 @@ impl Swapchain {
     pub fn new(
         swapchain_loader: &SwapchainLoader,
         info: vk::SwapchainCreateInfoKHR,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
-        let swapchain = unsafe { swapchain_loader.create_swapchain(&info, None) }?;
-        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
+        unsafe {
+            let swapchain = swapchain_loader.create_swapchain(&info, None)?;
+            let images = swapchain_loader.get_swapchain_images(swapchain)?;
 
-        Ok(Self { images, swapchain })
+            for (i, image) in images.iter().enumerate() {
+                allocator.set_object_name(*image, &format!("Swapchain image {}", i))?;
+            }
+
+            Ok(Self { images, swapchain })
+        }
     }
 }
 
