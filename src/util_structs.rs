@@ -70,11 +70,10 @@ impl AccelerationStructure {
         loader: &AccelerationStructureLoader,
         device: &ash::Device,
         allocator: &mut Allocator,
-        command_buffer: vk::CommandBuffer,
-        queue: vk::Queue,
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
         offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
+        command_buffer_and_queue: &CommandBufferAndQueue,
     ) -> anyhow::Result<Self> {
         log::info!("Creating a {} of {} bytes", name, size);
 
@@ -103,32 +102,17 @@ impl AccelerationStructure {
                 device_address: scratch_buffer.device_address(device),
             });
 
-        unsafe {
-            device.begin_command_buffer(
-                command_buffer,
-                &vk::CommandBufferBeginInfo::builder()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?;
+        command_buffer_and_queue.begin(device)?;
 
+        unsafe {
             loader.cmd_build_acceleration_structures(
-                command_buffer,
+                command_buffer_and_queue.buffer,
                 &[*geometry_info],
                 &[&[*offset]],
             );
-
-            device.end_command_buffer(command_buffer)?;
-
-            let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
-
-            device.queue_submit(
-                queue,
-                &[*vk::SubmitInfo::builder().command_buffers(&[command_buffer])],
-                fence,
-            )?;
-
-            device.wait_for_fences(&[fence], true, u64::MAX)?;
-            device.destroy_fence(fence, None);
         }
+
+        command_buffer_and_queue.finish_block_and_reset(device)?;
 
         Ok(Self {
             buffer,
@@ -584,12 +568,14 @@ pub struct ModelBuffers {
     pub indices: Buffer,
     pub triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
     pub primitive_count: u32,
+    pub image_index: u32,
 }
 
 impl ModelBuffers {
     pub fn new<T: bytemuck::Pod>(
         vertices: &[T],
         indices: &[u16],
+        image_index: u32,
         name: &str,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
@@ -633,6 +619,7 @@ impl ModelBuffers {
             indices,
             triangles_data: *triangles_data,
             primitive_count,
+            image_index,
         })
     }
 
@@ -640,6 +627,8 @@ impl ModelBuffers {
         crate::ModelInfo {
             vertex_buffer_address: self.vertices.device_address(device),
             index_buffer_address: self.indices.device_address(device),
+            image_index: self.image_index,
+            _padding: 0,
         }
     }
 
@@ -691,5 +680,108 @@ impl Swapchain {
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
 
         Ok(Self { images, swapchain })
+    }
+}
+
+pub struct ImageManager {
+    images: Vec<Image>,
+    sampler: vk::Sampler,
+    image_infos: Vec<vk::DescriptorImageInfo>,
+}
+
+impl ImageManager {
+    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        Ok(Self {
+            sampler: unsafe {
+                device.create_sampler(
+                    &vk::SamplerCreateInfo::builder()
+                        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                        .max_lod(vk::LOD_CLAMP_NONE),
+                    None,
+                )
+            }?,
+            images: Default::default(),
+            image_infos: Default::default(),
+        })
+    }
+
+    pub fn descriptor_count(&self) -> u32 {
+        self.images.len() as u32
+    }
+
+    pub fn push_image(&mut self, image: Image) -> u32 {
+        let index = self.images.len() as u32;
+
+        self.image_infos.push(
+            *vk::DescriptorImageInfo::builder()
+                .image_view(image.view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .sampler(self.sampler),
+        );
+
+        self.images.push(image);
+
+        index
+    }
+
+    pub fn write_descriptor_set<'a>(
+        &'a self,
+        set: vk::DescriptorSet,
+        binding: u32,
+    ) -> vk::WriteDescriptorSetBuilder<'a> {
+        vk::WriteDescriptorSet::builder()
+            .dst_set(set)
+            .dst_binding(binding)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&self.image_infos)
+    }
+
+    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        for image in &self.images {
+            image.cleanup(allocator)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub struct CommandBufferAndQueue {
+    pub buffer: vk::CommandBuffer,
+    pub queue: vk::Queue,
+    pub pool: vk::CommandPool,
+}
+
+impl CommandBufferAndQueue {
+    pub fn begin(&self, device: &ash::Device) -> anyhow::Result<()> {
+        unsafe {
+            device.begin_command_buffer(
+                self.buffer,
+                &vk::CommandBufferBeginInfo::builder()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+        }?;
+
+        Ok(())
+    }
+
+    pub fn finish_block_and_reset(&self, device: &ash::Device) -> anyhow::Result<()> {
+        unsafe {
+            device.end_command_buffer(self.buffer)?;
+
+            let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
+
+            device.queue_submit(
+                self.queue,
+                &[*vk::SubmitInfo::builder().command_buffers(&[self.buffer])],
+                fence,
+            )?;
+
+            device.wait_for_fences(&[fence], true, u64::MAX)?;
+            device.destroy_fence(fence, None);
+
+            device.reset_command_pool(self.pool, vk::CommandPoolResetFlags::empty())?;
+
+            Ok(())
+        }
     }
 }

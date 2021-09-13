@@ -11,8 +11,7 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) rayPayloadEXT vec3 hitValue;
 
-void main() 
-{
+void main()  {
 	const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
 	const vec2 inUV = pixelCenter/vec2(gl_LaunchSizeEXT.xy);
 	vec2 d = inUV * 2.0 - 1.0;

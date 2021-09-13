@@ -3,7 +3,6 @@
 
 layout(location = 1) rayPayloadInEXT bool shadowed;
 
-void main()
-{
+void main() {
 	shadowed = false;
 }

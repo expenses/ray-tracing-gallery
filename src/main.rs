@@ -7,7 +7,7 @@ use ash::extensions::khr::{
 };
 use ash::vk;
 use std::ffi::CStr;
-use ultraviolet::{Mat4, Vec3};
+use ultraviolet::{Mat4, Vec2, Vec3};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::{
     event_loop::{ControlFlow, EventLoop},
@@ -19,13 +19,13 @@ mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    AccelerationStructure, Allocator, Buffer, CStrList, Image, ModelBuffers, ScratchBuffer,
-    ShaderBindingTable, Swapchain, Syncronisation,
+    AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager,
+    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain, Syncronisation,
 };
 
 use util_functions::{
-    load_gltf, load_shader_module, sbt_aligned_size, select_physical_device, set_image_layout,
-    shader_group_for_type,
+    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
+    select_physical_device, set_image_layout, shader_group_for_type,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -127,8 +127,10 @@ fn main() -> anyhow::Result<()> {
         let mut storage16_features =
             vk::PhysicalDevice16BitStorageFeatures::builder().storage_buffer16_bit_access(true);
 
-        let mut vk_12_features =
-            vk::PhysicalDeviceVulkan12Features::builder().buffer_device_address(true);
+        let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
+            .buffer_device_address(true)
+            .runtime_descriptor_array(true)
+            .shader_sampled_image_array_non_uniform_indexing(true);
 
         // We need this because 'device coherent memory' is one of the memory type bits of
         // `get_buffer_memory_requirements` for some reason, on my machine at-least.
@@ -179,17 +181,54 @@ fn main() -> anyhow::Result<()> {
 
     let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
 
+    let command_buffer_and_queue = CommandBufferAndQueue {
+        buffer: command_buffer,
+        queue,
+        pool: command_pool,
+    };
+
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
     // Create the BLASes
+
+    let mut image_manager = ImageManager::new(&device)?;
+
+    {
+        command_buffer_and_queue.begin(&device)?;
+
+        let (green_texture, green_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+            include_bytes!("../green.png"),
+            "green texture",
+            command_buffer,
+            &mut allocator,
+        )?;
+
+        image_manager.push_image(green_texture);
+
+        let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+            include_bytes!("../pink.png"),
+            "pink texture",
+            command_buffer,
+            &mut allocator,
+        )?;
+
+        image_manager.push_image(pink_texture);
+
+        command_buffer_and_queue.finish_block_and_reset(&device)?;
+
+        green_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
+        pink_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
+    }
 
     let mut scratch_buffer = ScratchBuffer::new();
 
     let plane_buffers = load_gltf(
         include_bytes!("../plane.glb"),
         "plane",
-        10.0,
+        0,
         &mut allocator,
+        &mut image_manager,
+        &command_buffer_and_queue,
     )?;
 
     let plane_blas = build_blas(
@@ -199,15 +238,17 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        command_buffer,
-        queue,
+        &command_buffer_and_queue,
     )?;
 
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
-
-    let tori_buffers = load_gltf(include_bytes!("../tori.glb"), "tori", 1.0, &mut allocator)?;
+    let tori_buffers = load_gltf(
+        include_bytes!("../tori.glb"),
+        "tori",
+        1,
+        &mut allocator,
+        &mut image_manager,
+        &command_buffer_and_queue,
+    )?;
 
     let tori_blas = build_blas(
         &tori_buffers,
@@ -216,15 +257,17 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        command_buffer,
-        queue,
+        &command_buffer_and_queue,
     )?;
 
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
-
-    let lain_buffers = load_gltf(include_bytes!("../lain.glb"), "lain", 1.0, &mut allocator)?;
+    let lain_buffers = load_gltf(
+        include_bytes!("../lain.glb"),
+        "lain",
+        1,
+        &mut allocator,
+        &mut image_manager,
+        &command_buffer_and_queue,
+    )?;
 
     let lain_blas = build_blas(
         &lain_buffers,
@@ -233,14 +276,13 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        command_buffer,
-        queue,
+        &command_buffer_and_queue,
     )?;
 
     // Allocate the instance buffer
 
     let instances = &[
-        tlas_instance(Mat4::identity(), &plane_blas, &device, 0),
+        tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
@@ -268,10 +310,6 @@ fn main() -> anyhow::Result<()> {
 
     // Create the tlas
 
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
-
     let tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
@@ -279,8 +317,7 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
-        command_buffer,
-        queue,
+        &command_buffer_and_queue,
     )?;
 
     instances_buffer.cleanup_and_drop(&mut allocator)?;
@@ -294,10 +331,6 @@ fn main() -> anyhow::Result<()> {
         width: window_size.width,
         height: window_size.height,
     };
-
-    unsafe {
-        device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-    }
 
     let model_info_buffer = Buffer::new(
         bytemuck::cast_slice(&[
@@ -355,6 +388,11 @@ fn main() -> anyhow::Result<()> {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(4)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(image_manager.descriptor_count())
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             ]),
             None,
         )
@@ -376,6 +414,9 @@ fn main() -> anyhow::Result<()> {
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::UNIFORM_BUFFER)
                         .descriptor_count(1),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .descriptor_count(image_manager.descriptor_count()),
                 ])
                 .max_sets(1),
             None,
@@ -433,6 +474,7 @@ fn main() -> anyhow::Result<()> {
                     .buffer_info(&[*vk::DescriptorBufferInfo::builder()
                         .buffer(uniform_buffer.buffer)
                         .range(vk::WHOLE_SIZE)]),
+                *image_manager.write_descriptor_set(descriptor_set, 4),
             ],
             &[],
         );
@@ -878,6 +920,8 @@ fn main() -> anyhow::Result<()> {
                 miss_sbt.buffer.cleanup(&mut allocator)?;
                 closest_hit_sbt.buffer.cleanup(&mut allocator)?;
 
+                image_manager.cleanup(&mut allocator)?;
+
                 Ok(())
             };
 
@@ -909,8 +953,7 @@ fn build_blas(
     as_loader: &AccelerationStructureLoader,
     scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
-    command_buffer: vk::CommandBuffer,
-    queue: vk::Queue,
+    command_buffer_and_queue: &CommandBufferAndQueue,
 ) -> anyhow::Result<AccelerationStructure> {
     let geometry = vk::AccelerationStructureGeometryKHR::builder()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
@@ -948,11 +991,10 @@ fn build_blas(
         as_loader,
         device,
         allocator,
-        command_buffer,
-        queue,
         &scratch_buffer,
         geometry_info,
         offset,
+        command_buffer_and_queue,
     )?;
 
     Ok(blas)
@@ -965,8 +1007,7 @@ fn build_tlas(
     as_loader: &AccelerationStructureLoader,
     allocator: &mut Allocator,
     scratch_buffer: &mut ScratchBuffer,
-    command_buffer: vk::CommandBuffer,
-    queue: vk::Queue,
+    command_buffer_and_queue: &CommandBufferAndQueue,
 ) -> anyhow::Result<AccelerationStructure> {
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
         vk::DeviceOrHostAddressConstKHR {
@@ -1010,11 +1051,10 @@ fn build_tlas(
         as_loader,
         device,
         allocator,
-        command_buffer,
-        queue,
         &scratch_buffer,
         geometry_info,
         offset,
+        command_buffer_and_queue,
     )
 }
 
@@ -1085,6 +1125,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 struct Vertex {
     pos: Vec3,
     normal: Vec3,
+    uv: Vec2,
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
@@ -1092,4 +1133,6 @@ struct Vertex {
 pub struct ModelInfo {
     vertex_buffer_address: vk::DeviceAddress,
     index_buffer_address: vk::DeviceAddress,
+    image_index: u32,
+    _padding: u32,
 }
