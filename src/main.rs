@@ -7,7 +7,7 @@ use ash::extensions::khr::{
 };
 use ash::vk;
 use std::ffi::CStr;
-use ultraviolet::{Mat4, Vec2, Vec3};
+use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::{
     event_loop::{ControlFlow, EventLoop},
@@ -158,8 +158,6 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
-    let queue = unsafe { device.get_device_queue(queue_family, 0) };
-
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
@@ -168,116 +166,112 @@ fn main() -> anyhow::Result<()> {
         queue_family,
     )?;
 
-    let command_pool = unsafe {
-        device.create_command_pool(
-            &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
-            None,
-        )
-    }?;
+    let mut command_buffer_and_queue = {
+        let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
-    let cmd_buf_allocate_info = vk::CommandBufferAllocateInfo::builder()
-        .command_pool(command_pool)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(1);
+        let command_pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
+                None,
+            )
+        }?;
 
-    let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
+        let cmd_buf_allocate_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
 
-    let command_buffer_and_queue = CommandBufferAndQueue {
-        buffer: command_buffer,
-        queue,
-        pool: command_pool,
+        let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
+
+        CommandBufferAndQueue::new(&device, command_buffer, queue, command_pool)?
     };
 
-    let as_loader = AccelerationStructureLoader::new(&instance, &device);
-
-    // Create the BLASes
+    // Load images and models
 
     let mut image_manager = ImageManager::new(&device)?;
 
-    {
-        command_buffer_and_queue.begin(&device)?;
+    let init_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
+    let image_staging_buffers = {
         let (green_texture, green_texture_staging_buffer) = load_rgba_png_image_from_bytes(
-            include_bytes!("../green.png"),
+            include_bytes!("../resources/green.png"),
             "green texture",
-            command_buffer,
+            init_command_buffer.buffer(),
             &mut allocator,
         )?;
 
         image_manager.push_image(green_texture);
 
         let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
-            include_bytes!("../pink.png"),
+            include_bytes!("../resources/pink.png"),
             "pink texture",
-            command_buffer,
+            init_command_buffer.buffer(),
             &mut allocator,
         )?;
 
         image_manager.push_image(pink_texture);
 
-        command_buffer_and_queue.finish_block_and_reset(&device)?;
+        [green_texture_staging_buffer, pink_texture_staging_buffer]
+    };
 
-        green_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
-        pink_texture_staging_buffer.cleanup_and_drop(&mut allocator)?;
-    }
-
-    let mut scratch_buffer = ScratchBuffer::new();
-
-    let plane_buffers = load_gltf(
-        include_bytes!("../plane.glb"),
+    let (plane_buffers, plane_staging_buffer) = load_gltf(
+        include_bytes!("../resources/plane.glb"),
         "plane",
         0,
         &mut allocator,
         &mut image_manager,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
-    let plane_blas = build_blas(
-        &plane_buffers,
-        "plane blas",
-        &device,
-        &as_loader,
-        &mut scratch_buffer,
-        &mut allocator,
-        &command_buffer_and_queue,
-    )?;
-
-    let tori_buffers = load_gltf(
-        include_bytes!("../tori.glb"),
+    let (tori_buffers, tori_staging_buffer) = load_gltf(
+        include_bytes!("../resources/tori.glb"),
         "tori",
         1,
         &mut allocator,
         &mut image_manager,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
+    )?;
+
+    let (lain_buffers, lain_staging_buffer) = load_gltf(
+        include_bytes!("../resources/lain.glb"),
+        "lain",
+        1,
+        &mut allocator,
+        &mut image_manager,
+        init_command_buffer.buffer(),
+    )?;
+
+    // Create the BLASes
+
+    let as_loader = AccelerationStructureLoader::new(&instance, &device);
+
+    let mut scratch_buffer = ScratchBuffer::new();
+
+    let plane_blas = build_blas(
+        &plane_buffers,
+        "plane blas",
+        &as_loader,
+        &mut scratch_buffer,
+        &mut allocator,
+        init_command_buffer.buffer(),
     )?;
 
     let tori_blas = build_blas(
         &tori_buffers,
         "tori blas",
-        &device,
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
-    )?;
-
-    let lain_buffers = load_gltf(
-        include_bytes!("../lain.glb"),
-        "lain",
-        1,
-        &mut allocator,
-        &mut image_manager,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
     let lain_blas = build_blas(
         &lain_buffers,
         "lain blas",
-        &device,
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
     // Allocate the instance buffer
@@ -311,18 +305,51 @@ fn main() -> anyhow::Result<()> {
 
     // Create the tlas
 
+    // Wait for BLAS builds to finish
+    unsafe {
+        device.cmd_pipeline_barrier(
+            init_command_buffer.buffer(),
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::DependencyFlags::empty(),
+            &[*vk::MemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
+            &[],
+            &[],
+        );
+    }
+
     let tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
-        &device,
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
-        &command_buffer_and_queue,
+        init_command_buffer.buffer(),
     )?;
 
-    instances_buffer.cleanup_and_drop(&mut allocator)?;
-    scratch_buffer.cleanup_and_drop(&mut allocator)?;
+    init_command_buffer.finish()?;
+
+    // Clean up from initialisation.
+    {
+        for staging_buffer in image_staging_buffers {
+            staging_buffer.cleanup_and_drop(&mut allocator)?;
+        }
+
+        for staging_buffer in [
+            plane_staging_buffer,
+            tori_staging_buffer,
+            lain_staging_buffer,
+        ] {
+            if let Some(staging_buffer) = staging_buffer {
+                staging_buffer.cleanup_and_drop(&mut allocator)?;
+            }
+        }
+
+        instances_buffer.cleanup_and_drop(&mut allocator)?;
+        scratch_buffer.cleanup_and_drop(&mut allocator)?;
+    }
 
     // Create storage image
 
@@ -640,12 +667,32 @@ fn main() -> anyhow::Result<()> {
         0.1,
     );
 
+    let mut camera = FirstPersonCamera {
+        eye: Vec3::new(0.0, 2.0, -5.0),
+        pitch: 0.0,
+        yaw: 0.0,
+    };
+
+    let mut camera_velocity = Vec3::zero();
+
+    let mut kbd_state = KbdState::default();
+
+    let mut cursor_grab = false;
+
+    let mut screen_center =
+        winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::Resized(size) => {
                 extent.width = size.width as u32;
                 extent.height = size.height as u32;
+
+                screen_center = winit::dpi::LogicalPosition::new(
+                    extent.width as f64 / 2.0,
+                    extent.height as f64 / 2.0,
+                );
 
                 perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
                     59.0_f32.to_radians(),
@@ -654,13 +701,6 @@ fn main() -> anyhow::Result<()> {
                 );
 
                 let mut resize = || -> anyhow::Result<()> {
-                    unsafe {
-                        device.device_wait_idle()?;
-
-                        device
-                            .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-                    }
-
                     // Free the old storage image, create a new one and write it to the descriptor set.
 
                     storage_image.cleanup(&mut allocator)?;
@@ -712,22 +752,100 @@ fn main() -> anyhow::Result<()> {
             } => {
                 let pressed = state == ElementState::Pressed;
 
-                if key == VirtualKeyCode::F11 && pressed {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    } else {
-                        window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                match key {
+                    VirtualKeyCode::F11 => {
+                        if pressed {
+                            if window.fullscreen().is_some() {
+                                window.set_fullscreen(None);
+                            } else {
+                                window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                            }
+                        }
                     }
+                    VirtualKeyCode::W => kbd_state.forward = pressed,
+                    VirtualKeyCode::S => kbd_state.back = pressed,
+                    VirtualKeyCode::A => kbd_state.left = pressed,
+                    VirtualKeyCode::D => kbd_state.right = pressed,
+                    VirtualKeyCode::G => {
+                        if pressed {
+                            cursor_grab = !cursor_grab;
+
+                            if cursor_grab {
+                                window.set_cursor_position(screen_center).unwrap();
+                            }
+
+                            window.set_cursor_visible(!cursor_grab);
+                            window.set_cursor_grab(cursor_grab).unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if cursor_grab {
+                    let position = position.to_logical::<f64>(window.scale_factor());
+
+                    let delta = Vec2::new(
+                        (position.x - screen_center.x) as f32,
+                        (position.y - screen_center.y) as f32,
+                    );
+
+                    window.set_cursor_position(screen_center).unwrap();
+
+                    use std::f32::consts::PI;
+
+                    camera.yaw -= delta.x.to_radians() * 0.05;
+                    camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
+                        .min(PI / 2.0)
+                        .max(-PI / 2.0);
                 }
             }
             _ => {}
         },
         Event::MainEventsCleared => {
+            {
+                let mut local_velocity = Vec3::zero();
+                let acceleration = 0.005;
+                let max_velocity = 0.2;
+
+                if kbd_state.forward {
+                    local_velocity.z -= acceleration * camera.pitch.cos();
+                    local_velocity.y += acceleration * camera.pitch.sin();
+                }
+
+                if kbd_state.back {
+                    local_velocity.z += acceleration * camera.pitch.cos();
+                    local_velocity.y -= acceleration * camera.pitch.sin();
+                }
+
+                if kbd_state.left {
+                    local_velocity.x -= acceleration;
+                }
+
+                if kbd_state.right {
+                    local_velocity.x += acceleration;
+                }
+
+                camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
+                let magnitude = camera_velocity.mag();
+                if magnitude > max_velocity {
+                    let clamped_magnitude = magnitude.max(max_velocity);
+                    camera_velocity *= clamped_magnitude / magnitude;
+                }
+
+                camera.eye += camera_velocity;
+
+                camera_velocity *= 0.9;
+            }
+
+            window.request_redraw();
+        }
+        Event::RedrawRequested(_) => {
             match unsafe {
                 swapchain_loader.acquire_next_image(
                     swapchain.swapchain,
                     u64::MAX,
-                    syncronisation.present_complete_semaphore,
+                    syncronisation.acquire_complete_semaphore,
                     vk::Fence::null(),
                 )
             } {
@@ -736,33 +854,20 @@ fn main() -> anyhow::Result<()> {
                         let swapchain_image = swapchain.images[image_index as usize];
 
                         unsafe {
-                            device.wait_for_fences(
-                                &[syncronisation.draw_commands_fence],
-                                true,
-                                u64::MAX,
-                            )?;
-
-                            device.reset_fences(&[syncronisation.draw_commands_fence])?;
-
-                            device.reset_command_pool(
-                                command_pool,
-                                vk::CommandPoolResetFlags::empty(),
-                            )?;
-
                             device.begin_command_buffer(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 &vk::CommandBufferBeginInfo::builder()
                                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                             )?;
 
                             device.cmd_bind_pipeline(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                                 pipeline,
                             );
 
                             device.cmd_bind_descriptor_sets(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                                 pipeline_layout,
                                 0,
@@ -770,25 +875,19 @@ fn main() -> anyhow::Result<()> {
                                 &[],
                             );
 
-                            let view_matrix = Mat4::look_at(
-                                Vec3::new(0.0, 2.0, -5.0),
-                                Vec3::zero(),
-                                Vec3::unit_y(),
-                            );
-
                             device.cmd_push_constants(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 pipeline_layout,
                                 vk::ShaderStageFlags::RAYGEN_KHR,
                                 0,
                                 bytemuck::bytes_of(&PushConstants {
-                                    view_inverse: view_matrix.inversed(),
+                                    view_inverse: camera.as_view_matrix().inversed(),
                                     proj_inverse: perspective_matrix.inversed(),
                                 }),
                             );
 
                             pipeline_loader.cmd_trace_rays(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 &raygen_sbt.address_region,
                                 &miss_sbt.address_region,
                                 &closest_hit_sbt.address_region,
@@ -813,7 +912,7 @@ fn main() -> anyhow::Result<()> {
                             // prepare image to be a destimation
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 swapchain_image,
                                 vk::ImageLayout::UNDEFINED,
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -823,7 +922,7 @@ fn main() -> anyhow::Result<()> {
                             // prepare storage image to be a source
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::GENERAL,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
@@ -831,7 +930,7 @@ fn main() -> anyhow::Result<()> {
                             );
 
                             device.cmd_copy_image(
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                 swapchain_image,
@@ -850,7 +949,7 @@ fn main() -> anyhow::Result<()> {
 
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 swapchain_image,
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                 vk::ImageLayout::PRESENT_SRC_KHR,
@@ -859,35 +958,47 @@ fn main() -> anyhow::Result<()> {
 
                             set_image_layout(
                                 &device,
-                                command_buffer,
+                                command_buffer_and_queue.buffer,
                                 storage_image.image,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                 vk::ImageLayout::GENERAL,
                                 *subresource_range,
                             );
 
-                            device.end_command_buffer(command_buffer)?;
+                            device.end_command_buffer(command_buffer_and_queue.buffer)?;
+
+                            // Submit the command buffer, present the queue and then wait for it to be idle.
+                            // We could potentially get more performance out of using multiple command buffers
+                            // framws in flight, but then we'd need to have multiple copies of resources and
+                            // I don't want to work out how to do that properly with acceleration structures right now.
 
                             device.queue_submit(
-                                queue,
+                                command_buffer_and_queue.queue,
                                 &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[syncronisation.present_complete_semaphore])
+                                    .wait_semaphores(&[syncronisation.acquire_complete_semaphore])
                                     .wait_dst_stage_mask(&[
                                         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                                     ])
-                                    .command_buffers(&[command_buffer])
+                                    .command_buffers(&[command_buffer_and_queue.buffer])
                                     .signal_semaphores(&[
                                         syncronisation.rendering_complete_semaphore
                                     ])],
-                                syncronisation.draw_commands_fence,
+                                vk::Fence::null(),
                             )?;
 
                             swapchain_loader.queue_present(
-                                queue,
+                                command_buffer_and_queue.queue,
                                 &vk::PresentInfoKHR::builder()
                                     .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
                                     .swapchains(&[swapchain.swapchain])
                                     .image_indices(&[image_index]),
+                            )?;
+
+                            device.queue_wait_idle(command_buffer_and_queue.queue)?;
+
+                            device.reset_command_pool(
+                                command_buffer_and_queue.pool,
+                                vk::CommandPoolResetFlags::empty(),
                             )?;
                         }
 
@@ -934,6 +1045,48 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+#[derive(Default)]
+pub struct KbdState {
+    left: bool,
+    right: bool,
+    forward: bool,
+    back: bool,
+}
+
+#[derive(Copy, Clone)]
+pub struct FirstPersonCamera {
+    eye: Vec3,
+    pitch: f32,
+    yaw: f32,
+}
+
+impl FirstPersonCamera {
+    // https://www.3dgep.com/understanding-the-view-matrix/#FPS_Camera
+    fn as_view_matrix(self) -> Mat4 {
+        let Self { eye, pitch, yaw } = self;
+
+        let x_axis = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+        let y_axis = Vec3::new(
+            yaw.sin() * pitch.sin(),
+            pitch.cos(),
+            yaw.cos() * pitch.sin(),
+        );
+        let z_axis = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            pitch.cos() * yaw.cos(),
+        );
+
+        // Create a 4x4 view matrix from the right, up, forward and eye position vectors
+        Mat4::new(
+            Vec4::new(x_axis.x, y_axis.x, z_axis.x, 0.0),
+            Vec4::new(x_axis.y, y_axis.y, z_axis.y, 0.0),
+            Vec4::new(x_axis.z, y_axis.z, z_axis.z, 0.0),
+            Vec4::new(-x_axis.dot(eye), -y_axis.dot(eye), -z_axis.dot(eye), 1.0),
+        )
+    }
+}
+
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]
 struct PushConstants {
@@ -950,11 +1103,10 @@ struct Uniforms {
 fn build_blas(
     model_buffers: &ModelBuffers,
     name: &str,
-    device: &ash::Device,
     as_loader: &AccelerationStructureLoader,
     scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
-    command_buffer_and_queue: &CommandBufferAndQueue,
+    command_buffer: vk::CommandBuffer,
 ) -> anyhow::Result<AccelerationStructure> {
     let geometry = vk::AccelerationStructureGeometryKHR::builder()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
@@ -990,12 +1142,11 @@ fn build_blas(
         name,
         vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
         as_loader,
-        device,
         allocator,
-        &scratch_buffer,
+        scratch_buffer,
         geometry_info,
         offset,
-        command_buffer_and_queue,
+        command_buffer,
     )?;
 
     Ok(blas)
@@ -1004,15 +1155,14 @@ fn build_blas(
 fn build_tlas(
     instances: &Buffer,
     num_instances: u32,
-    device: &ash::Device,
     as_loader: &AccelerationStructureLoader,
     allocator: &mut Allocator,
     scratch_buffer: &mut ScratchBuffer,
-    command_buffer_and_queue: &CommandBufferAndQueue,
+    command_buffer: vk::CommandBuffer,
 ) -> anyhow::Result<AccelerationStructure> {
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
         vk::DeviceOrHostAddressConstKHR {
-            device_address: instances.device_address(device),
+            device_address: instances.device_address(&allocator.device),
         },
     );
 
@@ -1050,12 +1200,11 @@ fn build_tlas(
         "tlas",
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
         as_loader,
-        device,
         allocator,
-        &scratch_buffer,
+        scratch_buffer,
         geometry_info,
         offset,
-        command_buffer_and_queue,
+        command_buffer,
     )
 }
 
@@ -1087,7 +1236,7 @@ fn tlas_instance(
             vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
         ),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: blas.buffer.device_address(&device),
+            device_handle: blas.buffer.device_address(device),
         },
     }
 }

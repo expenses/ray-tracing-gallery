@@ -5,9 +5,7 @@ use gpu_allocator::vulkan::AllocationCreateDesc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::util_structs::{
-    Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager, ModelBuffers,
-};
+use crate::util_structs::{Allocator, Buffer, CStrList, Image, ImageManager, ModelBuffers};
 
 pub fn select_physical_device(
     instance: &ash::Instance,
@@ -409,8 +407,8 @@ pub fn load_gltf(
     fallback_image_index: u32,
     allocator: &mut Allocator,
     image_manager: &mut ImageManager,
-    command_buffer_and_queue: &CommandBufferAndQueue,
-) -> anyhow::Result<ModelBuffers> {
+    command_buffer: vk::CommandBuffer,
+) -> anyhow::Result<(ModelBuffers, Option<Buffer>)> {
     let gltf = gltf::Gltf::from_slice(bytes)?;
 
     let buffer_blob = gltf.blob.as_ref().unwrap();
@@ -453,7 +451,7 @@ pub fn load_gltf(
         }
     }
 
-    let mut image_index = || -> Option<anyhow::Result<u32>> {
+    let mut image_index = || -> Option<anyhow::Result<(u32, Option<Buffer>)>> {
         let material = gltf.materials().next()?;
 
         let diffuse_texture = material
@@ -470,37 +468,26 @@ pub fn load_gltf(
         let image_end = image_start + image_view.length();
         let image_bytes = &buffer_blob[image_start..image_end];
 
-        if let Err(error) = command_buffer_and_queue.begin(&allocator.device) {
-            return Some(Err(error.into()));
-        }
-
-        let (image, staging_buffer) = match load_rgba_png_image_from_bytes(
-            image_bytes,
-            &format!("{} image", name),
-            command_buffer_and_queue.buffer,
-            allocator,
-        ) {
-            Ok((image, staging_buffer)) => (image, staging_buffer),
-            Err(error) => return Some(Err(error)),
-        };
-
-        if let Err(error) = command_buffer_and_queue.finish_block_and_reset(&allocator.device) {
-            return Some(Err(error.into()));
-        }
-
-        if let Err(error) = staging_buffer.cleanup_and_drop(allocator) {
-            return Some(Err(error));
-        }
-
-        Some(Ok(image_manager.push_image(image)))
+        Some(
+            load_rgba_png_image_from_bytes(
+                image_bytes,
+                &format!("{} image", name),
+                command_buffer,
+                allocator,
+            )
+            .map(|(image, staging_buffer)| (image_manager.push_image(image), Some(staging_buffer))),
+        )
     };
 
-    let image_index = match image_index() {
+    let (image_index, staging_buffer) = match image_index() {
         Some(result) => result?,
-        None => fallback_image_index,
+        None => (fallback_image_index, None),
     };
 
-    ModelBuffers::new(&vertices, &indices, image_index, name, allocator)
+    Ok((
+        ModelBuffers::new(&vertices, &indices, image_index, name, allocator)?,
+        staging_buffer,
+    ))
 }
 
 pub fn shader_group_for_type(

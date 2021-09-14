@@ -47,8 +47,8 @@ impl Allocator {
                     log_memory_information: false,
                     log_leaks_on_shutdown: true,
                     store_stack_traces: false,
-                    log_allocations: false,
-                    log_frees: false,
+                    log_allocations: true,
+                    log_frees: true,
                     log_stack_traces: false,
                 },
                 // Needed for getting buffer device addresses
@@ -88,12 +88,11 @@ impl AccelerationStructure {
         name: &str,
         ty: vk::AccelerationStructureTypeKHR,
         loader: &AccelerationStructureLoader,
-        device: &ash::Device,
         allocator: &mut Allocator,
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
         offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
-        command_buffer_and_queue: &CommandBufferAndQueue,
+        command_buffer: vk::CommandBuffer,
     ) -> anyhow::Result<Self> {
         log::info!("Creating a {} of {} bytes", name, size);
 
@@ -123,20 +122,16 @@ impl AccelerationStructure {
         geometry_info = geometry_info
             .dst_acceleration_structure(acceleration_structure)
             .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_buffer.device_address(device),
+                device_address: scratch_buffer.device_address(&allocator.device),
             });
-
-        command_buffer_and_queue.begin(device)?;
 
         unsafe {
             loader.cmd_build_acceleration_structures(
-                command_buffer_and_queue.buffer,
+                command_buffer,
                 &[*geometry_info],
                 &[&[*offset]],
             );
         }
-
-        command_buffer_and_queue.finish_block_and_reset(device)?;
 
         Ok(Self {
             buffer,
@@ -593,29 +588,25 @@ impl ModelBuffers {
 }
 
 pub struct Syncronisation {
-    pub present_complete_semaphore: vk::Semaphore,
+    pub acquire_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
-    pub draw_commands_fence: vk::Fence,
 }
 
 impl Syncronisation {
     pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
         Ok(Self {
-            present_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
+            acquire_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
             rendering_complete_semaphore: unsafe {
                 device.create_semaphore(&semaphore_info, None)
             }?,
-            draw_commands_fence: unsafe { device.create_fence(&fence_info, None) }?,
         })
     }
 
     unsafe fn _cleanup(&self, device: &ash::Device) {
-        device.destroy_semaphore(self.present_complete_semaphore, None);
+        device.destroy_semaphore(self.acquire_complete_semaphore, None);
         device.destroy_semaphore(self.rendering_complete_semaphore, None);
-        device.destroy_fence(self.draw_commands_fence, None)
     }
 }
 
@@ -684,11 +675,11 @@ impl ImageManager {
         index
     }
 
-    pub fn write_descriptor_set<'a>(
-        &'a self,
+    pub fn write_descriptor_set(
+        &self,
         set: vk::DescriptorSet,
         binding: u32,
-    ) -> vk::WriteDescriptorSetBuilder<'a> {
+    ) -> vk::WriteDescriptorSetBuilder {
         vk::WriteDescriptorSet::builder()
             .dst_set(set)
             .dst_binding(binding)
@@ -709,9 +700,26 @@ pub struct CommandBufferAndQueue {
     pub buffer: vk::CommandBuffer,
     pub queue: vk::Queue,
     pub pool: vk::CommandPool,
+    fence: vk::Fence,
 }
 
 impl CommandBufferAndQueue {
+    pub fn new(
+        device: &ash::Device,
+        buffer: vk::CommandBuffer,
+        queue: vk::Queue,
+        pool: vk::CommandPool,
+    ) -> anyhow::Result<Self> {
+        let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::builder(), None) }?;
+
+        Ok(Self {
+            buffer,
+            queue,
+            pool,
+            fence,
+        })
+    }
+
     pub fn begin(&self, device: &ash::Device) -> anyhow::Result<()> {
         unsafe {
             device.begin_command_buffer(
@@ -724,24 +732,68 @@ impl CommandBufferAndQueue {
         Ok(())
     }
 
+    pub fn begin_buffer_guard(
+        &mut self,
+        device: ash::Device,
+    ) -> anyhow::Result<CommandBufferAndQueueRaii> {
+        self.begin(&device)?;
+
+        Ok(CommandBufferAndQueueRaii {
+            inner: self,
+            device,
+            already_finished: false,
+        })
+    }
+
     pub fn finish_block_and_reset(&self, device: &ash::Device) -> anyhow::Result<()> {
         unsafe {
             device.end_command_buffer(self.buffer)?;
 
-            let fence = device.create_fence(&vk::FenceCreateInfo::builder(), None)?;
-
             device.queue_submit(
                 self.queue,
                 &[*vk::SubmitInfo::builder().command_buffers(&[self.buffer])],
-                fence,
+                self.fence,
             )?;
 
-            device.wait_for_fences(&[fence], true, u64::MAX)?;
-            device.destroy_fence(fence, None);
+            device.wait_for_fences(&[self.fence], true, u64::MAX)?;
 
+            device.reset_fences(&[self.fence])?;
             device.reset_command_pool(self.pool, vk::CommandPoolResetFlags::empty())?;
 
             Ok(())
+        }
+    }
+}
+
+pub struct CommandBufferAndQueueRaii<'a> {
+    inner: &'a mut CommandBufferAndQueue,
+    device: ash::Device,
+    already_finished: bool,
+}
+
+impl<'a> CommandBufferAndQueueRaii<'a> {
+    pub fn buffer(&self) -> vk::CommandBuffer {
+        self.inner.buffer
+    }
+
+    pub fn finish(mut self) -> anyhow::Result<()> {
+        self.already_finished = true;
+        self.inner.finish_block_and_reset(&self.device)
+    }
+}
+
+impl<'a> Drop for CommandBufferAndQueueRaii<'a> {
+    fn drop(&mut self) {
+        log::debug!("Dropping RAII Command Buffer");
+
+        if self.already_finished {
+            return;
+        }
+
+        log::warn!("RAII Command Buffer not finished explicitly.");
+
+        if let Err(error) = self.inner.finish_block_and_reset(&self.device) {
+            log::error!("Error while submitting command buffer to queue: {}", error);
         }
     }
 }
