@@ -312,9 +312,20 @@ fn main() -> anyhow::Result<()> {
 
     // Create the tlas
 
-    init_command_buffer.finish()?;
-
-    let tlas_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
+    // Wait for BLAS builds to finish
+    unsafe {
+        device.cmd_pipeline_barrier(
+            init_command_buffer.buffer(),
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::DependencyFlags::empty(),
+            &[*vk::MemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
+            &[],
+            &[],
+        );
+    }
 
     let tlas = build_tlas(
         &instances_buffer,
@@ -323,10 +334,10 @@ fn main() -> anyhow::Result<()> {
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
-        tlas_command_buffer.buffer(),
+        init_command_buffer.buffer(),
     )?;
 
-    tlas_command_buffer.finish()?;
+    init_command_buffer.finish()?;
 
     // Clean up from initialisation.
     {
