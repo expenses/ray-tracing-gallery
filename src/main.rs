@@ -194,7 +194,7 @@ fn main() -> anyhow::Result<()> {
 
     let image_staging_buffers = {
         let (green_texture, green_texture_staging_buffer) = load_rgba_png_image_from_bytes(
-            include_bytes!("../green.png"),
+            include_bytes!("../resources/green.png"),
             "green texture",
             init_command_buffer.buffer(),
             &mut allocator,
@@ -203,7 +203,7 @@ fn main() -> anyhow::Result<()> {
         image_manager.push_image(green_texture);
 
         let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
-            include_bytes!("../pink.png"),
+            include_bytes!("../resources/pink.png"),
             "pink texture",
             init_command_buffer.buffer(),
             &mut allocator,
@@ -215,7 +215,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let (plane_buffers, plane_staging_buffer) = load_gltf(
-        include_bytes!("../plane.glb"),
+        include_bytes!("../resources/plane.glb"),
         "plane",
         0,
         &mut allocator,
@@ -224,7 +224,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let (tori_buffers, tori_staging_buffer) = load_gltf(
-        include_bytes!("../tori.glb"),
+        include_bytes!("../resources/tori.glb"),
         "tori",
         1,
         &mut allocator,
@@ -233,7 +233,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let (lain_buffers, lain_staging_buffer) = load_gltf(
-        include_bytes!("../lain.glb"),
+        include_bytes!("../resources/lain.glb"),
         "lain",
         1,
         &mut allocator,
