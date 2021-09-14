@@ -24,8 +24,9 @@ use util_structs::{
 };
 
 use util_functions::{
-    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
-    select_physical_device, set_image_layout, shader_group_for_type,
+    cmd_pipeline_image_memory_barrier_explicit, load_gltf, load_rgba_png_image_from_bytes,
+    load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
+    PipelineImageMemoryBarrierParams,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -670,7 +671,7 @@ fn main() -> anyhow::Result<()> {
     let mut camera = FirstPersonCamera {
         eye: Vec3::new(0.0, 2.0, -5.0),
         pitch: 0.0,
-        yaw: 0.0,
+        yaw: 180.0_f32.to_radians(),
     };
 
     let mut camera_velocity = Vec3::zero();
@@ -909,24 +910,35 @@ fn main() -> anyhow::Result<()> {
                                 .level_count(1)
                                 .layer_count(1);
 
-                            // prepare image to be a destimation
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                swapchain_image,
-                                vk::ImageLayout::UNDEFINED,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                *subresource_range,
-                            );
-
-                            // prepare storage image to be a source
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::GENERAL,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                *subresource_range,
+                            cmd_pipeline_image_memory_barrier_explicit(
+                                &PipelineImageMemoryBarrierParams {
+                                    device: &device,
+                                    buffer: command_buffer_and_queue.buffer,
+                                    // We just wrote the color attachment
+                                    src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                    // We need to do a transfer next.
+                                    dst_stage: vk::PipelineStageFlags::TRANSFER,
+                                    image_memory_barriers: &[
+                                        // prepare swapchain image to be a destination
+                                        *vk::ImageMemoryBarrier::builder()
+                                            .image(swapchain_image)
+                                            .old_layout(vk::ImageLayout::UNDEFINED)
+                                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                            .subresource_range(*subresource_range)
+                                            .src_access_mask(vk::AccessFlags::empty())
+                                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                        // prepare storage image to be a source
+                                        *vk::ImageMemoryBarrier::builder()
+                                            .image(storage_image.image)
+                                            .old_layout(vk::ImageLayout::GENERAL)
+                                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                            .subresource_range(*subresource_range)
+                                            .src_access_mask(
+                                                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                            )
+                                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                    ],
+                                },
                             );
 
                             device.cmd_copy_image(
@@ -947,22 +959,31 @@ fn main() -> anyhow::Result<()> {
 
                             // Reset image layouts
 
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                swapchain_image,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                vk::ImageLayout::PRESENT_SRC_KHR,
-                                *subresource_range,
-                            );
-
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                vk::ImageLayout::GENERAL,
-                                *subresource_range,
+                            cmd_pipeline_image_memory_barrier_explicit(
+                                &PipelineImageMemoryBarrierParams {
+                                    device: &device,
+                                    buffer: command_buffer_and_queue.buffer,
+                                    // We just did a transfer
+                                    src_stage: vk::PipelineStageFlags::TRANSFER,
+                                    // Nothing happens after this.
+                                    dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                                    image_memory_barriers: &[
+                                        // Reset swapchain image
+                                        *vk::ImageMemoryBarrier::builder()
+                                            .image(swapchain_image)
+                                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                                            .subresource_range(*subresource_range)
+                                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                        // Reset storage image
+                                        *vk::ImageMemoryBarrier::builder()
+                                            .image(storage_image.image)
+                                            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                            .new_layout(vk::ImageLayout::GENERAL)
+                                            .subresource_range(*subresource_range)
+                                            .src_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                    ],
+                                },
                             );
 
                             device.end_command_buffer(command_buffer_and_queue.buffer)?;

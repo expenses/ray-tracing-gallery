@@ -7,7 +7,9 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::util_functions::{sbt_aligned_size, set_image_layout};
+use crate::util_functions::{
+    cmd_pipeline_image_memory_barrier_explicit, sbt_aligned_size, PipelineImageMemoryBarrierParams,
+};
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -482,14 +484,23 @@ impl Image {
 
         command_buffer_and_queue.begin(&allocator.device)?;
 
-        set_image_layout(
-            &allocator.device,
-            command_buffer_and_queue.buffer,
-            image,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::GENERAL,
-            *subresource_range,
-        );
+        unsafe {
+            cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+                device: &allocator.device,
+                buffer: command_buffer_and_queue.buffer,
+                // No need to block on anything before this.
+                src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
+                // We're blocking the use of the texture in ray tracing
+                dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
+                    .image(image)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .subresource_range(*subresource_range)
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)],
+            });
+        }
 
         command_buffer_and_queue.finish_block_and_reset(&allocator.device)?;
 
