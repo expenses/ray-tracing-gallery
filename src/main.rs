@@ -422,24 +422,32 @@ fn main() -> anyhow::Result<()> {
                     ),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(2)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(3)
+                    .binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(4)
+                    .binding(3)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(image_manager.descriptor_count())
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            ]),
+            None,
+        )
+    }?;
+
+    let output_image_descriptor_set_layout = unsafe {
+        device.create_descriptor_set_layout(
+            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             ]),
             None,
         )
@@ -465,7 +473,7 @@ fn main() -> anyhow::Result<()> {
                         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .descriptor_count(image_manager.descriptor_count()),
                 ])
-                .max_sets(1),
+                .max_sets(2),
             None,
         )
     }?;
@@ -473,12 +481,13 @@ fn main() -> anyhow::Result<()> {
     let descriptor_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[descriptor_set_layout])
+                .set_layouts(&[descriptor_set_layout, output_image_descriptor_set_layout])
                 .descriptor_pool(descriptor_pool),
         )
     }?;
 
     let descriptor_set = descriptor_sets[0];
+    let output_image_descriptor_set = descriptor_sets[1];
 
     let structures = &[tlas.acceleration_structure];
 
@@ -501,27 +510,27 @@ fn main() -> anyhow::Result<()> {
                     write_as
                 },
                 *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
-                    .dst_binding(1)
+                    .dst_set(output_image_descriptor_set)
+                    .dst_binding(0)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .image_info(&[*vk::DescriptorImageInfo::builder()
                         .image_view(storage_image.view)
                         .image_layout(vk::ImageLayout::GENERAL)]),
                 *vk::WriteDescriptorSet::builder()
                     .dst_set(descriptor_set)
-                    .dst_binding(2)
+                    .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&[*vk::DescriptorBufferInfo::builder()
                         .buffer(model_info_buffer.buffer)
                         .range(vk::WHOLE_SIZE)]),
                 *vk::WriteDescriptorSet::builder()
                     .dst_set(descriptor_set)
-                    .dst_binding(3)
+                    .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&[*vk::DescriptorBufferInfo::builder()
                         .buffer(uniform_buffer.buffer)
                         .range(vk::WHOLE_SIZE)]),
-                *image_manager.write_descriptor_set(descriptor_set, 4),
+                *image_manager.write_descriptor_set(descriptor_set, 3),
             ],
             &[],
         );
@@ -534,7 +543,7 @@ fn main() -> anyhow::Result<()> {
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[descriptor_set_layout])
+                .set_layouts(&[descriptor_set_layout, output_image_descriptor_set_layout])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
                     .size(std::mem::size_of::<PushConstants>() as u32)]),
@@ -739,8 +748,8 @@ fn main() -> anyhow::Result<()> {
                         unsafe {
                             device.update_descriptor_sets(
                                 &[*vk::WriteDescriptorSet::builder()
-                                    .dst_set(descriptor_set)
-                                    .dst_binding(1)
+                                    .dst_set(output_image_descriptor_set)
+                                    .dst_binding(0)
                                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                                     .image_info(&[*vk::DescriptorImageInfo::builder()
                                         .image_view(storage_image.view)
@@ -885,7 +894,7 @@ fn main() -> anyhow::Result<()> {
                                     vk::PipelineBindPoint::RAY_TRACING_KHR,
                                     pipeline_layout,
                                     0,
-                                    &[descriptor_set],
+                                    &[descriptor_set, output_image_descriptor_set],
                                     &[],
                                 );
 
@@ -1074,6 +1083,12 @@ fn main() -> anyhow::Result<()> {
             log::error!("Error: {}", loop_closure);
         }
     });
+}
+
+pub struct PerFrameResources {
+    swapchain_image_descriptor_sets: Vec<vk::DescriptorSet>,
+    command_buffers: Vec<vk::CommandBuffer>,
+    command_pools: Vec<vk::CommandPool>,
 }
 
 #[derive(Default)]

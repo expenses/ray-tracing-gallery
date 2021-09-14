@@ -12,7 +12,7 @@ layout(location = 0) rayPayloadInEXT vec3 hitValue;
 layout(location = 1) rayPayloadEXT bool shadowed;
 hitAttributeEXT vec2 attribs;
 
-layout(set = 0, binding = 3) uniform Uniforms {
+layout(set = 0, binding = 2) uniform Uniforms {
     vec3 sun_dir;
 };
 
@@ -39,11 +39,11 @@ layout(buffer_reference, scalar) buffer Indices {
     uint16_t inner[];
 };
 
-layout(set = 0, binding = 2) buffer ModelInformations {
+layout(set = 0, binding = 1) buffer ModelInformations {
     ModelInfo model_info[];
 };
 
-layout(set = 0, binding = 4) uniform sampler2D textures[];
+layout(set = 0, binding = 3) uniform sampler2D textures[];
 
 Vertex load_vertex(uint index, ModelInfo info) {
     Vertex vertex;

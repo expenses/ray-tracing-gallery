@@ -1,8 +1,8 @@
 #version 460
 #extension GL_EXT_ray_tracing : enable
 
-layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
-layout(binding = 1, set = 0, rgba8) uniform image2D image;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 1, binding = 0, rgba8) uniform image2D image;
 
 layout(push_constant) uniform PushConstants {
 	mat4 viewInverse;
