@@ -277,7 +277,11 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let instances = &[
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+
+    let mut instances = vec![
         tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
@@ -285,18 +289,32 @@ fn main() -> anyhow::Result<()> {
             &device,
             1,
         ),
-        tlas_instance(
+        /*tlas_instance(
             Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0))
                 * Mat4::from_rotation_y(150.0_f32.to_radians())
                 * Mat4::from_scale(0.5),
             &lain_blas,
             &device,
             2,
-        ),
+        ),*/
     ];
 
+    for _ in 0..10000 {
+        instances.push(tlas_instance(
+            Mat4::from_translation(Vec3::new(
+                rng.gen_range(-10.0..10.0),
+                rng.gen_range(0.5..2.5),
+                rng.gen_range(-10.0..10.0),
+            )) * Mat4::from_rotation_y(rng.gen_range(0.0..100.0))
+                * Mat4::from_scale(rng.gen_range(0.01..0.1)),
+            &tori_blas,
+            &device,
+            1,
+        ))
+    }
+
     let instances_buffer = Buffer::new_with_custom_alignment(
-        unsafe { instances_as_bytes(instances) },
+        unsafe { instances_as_bytes(&instances) },
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
