@@ -7,7 +7,7 @@ use ash::extensions::khr::{
 };
 use ash::vk;
 use std::ffi::CStr;
-use ultraviolet::{Mat4, Vec2, Vec3};
+use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::{
     event_loop::{ControlFlow, EventLoop},
@@ -675,6 +675,16 @@ fn main() -> anyhow::Result<()> {
         0.1,
     );
 
+    let mut camera = FirstPersonCamera {
+        eye: Vec3::new(0.0, 2.0, -5.0),
+        pitch: 0.0,
+        yaw: 0.0,
+    };
+
+    let mut camera_velocity = Vec3::zero();
+
+    let mut kbd_state = KbdState::default();
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
@@ -749,17 +759,64 @@ fn main() -> anyhow::Result<()> {
             } => {
                 let pressed = state == ElementState::Pressed;
 
-                if key == VirtualKeyCode::F11 && pressed {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    } else {
-                        window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                match key {
+                    VirtualKeyCode::F11 => {
+                        if pressed {
+                            if window.fullscreen().is_some() {
+                                window.set_fullscreen(None);
+                            } else {
+                                window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                            }
+                        }
                     }
+                    VirtualKeyCode::W => kbd_state.forward = pressed,
+                    VirtualKeyCode::S => kbd_state.back = pressed,
+                    VirtualKeyCode::A => kbd_state.left = pressed,
+                    VirtualKeyCode::D => kbd_state.right = pressed,
+                    _ => {}
                 }
             }
             _ => {}
         },
         Event::MainEventsCleared => {
+            {
+                let mut local_velocity = Vec3::zero();
+                let acceleration = 0.02;
+                let max_velocity = 0.2;
+
+                if kbd_state.forward {
+                    local_velocity.z -= acceleration * camera.pitch.cos();
+                    local_velocity.y += acceleration * camera.pitch.sin();
+                }
+
+                if kbd_state.back {
+                    local_velocity.z += acceleration * camera.pitch.cos();
+                    local_velocity.y -= acceleration * camera.pitch.sin();
+                }
+
+                if kbd_state.left {
+                    local_velocity.x -= acceleration;
+                }
+
+                if kbd_state.right {
+                    local_velocity.x += acceleration;
+                }
+
+                camera_velocity += Mat3::from_rotation_y(-camera.yaw) * local_velocity;
+                let magnitude = camera_velocity.mag();
+                if magnitude > max_velocity {
+                    let clamped_magnitude = magnitude.max(max_velocity);
+                    camera_velocity *= clamped_magnitude / magnitude;
+                }
+
+                camera.eye += camera_velocity;
+
+                camera_velocity *= 0.9;
+            }
+
+            window.request_redraw();
+        }
+        Event::RedrawRequested(_) => {
             match unsafe {
                 swapchain_loader.acquire_next_image(
                     swapchain.swapchain,
@@ -807,19 +864,13 @@ fn main() -> anyhow::Result<()> {
                                 &[],
                             );
 
-                            let view_matrix = Mat4::look_at(
-                                Vec3::new(0.0, 2.0, -5.0),
-                                Vec3::zero(),
-                                Vec3::unit_y(),
-                            );
-
                             device.cmd_push_constants(
                                 command_buffer_and_queue.buffer,
                                 pipeline_layout,
                                 vk::ShaderStageFlags::RAYGEN_KHR,
                                 0,
                                 bytemuck::bytes_of(&PushConstants {
-                                    view_inverse: view_matrix.inversed(),
+                                    view_inverse: camera.as_view_matrix().inversed(),
                                     proj_inverse: perspective_matrix.inversed(),
                                 }),
                             );
@@ -969,6 +1020,48 @@ fn main() -> anyhow::Result<()> {
         },
         _ => {}
     })
+}
+
+#[derive(Default)]
+pub struct KbdState {
+    left: bool,
+    right: bool,
+    forward: bool,
+    back: bool,
+}
+
+#[derive(Copy, Clone)]
+pub struct FirstPersonCamera {
+    eye: Vec3,
+    pitch: f32,
+    yaw: f32,
+}
+
+impl FirstPersonCamera {
+    // https://www.3dgep.com/understanding-the-view-matrix/#FPS_Camera
+    fn as_view_matrix(self) -> Mat4 {
+        let Self { eye, pitch, yaw } = self;
+
+        let x_axis = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+        let y_axis = Vec3::new(
+            yaw.sin() * pitch.sin(),
+            pitch.cos(),
+            yaw.cos() * pitch.sin(),
+        );
+        let z_axis = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            pitch.cos() * yaw.cos(),
+        );
+
+        // Create a 4x4 view matrix from the right, up, forward and eye position vectors
+        Mat4::new(
+            Vec4::new(x_axis.x, y_axis.x, z_axis.x, 0.0),
+            Vec4::new(x_axis.y, y_axis.y, z_axis.y, 0.0),
+            Vec4::new(x_axis.z, y_axis.z, z_axis.z, 0.0),
+            Vec4::new(-x_axis.dot(eye), -y_axis.dot(eye), -z_axis.dot(eye), 1.0),
+        )
+    }
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
