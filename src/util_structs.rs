@@ -7,9 +7,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, sbt_aligned_size, PipelineImageMemoryBarrierParams,
-};
+use crate::util_functions::sbt_aligned_size;
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -415,102 +413,6 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new_storage_image(
-        width: u32,
-        height: u32,
-        name: &str,
-        format: vk::Format,
-        command_buffer_and_queue: &CommandBufferAndQueue,
-        allocator: &mut Allocator,
-    ) -> anyhow::Result<Self> {
-        let image = unsafe {
-            allocator.device.create_image(
-                &vk::ImageCreateInfo::builder()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(format)
-                    .extent(vk::Extent3D {
-                        width,
-                        height,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .initial_layout(vk::ImageLayout::UNDEFINED)
-                    .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE),
-                None,
-            )
-        }?;
-
-        let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
-
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
-            name,
-            requirements,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            linear: false,
-        })?;
-
-        unsafe {
-            allocator
-                .device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())?;
-
-            allocator.set_object_name(image, name)?;
-        };
-
-        let view = unsafe {
-            allocator.device.create_image_view(
-                &vk::ImageViewCreateInfo::builder()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(format)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::builder()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .level_count(1)
-                            .layer_count(1)
-                            .build(),
-                    ),
-                None,
-            )
-        }?;
-
-        let subresource_range = vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        command_buffer_and_queue.begin(&allocator.device)?;
-
-        unsafe {
-            cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
-                device: &allocator.device,
-                buffer: command_buffer_and_queue.buffer,
-                // No need to block on anything before this.
-                src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
-                // We're blocking the use of the texture in ray tracing
-                dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
-                    .image(image)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .subresource_range(*subresource_range)
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)],
-            });
-        }
-
-        command_buffer_and_queue.finish_block_and_reset(&allocator.device)?;
-
-        Ok(Self {
-            image,
-            view,
-            allocation,
-        })
-    }
-
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         allocator.inner.free(self.allocation.clone())?;
 
@@ -624,6 +526,7 @@ impl Syncronisation {
 pub struct Swapchain {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -640,7 +543,29 @@ impl Swapchain {
                 allocator.set_object_name(*image, &format!("Swapchain image {}", i))?;
             }
 
-            Ok(Self { images, swapchain })
+            let image_views: Vec<_> = images
+                .iter()
+                .map(|swapchain_image| {
+                    let image_view_info = vk::ImageViewCreateInfo::builder()
+                        .image(*swapchain_image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(info.image_format)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .level_count(1)
+                                .layer_count(1)
+                                .build(),
+                        );
+                    allocator.device.create_image_view(&image_view_info, None)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Self {
+                images,
+                swapchain,
+                image_views,
+            })
         }
     }
 }
