@@ -183,11 +183,7 @@ fn main() -> anyhow::Result<()> {
 
         let command_buffer = unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
 
-        CommandBufferAndQueue {
-            buffer: command_buffer,
-            queue,
-            pool: command_pool,
-        }
+        CommandBufferAndQueue::new(&device, command_buffer, queue, command_pool)?
     };
 
     // Load images and models
@@ -254,7 +250,6 @@ fn main() -> anyhow::Result<()> {
     let plane_blas = build_blas(
         &plane_buffers,
         "plane blas",
-        &device,
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
@@ -264,7 +259,6 @@ fn main() -> anyhow::Result<()> {
     let tori_blas = build_blas(
         &tori_buffers,
         "tori blas",
-        &device,
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
@@ -274,7 +268,6 @@ fn main() -> anyhow::Result<()> {
     let lain_blas = build_blas(
         &lain_buffers,
         "lain blas",
-        &device,
         &as_loader,
         &mut scratch_buffer,
         &mut allocator,
@@ -330,7 +323,6 @@ fn main() -> anyhow::Result<()> {
     let tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
-        &device,
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
@@ -699,15 +691,6 @@ fn main() -> anyhow::Result<()> {
                 );
 
                 let mut resize = || -> anyhow::Result<()> {
-                    unsafe {
-                        device.device_wait_idle()?;
-
-                        device.reset_command_pool(
-                            command_buffer_and_queue.pool,
-                            vk::CommandPoolResetFlags::empty(),
-                        )?;
-                    }
-
                     // Free the old storage image, create a new one and write it to the descriptor set.
 
                     storage_image.cleanup(&mut allocator)?;
@@ -821,7 +804,7 @@ fn main() -> anyhow::Result<()> {
                 swapchain_loader.acquire_next_image(
                     swapchain.swapchain,
                     u64::MAX,
-                    syncronisation.present_complete_semaphore,
+                    syncronisation.acquire_complete_semaphore,
                     vk::Fence::null(),
                 )
             } {
@@ -830,19 +813,6 @@ fn main() -> anyhow::Result<()> {
                         let swapchain_image = swapchain.images[image_index as usize];
 
                         unsafe {
-                            device.wait_for_fences(
-                                &[syncronisation.draw_commands_fence],
-                                true,
-                                u64::MAX,
-                            )?;
-
-                            device.reset_fences(&[syncronisation.draw_commands_fence])?;
-
-                            device.reset_command_pool(
-                                command_buffer_and_queue.pool,
-                                vk::CommandPoolResetFlags::empty(),
-                            )?;
-
                             device.begin_command_buffer(
                                 command_buffer_and_queue.buffer,
                                 &vk::CommandBufferBeginInfo::builder()
@@ -956,10 +926,15 @@ fn main() -> anyhow::Result<()> {
 
                             device.end_command_buffer(command_buffer_and_queue.buffer)?;
 
+                            // Submit the command buffer, present the queue and then wait for it to be idle.
+                            // We could potentially get more performance out of using multiple command buffers
+                            // framws in flight, but then we'd need to have multiple copies of resources and
+                            // I don't want to work out how to do that properly with acceleration structures right now.
+
                             device.queue_submit(
                                 command_buffer_and_queue.queue,
                                 &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[syncronisation.present_complete_semaphore])
+                                    .wait_semaphores(&[syncronisation.acquire_complete_semaphore])
                                     .wait_dst_stage_mask(&[
                                         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                                     ])
@@ -967,7 +942,7 @@ fn main() -> anyhow::Result<()> {
                                     .signal_semaphores(&[
                                         syncronisation.rendering_complete_semaphore
                                     ])],
-                                syncronisation.draw_commands_fence,
+                                vk::Fence::null(),
                             )?;
 
                             swapchain_loader.queue_present(
@@ -976,6 +951,13 @@ fn main() -> anyhow::Result<()> {
                                     .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
                                     .swapchains(&[swapchain.swapchain])
                                     .image_indices(&[image_index]),
+                            )?;
+
+                            device.queue_wait_idle(command_buffer_and_queue.queue)?;
+
+                            device.reset_command_pool(
+                                command_buffer_and_queue.pool,
+                                vk::CommandPoolResetFlags::empty(),
                             )?;
                         }
 
@@ -1080,7 +1062,6 @@ struct Uniforms {
 fn build_blas(
     model_buffers: &ModelBuffers,
     name: &str,
-    device: &ash::Device,
     as_loader: &AccelerationStructureLoader,
     scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
@@ -1120,7 +1101,6 @@ fn build_blas(
         name,
         vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
         as_loader,
-        device,
         allocator,
         scratch_buffer,
         geometry_info,
@@ -1134,7 +1114,6 @@ fn build_blas(
 fn build_tlas(
     instances: &Buffer,
     num_instances: u32,
-    device: &ash::Device,
     as_loader: &AccelerationStructureLoader,
     allocator: &mut Allocator,
     scratch_buffer: &mut ScratchBuffer,
@@ -1142,7 +1121,7 @@ fn build_tlas(
 ) -> anyhow::Result<AccelerationStructure> {
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
         vk::DeviceOrHostAddressConstKHR {
-            device_address: instances.device_address(device),
+            device_address: instances.device_address(&allocator.device),
         },
     );
 
@@ -1180,7 +1159,6 @@ fn build_tlas(
         "tlas",
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
         as_loader,
-        device,
         allocator,
         scratch_buffer,
         geometry_info,
