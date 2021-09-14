@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/lain.png)
+![](screenshots/instances.png)
 
 ## Acknowledgements and sources
 
