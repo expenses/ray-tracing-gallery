@@ -658,6 +658,8 @@ fn main() -> anyhow::Result<()> {
         image_count = surface_caps.max_image_count;
     }
 
+    log::info!("Using 3 swapchain images at a time.");
+
     let mut swapchain_info = *vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
         .min_image_count(image_count)
@@ -701,387 +703,377 @@ fn main() -> anyhow::Result<()> {
     let mut screen_center =
         winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
 
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(size) => {
-                extent.width = size.width as u32;
-                extent.height = size.height as u32;
+    event_loop.run(move |event, _, control_flow| {
+        let loop_closure = || -> anyhow::Result<()> {
+            match event {
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::Resized(size) => {
+                        extent.width = size.width as u32;
+                        extent.height = size.height as u32;
 
-                screen_center = winit::dpi::LogicalPosition::new(
-                    extent.width as f64 / 2.0,
-                    extent.height as f64 / 2.0,
-                );
-
-                perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
-                    59.0_f32.to_radians(),
-                    extent.width as f32 / extent.height as f32,
-                    0.1,
-                );
-
-                let mut resize = || -> anyhow::Result<()> {
-                    // Free the old storage image, create a new one and write it to the descriptor set.
-
-                    storage_image.cleanup(&mut allocator)?;
-
-                    storage_image = Image::new_storage_image(
-                        extent.width,
-                        extent.height,
-                        "storage image",
-                        surface_format.format,
-                        &command_buffer_and_queue,
-                        &mut allocator,
-                    )?;
-
-                    unsafe {
-                        device.update_descriptor_sets(
-                            &[*vk::WriteDescriptorSet::builder()
-                                .dst_set(descriptor_set)
-                                .dst_binding(1)
-                                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                                .image_info(&[*vk::DescriptorImageInfo::builder()
-                                    .image_view(storage_image.view)
-                                    .image_layout(vk::ImageLayout::GENERAL)])],
-                            &[],
+                        screen_center = winit::dpi::LogicalPosition::new(
+                            extent.width as f64 / 2.0,
+                            extent.height as f64 / 2.0,
                         );
+
+                        perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
+                            59.0_f32.to_radians(),
+                            extent.width as f32 / extent.height as f32,
+                            0.1,
+                        );
+
+                        // Free the old storage image, create a new one and write it to the descriptor set.
+
+                        storage_image.cleanup(&mut allocator)?;
+
+                        storage_image = Image::new_storage_image(
+                            extent.width,
+                            extent.height,
+                            "storage image",
+                            surface_format.format,
+                            &command_buffer_and_queue,
+                            &mut allocator,
+                        )?;
+
+                        unsafe {
+                            device.update_descriptor_sets(
+                                &[*vk::WriteDescriptorSet::builder()
+                                    .dst_set(descriptor_set)
+                                    .dst_binding(1)
+                                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                                    .image_info(&[*vk::DescriptorImageInfo::builder()
+                                        .image_view(storage_image.view)
+                                        .image_layout(vk::ImageLayout::GENERAL)])],
+                                &[],
+                            );
+                        }
+
+                        // Replace the swapchain.
+
+                        swapchain_info.image_extent = extent;
+                        swapchain_info.old_swapchain = swapchain.swapchain;
+
+                        swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
                     }
-
-                    // Replace the swapchain.
-
-                    swapchain_info.image_extent = extent;
-                    swapchain_info.old_swapchain = swapchain.swapchain;
-
-                    swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
-
-                    Ok(())
-                };
-
-                if let Err(resize_error) = resize() {
-                    log::error!("Error while resizing: {}", resize_error);
-                }
-            }
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(key),
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state,
+                                virtual_keycode: Some(key),
+                                ..
+                            },
                         ..
-                    },
-                ..
-            } => {
-                let pressed = state == ElementState::Pressed;
+                    } => {
+                        let pressed = state == ElementState::Pressed;
 
-                match key {
-                    VirtualKeyCode::F11 => {
-                        if pressed {
-                            if window.fullscreen().is_some() {
-                                window.set_fullscreen(None);
-                            } else {
-                                window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                        match key {
+                            VirtualKeyCode::F11 => {
+                                if pressed {
+                                    if window.fullscreen().is_some() {
+                                        window.set_fullscreen(None);
+                                    } else {
+                                        window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                                    }
+                                }
                             }
+                            VirtualKeyCode::W => kbd_state.forward = pressed,
+                            VirtualKeyCode::S => kbd_state.back = pressed,
+                            VirtualKeyCode::A => kbd_state.left = pressed,
+                            VirtualKeyCode::D => kbd_state.right = pressed,
+                            VirtualKeyCode::G => {
+                                if pressed {
+                                    cursor_grab = !cursor_grab;
+
+                                    if cursor_grab {
+                                        window.set_cursor_position(screen_center)?;
+                                    }
+
+                                    window.set_cursor_visible(!cursor_grab);
+                                    window.set_cursor_grab(cursor_grab)?;
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    VirtualKeyCode::W => kbd_state.forward = pressed,
-                    VirtualKeyCode::S => kbd_state.back = pressed,
-                    VirtualKeyCode::A => kbd_state.left = pressed,
-                    VirtualKeyCode::D => kbd_state.right = pressed,
-                    VirtualKeyCode::G => {
-                        if pressed {
-                            cursor_grab = !cursor_grab;
+                    WindowEvent::CursorMoved { position, .. } => {
+                        if cursor_grab {
+                            let position = position.to_logical::<f64>(window.scale_factor());
 
-                            if cursor_grab {
-                                window.set_cursor_position(screen_center).unwrap();
-                            }
+                            let delta = Vec2::new(
+                                (position.x - screen_center.x) as f32,
+                                (position.y - screen_center.y) as f32,
+                            );
 
-                            window.set_cursor_visible(!cursor_grab);
-                            window.set_cursor_grab(cursor_grab).unwrap();
+                            window.set_cursor_position(screen_center)?;
+
+                            use std::f32::consts::PI;
+
+                            camera.yaw -= delta.x.to_radians() * 0.05;
+                            camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
+                                .min(PI / 2.0)
+                                .max(-PI / 2.0);
                         }
                     }
                     _ => {}
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if cursor_grab {
-                    let position = position.to_logical::<f64>(window.scale_factor());
+                },
+                Event::MainEventsCleared => {
+                    {
+                        let mut local_velocity = Vec3::zero();
+                        let acceleration = 0.005;
+                        let max_velocity = 0.2;
 
-                    let delta = Vec2::new(
-                        (position.x - screen_center.x) as f32,
-                        (position.y - screen_center.y) as f32,
-                    );
-
-                    window.set_cursor_position(screen_center).unwrap();
-
-                    use std::f32::consts::PI;
-
-                    camera.yaw -= delta.x.to_radians() * 0.05;
-                    camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
-                        .min(PI / 2.0)
-                        .max(-PI / 2.0);
-                }
-            }
-            _ => {}
-        },
-        Event::MainEventsCleared => {
-            {
-                let mut local_velocity = Vec3::zero();
-                let acceleration = 0.005;
-                let max_velocity = 0.2;
-
-                if kbd_state.forward {
-                    local_velocity.z -= acceleration * camera.pitch.cos();
-                    local_velocity.y += acceleration * camera.pitch.sin();
-                }
-
-                if kbd_state.back {
-                    local_velocity.z += acceleration * camera.pitch.cos();
-                    local_velocity.y -= acceleration * camera.pitch.sin();
-                }
-
-                if kbd_state.left {
-                    local_velocity.x -= acceleration;
-                }
-
-                if kbd_state.right {
-                    local_velocity.x += acceleration;
-                }
-
-                camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
-                let magnitude = camera_velocity.mag();
-                if magnitude > max_velocity {
-                    let clamped_magnitude = magnitude.max(max_velocity);
-                    camera_velocity *= clamped_magnitude / magnitude;
-                }
-
-                camera.eye += camera_velocity;
-
-                camera_velocity *= 0.9;
-            }
-
-            window.request_redraw();
-        }
-        Event::RedrawRequested(_) => {
-            match unsafe {
-                swapchain_loader.acquire_next_image(
-                    swapchain.swapchain,
-                    u64::MAX,
-                    syncronisation.acquire_complete_semaphore,
-                    vk::Fence::null(),
-                )
-            } {
-                Ok((image_index, _suboptimal)) => {
-                    let render = || -> anyhow::Result<()> {
-                        let swapchain_image = swapchain.images[image_index as usize];
-
-                        unsafe {
-                            device.begin_command_buffer(
-                                command_buffer_and_queue.buffer,
-                                &vk::CommandBufferBeginInfo::builder()
-                                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                            )?;
-
-                            device.cmd_bind_pipeline(
-                                command_buffer_and_queue.buffer,
-                                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                pipeline,
-                            );
-
-                            device.cmd_bind_descriptor_sets(
-                                command_buffer_and_queue.buffer,
-                                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                pipeline_layout,
-                                0,
-                                &[descriptor_set],
-                                &[],
-                            );
-
-                            device.cmd_push_constants(
-                                command_buffer_and_queue.buffer,
-                                pipeline_layout,
-                                vk::ShaderStageFlags::RAYGEN_KHR,
-                                0,
-                                bytemuck::bytes_of(&PushConstants {
-                                    view_inverse: camera.as_view_matrix().inversed(),
-                                    proj_inverse: perspective_matrix.inversed(),
-                                }),
-                            );
-
-                            pipeline_loader.cmd_trace_rays(
-                                command_buffer_and_queue.buffer,
-                                &raygen_sbt.address_region,
-                                &miss_sbt.address_region,
-                                &closest_hit_sbt.address_region,
-                                // We don't use callable shaders here
-                                &Default::default(),
-                                extent.width,
-                                extent.height,
-                                1,
-                            );
-
-                            let subresource = *vk::ImageSubresourceLayers::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .mip_level(0)
-                                .base_array_layer(0)
-                                .layer_count(1);
-
-                            let subresource_range = vk::ImageSubresourceRange::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .level_count(1)
-                                .layer_count(1);
-
-                            cmd_pipeline_image_memory_barrier_explicit(
-                                &PipelineImageMemoryBarrierParams {
-                                    device: &device,
-                                    buffer: command_buffer_and_queue.buffer,
-                                    // We just wrote the color attachment
-                                    src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    // We need to do a transfer next.
-                                    dst_stage: vk::PipelineStageFlags::TRANSFER,
-                                    image_memory_barriers: &[
-                                        // prepare swapchain image to be a destination
-                                        *vk::ImageMemoryBarrier::builder()
-                                            .image(swapchain_image)
-                                            .old_layout(vk::ImageLayout::UNDEFINED)
-                                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                            .subresource_range(*subresource_range)
-                                            .src_access_mask(vk::AccessFlags::empty())
-                                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                        // prepare storage image to be a source
-                                        *vk::ImageMemoryBarrier::builder()
-                                            .image(storage_image.image)
-                                            .old_layout(vk::ImageLayout::GENERAL)
-                                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                            .subresource_range(*subresource_range)
-                                            .src_access_mask(
-                                                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                                            )
-                                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                    ],
-                                },
-                            );
-
-                            device.cmd_copy_image(
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                swapchain_image,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                &[*vk::ImageCopy::builder()
-                                    .src_subresource(subresource)
-                                    .dst_subresource(subresource)
-                                    .extent(vk::Extent3D {
-                                        width: extent.width,
-                                        height: extent.height,
-                                        depth: 1,
-                                    })],
-                            );
-
-                            // Reset image layouts
-
-                            cmd_pipeline_image_memory_barrier_explicit(
-                                &PipelineImageMemoryBarrierParams {
-                                    device: &device,
-                                    buffer: command_buffer_and_queue.buffer,
-                                    // We just did a transfer
-                                    src_stage: vk::PipelineStageFlags::TRANSFER,
-                                    // Nothing happens after this.
-                                    dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                                    image_memory_barriers: &[
-                                        // Reset swapchain image
-                                        *vk::ImageMemoryBarrier::builder()
-                                            .image(swapchain_image)
-                                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                                            .subresource_range(*subresource_range)
-                                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                        // Reset storage image
-                                        *vk::ImageMemoryBarrier::builder()
-                                            .image(storage_image.image)
-                                            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                            .new_layout(vk::ImageLayout::GENERAL)
-                                            .subresource_range(*subresource_range)
-                                            .src_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                    ],
-                                },
-                            );
-
-                            device.end_command_buffer(command_buffer_and_queue.buffer)?;
-
-                            // Submit the command buffer, present the queue and then wait for it to be idle.
-                            // We could potentially get more performance out of using multiple command buffers
-                            // framws in flight, but then we'd need to have multiple copies of resources and
-                            // I don't want to work out how to do that properly with acceleration structures right now.
-
-                            device.queue_submit(
-                                command_buffer_and_queue.queue,
-                                &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[syncronisation.acquire_complete_semaphore])
-                                    .wait_dst_stage_mask(&[
-                                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    ])
-                                    .command_buffers(&[command_buffer_and_queue.buffer])
-                                    .signal_semaphores(&[
-                                        syncronisation.rendering_complete_semaphore
-                                    ])],
-                                vk::Fence::null(),
-                            )?;
-
-                            swapchain_loader.queue_present(
-                                command_buffer_and_queue.queue,
-                                &vk::PresentInfoKHR::builder()
-                                    .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
-                                    .swapchains(&[swapchain.swapchain])
-                                    .image_indices(&[image_index]),
-                            )?;
-
-                            device.queue_wait_idle(command_buffer_and_queue.queue)?;
-
-                            device.reset_command_pool(
-                                command_buffer_and_queue.pool,
-                                vk::CommandPoolResetFlags::empty(),
-                            )?;
+                        if kbd_state.forward {
+                            local_velocity.z -= acceleration * camera.pitch.cos();
+                            local_velocity.y += acceleration * camera.pitch.sin();
                         }
 
-                        Ok(())
-                    };
+                        if kbd_state.back {
+                            local_velocity.z += acceleration * camera.pitch.cos();
+                            local_velocity.y -= acceleration * camera.pitch.sin();
+                        }
 
-                    if let Err(render_error) = render() {
-                        log::error!("Error while rendering or presenting: {}", render_error);
+                        if kbd_state.left {
+                            local_velocity.x -= acceleration;
+                        }
+
+                        if kbd_state.right {
+                            local_velocity.x += acceleration;
+                        }
+
+                        camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
+                        let magnitude = camera_velocity.mag();
+                        if magnitude > max_velocity {
+                            let clamped_magnitude = magnitude.max(max_velocity);
+                            camera_velocity *= clamped_magnitude / magnitude;
+                        }
+
+                        camera.eye += camera_velocity;
+
+                        camera_velocity *= 0.9;
+                    }
+
+                    window.request_redraw();
+                }
+                Event::RedrawRequested(_) => {
+                    match unsafe {
+                        swapchain_loader.acquire_next_image(
+                            swapchain.swapchain,
+                            u64::MAX,
+                            syncronisation.acquire_complete_semaphore,
+                            vk::Fence::null(),
+                        )
+                    } {
+                        Ok((image_index, _suboptimal)) => {
+                            let swapchain_image = swapchain.images[image_index as usize];
+
+                            unsafe {
+                                device.begin_command_buffer(
+                                    command_buffer_and_queue.buffer,
+                                    &vk::CommandBufferBeginInfo::builder()
+                                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                                )?;
+
+                                device.cmd_bind_pipeline(
+                                    command_buffer_and_queue.buffer,
+                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                    pipeline,
+                                );
+
+                                device.cmd_bind_descriptor_sets(
+                                    command_buffer_and_queue.buffer,
+                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                    pipeline_layout,
+                                    0,
+                                    &[descriptor_set],
+                                    &[],
+                                );
+
+                                device.cmd_push_constants(
+                                    command_buffer_and_queue.buffer,
+                                    pipeline_layout,
+                                    vk::ShaderStageFlags::RAYGEN_KHR,
+                                    0,
+                                    bytemuck::bytes_of(&PushConstants {
+                                        view_inverse: camera.as_view_matrix().inversed(),
+                                        proj_inverse: perspective_matrix.inversed(),
+                                    }),
+                                );
+
+                                pipeline_loader.cmd_trace_rays(
+                                    command_buffer_and_queue.buffer,
+                                    &raygen_sbt.address_region,
+                                    &miss_sbt.address_region,
+                                    &closest_hit_sbt.address_region,
+                                    // We don't use callable shaders here
+                                    &Default::default(),
+                                    extent.width,
+                                    extent.height,
+                                    1,
+                                );
+
+                                let subresource = *vk::ImageSubresourceLayers::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .mip_level(0)
+                                    .base_array_layer(0)
+                                    .layer_count(1);
+
+                                let subresource_range = vk::ImageSubresourceRange::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .level_count(1)
+                                    .layer_count(1);
+
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: command_buffer_and_queue.buffer,
+                                        // We just wrote the color attachment
+                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                        // We need to do a transfer next.
+                                        dst_stage: vk::PipelineStageFlags::TRANSFER,
+                                        image_memory_barriers: &[
+                                            // prepare swapchain image to be a destination
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::empty())
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // prepare storage image to be a source
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(storage_image.image)
+                                                .old_layout(vk::ImageLayout::GENERAL)
+                                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(
+                                                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                                )
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
+                                    },
+                                );
+
+                                device.cmd_copy_image(
+                                    command_buffer_and_queue.buffer,
+                                    storage_image.image,
+                                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                    swapchain_image,
+                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                    &[*vk::ImageCopy::builder()
+                                        .src_subresource(subresource)
+                                        .dst_subresource(subresource)
+                                        .extent(vk::Extent3D {
+                                            width: extent.width,
+                                            height: extent.height,
+                                            depth: 1,
+                                        })],
+                                );
+
+                                // Reset image layouts
+
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: command_buffer_and_queue.buffer,
+                                        // We just did a transfer
+                                        src_stage: vk::PipelineStageFlags::TRANSFER,
+                                        // Nothing happens after this.
+                                        dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                                        image_memory_barriers: &[
+                                            // Reset swapchain image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // Reset storage image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(storage_image.image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::GENERAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
+                                    },
+                                );
+
+                                device.end_command_buffer(command_buffer_and_queue.buffer)?;
+
+                                // Submit the command buffer, present the queue and then wait for it to be idle.
+                                // We could potentially get more performance out of using multiple command buffers
+                                // framws in flight, but then we'd need to have multiple copies of resources and
+                                // I don't want to work out how to do that properly with acceleration structures right now.
+
+                                device.queue_submit(
+                                    command_buffer_and_queue.queue,
+                                    &[*vk::SubmitInfo::builder()
+                                        .wait_semaphores(&[
+                                            syncronisation.acquire_complete_semaphore
+                                        ])
+                                        .wait_dst_stage_mask(&[
+                                            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                        ])
+                                        .command_buffers(&[command_buffer_and_queue.buffer])
+                                        .signal_semaphores(&[
+                                            syncronisation.rendering_complete_semaphore
+                                        ])],
+                                    vk::Fence::null(),
+                                )?;
+
+                                swapchain_loader.queue_present(
+                                    command_buffer_and_queue.queue,
+                                    &vk::PresentInfoKHR::builder()
+                                        .wait_semaphores(&[
+                                            syncronisation.rendering_complete_semaphore
+                                        ])
+                                        .swapchains(&[swapchain.swapchain])
+                                        .image_indices(&[image_index]),
+                                )?;
+
+                                device.queue_wait_idle(command_buffer_and_queue.queue)?;
+
+                                device.reset_command_pool(
+                                    command_buffer_and_queue.pool,
+                                    vk::CommandPoolResetFlags::empty(),
+                                )?;
+                            }
+                        }
+                        Err(error) => log::warn!("Next frame error: {:?}", error),
                     }
                 }
-                Err(error) => log::warn!("Next frame error: {:?}", error),
+                Event::LoopDestroyed => unsafe {
+                    device.device_wait_idle()?;
+
+                    tlas.buffer.cleanup(&mut allocator)?;
+                    plane_buffers.cleanup(&mut allocator)?;
+                    plane_blas.buffer.cleanup(&mut allocator)?;
+                    tori_blas.buffer.cleanup(&mut allocator)?;
+                    tori_buffers.cleanup(&mut allocator)?;
+                    lain_blas.buffer.cleanup(&mut allocator)?;
+                    lain_buffers.cleanup(&mut allocator)?;
+
+                    model_info_buffer.cleanup(&mut allocator)?;
+                    storage_image.cleanup(&mut allocator)?;
+                    uniform_buffer.cleanup(&mut allocator)?;
+
+                    raygen_sbt.buffer.cleanup(&mut allocator)?;
+                    miss_sbt.buffer.cleanup(&mut allocator)?;
+                    closest_hit_sbt.buffer.cleanup(&mut allocator)?;
+
+                    image_manager.cleanup(&mut allocator)?;
+                },
+                _ => {}
             }
+
+            Ok(())
+        };
+
+        if let Err(loop_closure) = loop_closure() {
+            log::error!("Error: {}", loop_closure);
         }
-        Event::LoopDestroyed => unsafe {
-            let mut cleanup = || -> anyhow::Result<()> {
-                device.device_wait_idle()?;
-
-                tlas.buffer.cleanup(&mut allocator)?;
-                plane_buffers.cleanup(&mut allocator)?;
-                plane_blas.buffer.cleanup(&mut allocator)?;
-                tori_blas.buffer.cleanup(&mut allocator)?;
-                tori_buffers.cleanup(&mut allocator)?;
-                lain_blas.buffer.cleanup(&mut allocator)?;
-                lain_buffers.cleanup(&mut allocator)?;
-
-                model_info_buffer.cleanup(&mut allocator)?;
-                storage_image.cleanup(&mut allocator)?;
-                uniform_buffer.cleanup(&mut allocator)?;
-
-                raygen_sbt.buffer.cleanup(&mut allocator)?;
-                miss_sbt.buffer.cleanup(&mut allocator)?;
-                closest_hit_sbt.buffer.cleanup(&mut allocator)?;
-
-                image_manager.cleanup(&mut allocator)?;
-
-                Ok(())
-            };
-
-            if let Err(cleanup_error) = cleanup() {
-                log::error!("Clean up error: {}", cleanup_error);
-            }
-        },
-        _ => {}
-    })
+    });
 }
 
 #[derive(Default)]
