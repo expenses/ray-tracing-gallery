@@ -500,29 +500,6 @@ impl ModelBuffers {
     }
 }
 
-pub struct Syncronisation {
-    pub acquire_complete_semaphore: vk::Semaphore,
-    pub rendering_complete_semaphore: vk::Semaphore,
-}
-
-impl Syncronisation {
-    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-
-        Ok(Self {
-            acquire_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
-            rendering_complete_semaphore: unsafe {
-                device.create_semaphore(&semaphore_info, None)
-            }?,
-        })
-    }
-
-    unsafe fn _cleanup(&self, device: &ash::Device) {
-        device.destroy_semaphore(self.acquire_complete_semaphore, None);
-        device.destroy_semaphore(self.rendering_complete_semaphore, None);
-    }
-}
-
 pub struct Swapchain {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,

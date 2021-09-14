@@ -20,7 +20,7 @@ mod util_structs;
 
 use util_structs::{
     AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, ImageManager,
-    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain, Syncronisation,
+    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
 use util_functions::{
@@ -72,9 +72,9 @@ fn main() -> anyhow::Result<()> {
         instance_extensions
     });
 
-    let validation_layer_name = CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0")?;
-
-    let enabled_layers = CStrList::new(vec![validation_layer_name]);
+    let enabled_layers = CStrList::new(vec![
+        CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0")?
+    ]);
 
     let device_extensions = CStrList::new(vec![
         SwapchainLoader::name(),
@@ -167,9 +167,9 @@ fn main() -> anyhow::Result<()> {
         queue_family,
     )?;
 
-    let mut command_buffer_and_queue = {
-        let queue = unsafe { device.get_device_queue(queue_family, 0) };
+    let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
+    let mut command_buffer_and_queue = {
         let command_pool = unsafe {
             device.create_command_pool(
                 &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
@@ -565,7 +565,9 @@ fn main() -> anyhow::Result<()> {
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
     let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
-    let per_frame_resources = {
+    let multi_buffering_resources = MultiBufferingResources::<3>::new(&device)?;
+
+    let mut per_frame_resources = {
         let output_descriptor_set_layouts =
             vec![output_image_descriptor_set_layout; image_count as usize];
 
@@ -600,14 +602,42 @@ fn main() -> anyhow::Result<()> {
             device.update_descriptor_sets(&descriptor_set_writes, &[]);
         }
 
+        let mut command_pools = Vec::with_capacity(image_count as usize);
+        let mut command_buffers = Vec::with_capacity(image_count as usize);
+
+        for _ in 0..image_count {
+            let command_pool = unsafe {
+                device.create_command_pool(
+                    &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
+                    None,
+                )
+            }?;
+
+            let cmd_buf_allocate_info = vk::CommandBufferAllocateInfo::builder()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+
+            let command_buffer =
+                unsafe { device.allocate_command_buffers(&cmd_buf_allocate_info) }?[0];
+
+            command_pools.push(command_pool);
+            command_buffers.push(command_buffer);
+        }
+
         PerFrameResources {
             swapchain_image_descriptor_sets,
+            images_in_flight: vec![None; image_count as usize],
+            command_pools,
+            command_buffers,
         }
     };
 
+    let mut current_frame = 0;
+
     // main loop
 
-    let syncronisation = Syncronisation::new(&device)?;
+    drop(command_buffer_and_queue);
 
     let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
         59.0_f32.to_radians(),
@@ -650,6 +680,11 @@ fn main() -> anyhow::Result<()> {
                             0.1,
                         );
 
+                        unsafe {
+                            device.queue_wait_idle(queue)?;
+                            //device.wait_for_fences(&multi_buffering_resources.in_flight_fences, true, u64::MAX)?;
+                        }
+
                         // Replace the swapchain.
 
                         swapchain_info.image_extent = extent;
@@ -674,7 +709,7 @@ fn main() -> anyhow::Result<()> {
                                     .dst_binding(0)
                                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                                     // We can't use `&[image_infos[i]]` here as that results in a use-after-free
-                                    .image_info(&image_infos[i..i+1])
+                                    .image_info(&image_infos[i..i + 1])
                             })
                             .collect();
 
@@ -782,20 +817,51 @@ fn main() -> anyhow::Result<()> {
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
+                    unsafe {
+                        device.wait_for_fences(
+                            &[multi_buffering_resources.in_flight_fences[current_frame]],
+                            true,
+                            u64::MAX,
+                        )?;
+                    }
+
                     match unsafe {
                         swapchain_loader.acquire_next_image(
                             swapchain.swapchain,
                             u64::MAX,
-                            syncronisation.acquire_complete_semaphore,
+                            multi_buffering_resources.image_available_semaphores[current_frame],
                             vk::Fence::null(),
                         )
                     } {
                         Ok((image_index, _suboptimal)) => {
+                            if let Some(fence) =
+                                per_frame_resources.images_in_flight[image_index as usize]
+                            {
+                                unsafe {
+                                    device.wait_for_fences(&[fence], true, u64::MAX)?;
+                                }
+                            }
+
+                            per_frame_resources.images_in_flight[image_index as usize] =
+                                Some(multi_buffering_resources.in_flight_fences[current_frame]);
+
+                            let buffer = per_frame_resources.command_buffers[image_index as usize];
+                            let pool = per_frame_resources.command_pools[image_index as usize];
+
+                            unsafe {
+                                device.reset_fences(&[
+                                    multi_buffering_resources.in_flight_fences[current_frame]
+                                ])?;
+                            }
+
                             let swapchain_image = swapchain.images[image_index as usize];
 
                             unsafe {
+                                device
+                                    .reset_command_pool(pool, vk::CommandPoolResetFlags::empty())?;
+
                                 device.begin_command_buffer(
-                                    command_buffer_and_queue.buffer,
+                                    buffer,
                                     &vk::CommandBufferBeginInfo::builder()
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
@@ -805,12 +871,12 @@ fn main() -> anyhow::Result<()> {
                                     .level_count(1)
                                     .layer_count(1);
 
-                                // Switch swapchain image to general 
+                                // Switch swapchain image to general
 
                                 cmd_pipeline_image_memory_barrier_explicit(
                                     &PipelineImageMemoryBarrierParams {
                                         device: &device,
-                                        buffer: command_buffer_and_queue.buffer,
+                                        buffer,
                                         // We just wrote the color attachment
                                         src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
                                         // We need to do a transfer next.
@@ -829,13 +895,13 @@ fn main() -> anyhow::Result<()> {
                                 );
 
                                 device.cmd_bind_pipeline(
-                                    command_buffer_and_queue.buffer,
+                                    buffer,
                                     vk::PipelineBindPoint::RAY_TRACING_KHR,
                                     pipeline,
                                 );
 
                                 device.cmd_bind_descriptor_sets(
-                                    command_buffer_and_queue.buffer,
+                                    buffer,
                                     vk::PipelineBindPoint::RAY_TRACING_KHR,
                                     pipeline_layout,
                                     0,
@@ -848,7 +914,7 @@ fn main() -> anyhow::Result<()> {
                                 );
 
                                 device.cmd_push_constants(
-                                    command_buffer_and_queue.buffer,
+                                    buffer,
                                     pipeline_layout,
                                     vk::ShaderStageFlags::RAYGEN_KHR,
                                     0,
@@ -859,7 +925,7 @@ fn main() -> anyhow::Result<()> {
                                 );
 
                                 pipeline_loader.cmd_trace_rays(
-                                    command_buffer_and_queue.buffer,
+                                    buffer,
                                     &raygen_sbt.address_region,
                                     &miss_sbt.address_region,
                                     &closest_hit_sbt.address_region,
@@ -870,28 +936,27 @@ fn main() -> anyhow::Result<()> {
                                     1,
                                 );
 
-                                // Switch swapchain image back to present 
+                                // Switch swapchain image back to present
 
                                 cmd_pipeline_image_memory_barrier_explicit(
                                     &PipelineImageMemoryBarrierParams {
                                         device: &device,
-                                        buffer: command_buffer_and_queue.buffer,
+                                        buffer,
                                         // We just did a transfer
                                         src_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                                         // Nothing happens after this.
                                         dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                                        image_memory_barriers: &[
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::GENERAL)
-                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                        ],
+                                        image_memory_barriers: &[*vk::ImageMemoryBarrier::builder(
+                                        )
+                                        .image(swapchain_image)
+                                        .old_layout(vk::ImageLayout::GENERAL)
+                                        .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                                        .subresource_range(*subresource_range)
+                                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)],
                                     },
                                 );
 
-                                device.end_command_buffer(command_buffer_and_queue.buffer)?;
+                                device.end_command_buffer(buffer)?;
 
                                 // Submit the command buffer, present the queue and then wait for it to be idle.
                                 // We could potentially get more performance out of using multiple command buffers
@@ -899,37 +964,30 @@ fn main() -> anyhow::Result<()> {
                                 // I don't want to work out how to do that properly with acceleration structures right now.
 
                                 device.queue_submit(
-                                    command_buffer_and_queue.queue,
+                                    queue,
                                     &[*vk::SubmitInfo::builder()
-                                        .wait_semaphores(&[
-                                            syncronisation.acquire_complete_semaphore
-                                        ])
+                                        .wait_semaphores(&[multi_buffering_resources
+                                            .image_available_semaphores[current_frame]])
                                         .wait_dst_stage_mask(&[
                                             vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                                         ])
-                                        .command_buffers(&[command_buffer_and_queue.buffer])
-                                        .signal_semaphores(&[
-                                            syncronisation.rendering_complete_semaphore
-                                        ])],
-                                    vk::Fence::null(),
+                                        .command_buffers(&[buffer])
+                                        .signal_semaphores(&[multi_buffering_resources
+                                            .render_finished_semaphores[current_frame]])],
+                                    multi_buffering_resources.in_flight_fences[current_frame],
                                 )?;
 
                                 swapchain_loader.queue_present(
-                                    command_buffer_and_queue.queue,
+                                    queue,
                                     &vk::PresentInfoKHR::builder()
-                                        .wait_semaphores(&[
-                                            syncronisation.rendering_complete_semaphore
-                                        ])
+                                        .wait_semaphores(&[multi_buffering_resources
+                                            .render_finished_semaphores[current_frame]])
                                         .swapchains(&[swapchain.swapchain])
                                         .image_indices(&[image_index]),
                                 )?;
 
-                                device.queue_wait_idle(command_buffer_and_queue.queue)?;
-
-                                device.reset_command_pool(
-                                    command_buffer_and_queue.pool,
-                                    vk::CommandPoolResetFlags::empty(),
-                                )?;
+                                current_frame = (current_frame + 1)
+                                    % multi_buffering_resources.max_frames_in_flight();
                             }
                         }
                         Err(error) => log::warn!("Next frame error: {:?}", error),
@@ -1106,9 +1164,52 @@ pub fn create_descriptors_sets(
 }
 
 pub struct PerFrameResources {
+    images_in_flight: Vec<Option<vk::Fence>>,
+    // Descriptor sets with one swapchain image each.
     swapchain_image_descriptor_sets: Vec<vk::DescriptorSet>,
-    //command_buffers: Vec<vk::CommandBuffer>,
-    //command_pools: Vec<vk::CommandPool>,
+    // 1 command pool per swapchain frame.
+    //
+    // Having a command pool for each frame means that can you can reset the whole pool,
+    // which is faster than resetting an individual buffer.
+    command_pools: Vec<vk::CommandPool>,
+    // 1 command buffer per swapchain frame - comes from the command pool.
+    command_buffers: Vec<vk::CommandBuffer>,
+}
+
+// `MAX_FRAMES_IN_FLIGHT` is either 2 or 3.
+pub struct MultiBufferingResources<const MAX_FRAMES_IN_FLIGHT: usize> {
+    image_available_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+    render_finished_semaphores: [vk::Semaphore; MAX_FRAMES_IN_FLIGHT],
+    in_flight_fences: [vk::Fence; MAX_FRAMES_IN_FLIGHT],
+}
+
+impl<const MAX_FRAMES_IN_FLIGHT: usize> MultiBufferingResources<MAX_FRAMES_IN_FLIGHT> {
+    fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        let mut this = Self {
+            image_available_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
+            render_finished_semaphores: [vk::Semaphore::null(); MAX_FRAMES_IN_FLIGHT],
+            in_flight_fences: [vk::Fence::null(); MAX_FRAMES_IN_FLIGHT],
+        };
+
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            unsafe {
+                this.image_available_semaphores[i] =
+                    device.create_semaphore(&semaphore_info, None)?;
+                this.render_finished_semaphores[i] =
+                    device.create_semaphore(&semaphore_info, None)?;
+                this.in_flight_fences[i] = device.create_fence(&fence_info, None)?;
+            }
+        }
+
+        Ok(this)
+    }
+
+    const fn max_frames_in_flight(&self) -> usize {
+        MAX_FRAMES_IN_FLIGHT
+    }
 }
 
 #[derive(Default)]
