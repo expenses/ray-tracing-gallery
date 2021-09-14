@@ -130,7 +130,8 @@ fn main() -> anyhow::Result<()> {
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
             .buffer_device_address(true)
             .runtime_descriptor_array(true)
-            .shader_sampled_image_array_non_uniform_indexing(true);
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .host_query_reset(true);
 
         // We need this because 'device coherent memory' is one of the memory type bits of
         // `get_buffer_memory_requirements` for some reason, on my machine at-least.
@@ -245,13 +246,28 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
+    // Query pool
+
+    let query_pool = unsafe {
+        device.create_query_pool(
+            &vk::QueryPoolCreateInfo::builder()
+                .query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
+                .query_count(4),
+            None,
+        )
+    }?;
+
+    unsafe {
+        device.reset_query_pool(query_pool, 0, 4);
+    }
+
     // Create the BLASes
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
     let mut scratch_buffer = ScratchBuffer::new();
 
-    let plane_blas = build_blas(
+    let mut plane_blas = build_blas(
         &plane_buffers,
         "plane blas",
         &device,
@@ -261,7 +277,7 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
-    let tori_blas = build_blas(
+    let mut tori_blas = build_blas(
         &tori_buffers,
         "tori blas",
         &device,
@@ -271,7 +287,7 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
-    let lain_blas = build_blas(
+    let mut lain_blas = build_blas(
         &lain_buffers,
         "lain blas",
         &device,
@@ -316,7 +332,7 @@ fn main() -> anyhow::Result<()> {
 
     let tlas_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
-    let tlas = build_tlas(
+    let mut tlas = build_tlas(
         &instances_buffer,
         instances.len() as u32,
         &device,
@@ -326,7 +342,28 @@ fn main() -> anyhow::Result<()> {
         tlas_command_buffer.buffer(),
     )?;
 
-    tlas_command_buffer.finish()?;
+    unsafe {
+        as_loader.cmd_write_acceleration_structures_properties(
+            init_command_buffer.buffer(),
+            &[
+                plane_blas.acceleration_structure,
+                tori_blas.acceleration_structure,
+                lain_blas.acceleration_structure,
+                tlas.acceleration_structure,
+            ],
+            vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+            query_pool,
+            0,
+        );
+    }
+
+    init_command_buffer.finish()?;
+
+    compact_acceleration_structures(
+        [&mut plane_blas, &mut tori_blas, &mut lain_blas, &mut tlas],
+        &device,
+        query_pool,
+    )?;
 
     // Clean up from initialisation.
     {
@@ -997,7 +1034,10 @@ fn build_blas(
     let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
+        )
         .geometries(geometries);
 
     let build_sizes = unsafe {
@@ -1057,7 +1097,10 @@ fn build_tlas(
     let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
+        )
         .geometries(geometries);
 
     let build_sizes = unsafe {
@@ -1169,4 +1212,36 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
+}
+
+fn compact_acceleration_structures<const N: usize>(
+    structures: [&mut AccelerationStructure; N],
+    device: &ash::Device,
+    query_pool: vk::QueryPool,
+) -> anyhow::Result<()> {
+    let mut results: [vk::DeviceSize; N] = [0; N];
+
+    unsafe {
+        device.get_query_pool_results(
+            query_pool,
+            0,
+            4,
+            &mut results,
+            vk::QueryResultFlags::WAIT,
+        )?;
+    }
+
+    for structure in structures {
+        if results[0] >= structure.size() {
+            log::info!(
+                "{} is not an improvement over {}, skipping.",
+                results[0],
+                structure.size()
+            );
+        }
+    }
+
+    dbg!(results);
+
+    Ok(())
 }

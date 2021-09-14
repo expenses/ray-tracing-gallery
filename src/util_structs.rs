@@ -80,6 +80,7 @@ impl Allocator {
 pub struct AccelerationStructure {
     pub buffer: Buffer,
     pub acceleration_structure: vk::AccelerationStructureKHR,
+    pub unaligned_size: vk::DeviceSize,
 }
 
 impl AccelerationStructure {
@@ -137,7 +138,12 @@ impl AccelerationStructure {
         Ok(Self {
             buffer,
             acceleration_structure,
+            unaligned_size: size,
         })
+    }
+
+    pub fn size(&self) -> vk::DeviceSize {
+        self.unaligned_size
     }
 }
 
