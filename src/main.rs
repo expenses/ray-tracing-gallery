@@ -677,12 +677,22 @@ fn main() -> anyhow::Result<()> {
 
     let mut kbd_state = KbdState::default();
 
+    let mut cursor_grab = false;
+
+    let mut screen_center =
+        winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
+
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::Resized(size) => {
                 extent.width = size.width as u32;
                 extent.height = size.height as u32;
+
+                screen_center = winit::dpi::LogicalPosition::new(
+                    extent.width as f64 / 2.0,
+                    extent.height as f64 / 2.0,
+                );
 
                 perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
                     59.0_f32.to_radians(),
@@ -756,7 +766,38 @@ fn main() -> anyhow::Result<()> {
                     VirtualKeyCode::S => kbd_state.back = pressed,
                     VirtualKeyCode::A => kbd_state.left = pressed,
                     VirtualKeyCode::D => kbd_state.right = pressed,
+                    VirtualKeyCode::G => {
+                        if pressed {
+                            cursor_grab = !cursor_grab;
+
+                            if cursor_grab {
+                                window.set_cursor_position(screen_center).unwrap();
+                            }
+
+                            window.set_cursor_visible(!cursor_grab);
+                            window.set_cursor_grab(cursor_grab).unwrap();
+                        }
+                    }
                     _ => {}
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if cursor_grab {
+                    let position = position.to_logical::<f64>(window.scale_factor());
+
+                    let delta = Vec2::new(
+                        (position.x - screen_center.x) as f32,
+                        (position.y - screen_center.y) as f32,
+                    );
+
+                    window.set_cursor_position(screen_center).unwrap();
+
+                    use std::f32::consts::PI;
+
+                    camera.yaw -= delta.x.to_radians() * 0.05;
+                    camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
+                        .min(PI / 2.0)
+                        .max(-PI / 2.0);
                 }
             }
             _ => {}
@@ -764,7 +805,7 @@ fn main() -> anyhow::Result<()> {
         Event::MainEventsCleared => {
             {
                 let mut local_velocity = Vec3::zero();
-                let acceleration = 0.02;
+                let acceleration = 0.005;
                 let max_velocity = 0.2;
 
                 if kbd_state.forward {
@@ -785,7 +826,7 @@ fn main() -> anyhow::Result<()> {
                     local_velocity.x += acceleration;
                 }
 
-                camera_velocity += Mat3::from_rotation_y(-camera.yaw) * local_velocity;
+                camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
                 let magnitude = camera_velocity.mag();
                 if magnitude > max_velocity {
                     let clamped_magnitude = magnitude.max(max_velocity);
