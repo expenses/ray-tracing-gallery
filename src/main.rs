@@ -547,7 +547,7 @@ fn main() -> anyhow::Result<()> {
         image_count = surface_caps.max_image_count;
     }
 
-    log::info!("Using 3 swapchain images at a time.");
+    log::info!("Using {} swapchain images at a time.", image_count);
 
     let mut swapchain_info = *vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
