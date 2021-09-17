@@ -155,16 +155,22 @@ pub fn load_shader_module(
     bytes: &[u8],
     stage: vk::ShaderStageFlags,
     device: &ash::Device,
+    entry_point: Option<&CStr>,
 ) -> anyhow::Result<vk::PipelineShaderStageCreateInfo> {
     let spv = ash::util::read_spv(&mut std::io::Cursor::new(bytes))?;
     let module = unsafe {
         device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spv), None)
     }?;
 
+    let entry_point = match entry_point {
+        Some(entry_point) => entry_point,
+        None => CStr::from_bytes_with_nul(b"main\0")?,
+    };
+
     Ok(*vk::PipelineShaderStageCreateInfo::builder()
         .module(module)
         .stage(stage)
-        .name(CStr::from_bytes_with_nul(b"main\0")?))
+        .name(entry_point))
 }
 
 pub fn load_rgba_png_image_from_bytes(

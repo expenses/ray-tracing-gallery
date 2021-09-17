@@ -15,6 +15,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+mod denoiser;
 mod util_functions;
 mod util_structs;
 
@@ -28,6 +29,8 @@ use util_functions::{
     load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
     PipelineImageMemoryBarrierParams,
 };
+
+use denoiser::Pipelines as DenoiserPipelines;
 
 fn main() -> anyhow::Result<()> {
     {
@@ -131,7 +134,8 @@ fn main() -> anyhow::Result<()> {
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
             .buffer_device_address(true)
             .runtime_descriptor_array(true)
-            .shader_sampled_image_array_non_uniform_indexing(true);
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .shader_float16(true);
 
         // We need this because 'device coherent memory' is one of the memory type bits of
         // `get_buffer_memory_requirements` for some reason, on my machine at-least.
@@ -481,21 +485,25 @@ fn main() -> anyhow::Result<()> {
             include_bytes!("shaders/raygen.rgen.spv"),
             vk::ShaderStageFlags::RAYGEN_KHR,
             &device,
+            None,
         )?,
         load_shader_module(
             include_bytes!("shaders/closesthit.rchit.spv"),
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
+            None,
         )?,
         load_shader_module(
             include_bytes!("shaders/miss.rmiss.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,
+            None,
         )?,
         load_shader_module(
             include_bytes!("shaders/shadow.rmiss.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,
+            None,
         )?,
     ];
 
@@ -581,6 +589,10 @@ fn main() -> anyhow::Result<()> {
         &device,
         &mut allocator,
     )?;
+
+    // Shadow denoiser
+
+    let denoiser_pipelines = DenoiserPipelines::new(&device)?;
 
     // Create swapchain
 

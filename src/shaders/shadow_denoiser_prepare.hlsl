@@ -1,4 +1,4 @@
-[[vk::binding(0, 0)]] Texture2D<uint> input_ray_tracer_output;
+[[vk::binding(0, 0)]] RWTexture2D<uint> input_ray_tracer_output;
 
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> output_shadow_mask;
 
@@ -16,7 +16,6 @@ uint2 FFX_DNSR_Shadows_GetBufferDimensions() {
 uint LaneIdToBitShift(uint2 localID) {
     return localID.y * TILE_SIZE_X + localID.x;
 }
-
 
 bool WaveMaskToBool(uint mask, uint2 localID) {
     return bool((1u << LaneIdToBitShift(localID.xy)) & mask);
