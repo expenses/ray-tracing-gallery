@@ -392,6 +392,12 @@ impl Buffer {
         }
     }
 
+    pub fn decsriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
+        *vk::DescriptorBufferInfo::builder()
+            .buffer(self.buffer)
+            .range(vk::WHOLE_SIZE)
+    }
+
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         allocator.inner.free(self.allocation.clone())?;
 

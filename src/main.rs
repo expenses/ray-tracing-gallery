@@ -389,6 +389,10 @@ fn main() -> anyhow::Result<()> {
         &tlas,
     )?;
 
+    // Shadow denoiser
+
+    let denoiser_pipelines = DenoiserPipelines::new(&device)?;
+
     // Create frames for multibuffering and their resources.
 
     let window_size = window.inner_size();
@@ -398,13 +402,21 @@ fn main() -> anyhow::Result<()> {
         height: window_size.height,
     };
 
-    let storage_image_descriptor_sets = unsafe {
+    let frame_descriptor_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[output_image_descriptor_set_layout; 2])
+                .set_layouts(&[
+                    output_image_descriptor_set_layout,
+                    denoiser_pipelines.prepare_dsl,
+                    output_image_descriptor_set_layout,
+                    denoiser_pipelines.prepare_dsl,
+                ])
                 .descriptor_pool(descriptor_pool),
         )
     }?;
+
+    let denoiser_buffer_size =
+        denoiser::tiles_buffer_size_for_dimensions(extent.width, extent.height);
 
     let mut multibuffering_frames = unsafe {
         [
@@ -420,7 +432,14 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
-                    storage_image_ds: storage_image_descriptor_sets[0],
+                    storage_image_ds: frame_descriptor_sets[0],
+                    denoiser_prepare_ds: frame_descriptor_sets[1],
+                    denoiser_tile_metadata: Buffer::new_of_size(
+                        denoiser_buffer_size,
+                        "tile metadata 0",
+                        vk::BufferUsageFlags::STORAGE_BUFFER,
+                        &mut allocator,
+                    )?,
                 },
             )?,
             Frame::new(
@@ -435,13 +454,20 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
-                    storage_image_ds: storage_image_descriptor_sets[1],
+                    storage_image_ds: frame_descriptor_sets[2],
+                    denoiser_prepare_ds: frame_descriptor_sets[3],
+                    denoiser_tile_metadata: Buffer::new_of_size(
+                        denoiser_buffer_size,
+                        "tile metadata 0",
+                        vk::BufferUsageFlags::STORAGE_BUFFER,
+                        &mut allocator,
+                    )?,
                 },
             )?,
         ]
     };
 
-    write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
+    write_multibuffering_frames_descriptor_sets(&device, &multibuffering_frames);
 
     init_command_buffer.finish()?;
 
@@ -590,10 +616,6 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
-    // Shadow denoiser
-
-    let denoiser_pipelines = DenoiserPipelines::new(&device)?;
-
     // Create swapchain
 
     let surface_caps = unsafe {
@@ -693,11 +715,31 @@ fn main() -> anyhow::Result<()> {
                                 resize_command_buffer.buffer(),
                                 &mut allocator,
                             )?;
+
+                            let denoiser_buffer_size = denoiser::tiles_buffer_size_for_dimensions(
+                                extent.width,
+                                extent.height,
+                            );
+
+                            frame
+                                .resources
+                                .denoiser_tile_metadata
+                                .cleanup(&mut allocator)?;
+
+                            frame.resources.denoiser_tile_metadata = Buffer::new_of_size(
+                                denoiser_buffer_size,
+                                &format!("tile metadata {}", i),
+                                vk::BufferUsageFlags::STORAGE_BUFFER,
+                                &mut allocator,
+                            )?;
                         }
 
                         resize_command_buffer.finish()?;
 
-                        write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
+                        write_multibuffering_frames_descriptor_sets(
+                            &device,
+                            &multibuffering_frames,
+                        );
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -1009,6 +1051,10 @@ fn main() -> anyhow::Result<()> {
 
                     for frame in &mut multibuffering_frames {
                         frame.resources.storage_image.cleanup(&mut allocator)?;
+                        frame
+                            .resources
+                            .denoiser_tile_metadata
+                            .cleanup(&mut allocator)?;
                     }
                 },
                 _ => {}
@@ -1078,6 +1124,8 @@ pub fn create_descriptors_sets(
         )
     }?;
 
+    let num_frames = 2;
+
     let descriptor_pool = unsafe {
         device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::builder()
@@ -1087,10 +1135,10 @@ pub fn create_descriptors_sets(
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(3),
+                        .descriptor_count(num_frames * 2),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
+                        .descriptor_count(num_frames + 1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::UNIFORM_BUFFER)
                         .descriptor_count(1),
@@ -1098,7 +1146,7 @@ pub fn create_descriptors_sets(
                         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .descriptor_count(image_manager.descriptor_count()),
                 ])
-                .max_sets(4),
+                .max_sets(num_frames * 2 + 1),
             None,
         )
     }?;
@@ -1137,16 +1185,12 @@ pub fn create_descriptors_sets(
                     .dst_set(descriptor_set)
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(model_info_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
+                    .buffer_info(&[model_info_buffer.decsriptor_buffer_info()]),
                 *vk::WriteDescriptorSet::builder()
                     .dst_set(descriptor_set)
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(uniform_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
+                    .buffer_info(&[uniform_buffer.decsriptor_buffer_info()]),
                 *image_manager.write_descriptor_set(descriptor_set, 3),
             ],
             &[],
@@ -1203,6 +1247,8 @@ impl Frame {
 pub struct PerFrameResources {
     storage_image: Image,
     storage_image_ds: vk::DescriptorSet,
+    denoiser_tile_metadata: Buffer,
+    denoiser_prepare_ds: vk::DescriptorSet,
 }
 
 #[derive(Default)]
@@ -1454,26 +1500,50 @@ pub struct ModelInfo {
     _padding: u32,
 }
 
-fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame; 2]) {
+fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[Frame; 2]) {
     let image_infos = &[
         frames[0].resources.storage_image.descriptor_image_info(),
         frames[1].resources.storage_image.descriptor_image_info(),
     ];
 
-    let descriptor_set_write = |i| {
+    let image_write = |i| {
         let frame: &Frame = &frames[i];
 
-        let dst_set = frame.resources.storage_image_ds;
-
         *vk::WriteDescriptorSet::builder()
-            .dst_set(dst_set)
+            .dst_set(frame.resources.storage_image_ds)
             .dst_binding(0)
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             // We can't use `&[image_infos[i]]` here as that results in a use-after-free
             .image_info(&image_infos[i..i + 1])
     };
 
-    let descriptor_set_writes = &[descriptor_set_write(0), descriptor_set_write(1)];
+    let buffer_infos = &[
+        frames[0]
+            .resources
+            .denoiser_tile_metadata
+            .decsriptor_buffer_info(),
+        frames[1]
+            .resources
+            .denoiser_tile_metadata
+            .decsriptor_buffer_info(),
+    ];
+
+    let buffer_write = |i| {
+        let frame: &Frame = &frames[i];
+
+        *vk::WriteDescriptorSet::builder()
+            .dst_set(frame.resources.denoiser_prepare_ds)
+            .dst_binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(&buffer_infos[i..i + 1])
+    };
+
+    let descriptor_set_writes = &[
+        image_write(0),
+        image_write(1),
+        buffer_write(0),
+        buffer_write(1),
+    ];
 
     unsafe {
         device.update_descriptor_sets(descriptor_set_writes, &[]);

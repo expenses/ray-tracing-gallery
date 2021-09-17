@@ -3,6 +3,18 @@ use ash::vk;
 use std::ffi::CStr;
 use ultraviolet::{Mat4, Vec2};
 
+const TILE_SIZE_X: u32 = 8;
+const TILE_SIZE_Y: u32 = 4;
+
+pub fn tiles_buffer_size_for_dimensions(width: u32, height: u32) -> vk::DeviceSize {
+    (div_round_up(width, TILE_SIZE_X) * div_round_up(height, TILE_SIZE_Y)) as vk::DeviceSize
+        * std::mem::size_of::<u32>() as u64
+}
+
+fn div_round_up(a: u32, b: u32) -> u32 {
+    (a + b - 1) / b
+}
+
 struct ShaderModules {
     prepare: vk::PipelineShaderStageCreateInfo,
     pass_0: vk::PipelineShaderStageCreateInfo,
