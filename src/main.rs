@@ -19,7 +19,7 @@ mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, ImageManager,
+    AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager,
     ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
@@ -350,36 +350,7 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
-    init_command_buffer.finish()?;
-
-    // Clean up from initialisation.
-    {
-        for staging_buffer in image_staging_buffers {
-            staging_buffer.cleanup_and_drop(&mut allocator)?;
-        }
-
-        for staging_buffer in [
-            plane_staging_buffer,
-            tori_staging_buffer,
-            lain_staging_buffer,
-        ] {
-            if let Some(staging_buffer) = staging_buffer {
-                staging_buffer.cleanup_and_drop(&mut allocator)?;
-            }
-        }
-
-        instances_buffer.cleanup_and_drop(&mut allocator)?;
-        scratch_buffer.cleanup_and_drop(&mut allocator)?;
-    }
-
-    // Create storage image
-
-    let window_size = window.inner_size();
-
-    let mut extent = vk::Extent2D {
-        width: window_size.width,
-        height: window_size.height,
-    };
+    // Create descriptor sets and set layouts
 
     let model_info_buffer = Buffer::new(
         bytemuck::cast_slice(&[
@@ -401,8 +372,6 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
-    // Create descriptor sets and set layouts
-
     let (
         descriptor_set_layout,
         output_image_descriptor_set_layout,
@@ -415,6 +384,82 @@ fn main() -> anyhow::Result<()> {
         &model_info_buffer,
         &tlas,
     )?;
+
+    // Create frames for multibuffering and their resources.
+
+    let window_size = window.inner_size();
+
+    let mut extent = vk::Extent2D {
+        width: window_size.width,
+        height: window_size.height,
+    };
+
+    let storage_image_descriptor_sets = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::builder()
+                .set_layouts(&[output_image_descriptor_set_layout; 2])
+                .descriptor_pool(descriptor_pool),
+        )
+    }?;
+
+    let mut multibuffering_frames = unsafe {
+        [
+            Frame::new(
+                &device,
+                queue_family,
+                PerFrameResources {
+                    storage_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "storage image 0",
+                        surface_format.format,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    storage_image_ds: storage_image_descriptor_sets[0],
+                },
+            )?,
+            Frame::new(
+                &device,
+                queue_family,
+                PerFrameResources {
+                    storage_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "storage image 1",
+                        surface_format.format,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    storage_image_ds: storage_image_descriptor_sets[1],
+                },
+            )?,
+        ]
+    };
+
+    write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
+
+    init_command_buffer.finish()?;
+
+    // Clean up from initialisation.
+    {
+        for staging_buffer in image_staging_buffers {
+            staging_buffer.cleanup_and_drop(&mut allocator)?;
+        }
+
+        for staging_buffer in [
+            plane_staging_buffer,
+            tori_staging_buffer,
+            lain_staging_buffer,
+        ] {
+            if let Some(staging_buffer) = staging_buffer {
+                staging_buffer.cleanup_and_drop(&mut allocator)?;
+            }
+        }
+
+        instances_buffer.cleanup_and_drop(&mut allocator)?;
+        scratch_buffer.cleanup_and_drop(&mut allocator)?;
+    }
 
     // Create pipelines
 
@@ -556,7 +601,7 @@ fn main() -> anyhow::Result<()> {
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::STORAGE)
+        .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(surface_caps.current_transform)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -567,56 +612,9 @@ fn main() -> anyhow::Result<()> {
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
     let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
-    let swapchain_image_descriptor_sets = {
-        let output_descriptor_set_layouts =
-            vec![output_image_descriptor_set_layout; image_count as usize];
-
-        let swapchain_image_descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::builder()
-                    .set_layouts(&output_descriptor_set_layouts)
-                    .descriptor_pool(descriptor_pool),
-            )
-        }?;
-
-        let image_infos: Vec<_> = (0..image_count as usize)
-            .map(|i| {
-                *vk::DescriptorImageInfo::builder()
-                    .image_view(swapchain.image_views[i])
-                    .image_layout(vk::ImageLayout::GENERAL)
-            })
-            .collect();
-
-        let descriptor_set_writes: Vec<_> = (0..image_count as usize)
-            .map(|i| {
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(swapchain_image_descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    // We can't use `&[image_infos[i]]` here as that results in a use-after-free
-                    .image_info(&image_infos[i..i + 1])
-            })
-            .collect();
-
-        unsafe {
-            device.update_descriptor_sets(&descriptor_set_writes, &[]);
-        }
-
-        swapchain_image_descriptor_sets
-    };
-
-    let multibuffering_frames = unsafe {
-        [
-            Frame::new(&device, queue_family)?,
-            Frame::new(&device, queue_family)?,
-        ]
-    };
-
     let mut current_frame = 0;
 
     // main loop
-
-    drop(command_buffer_and_queue);
 
     let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
         59.0_f32.to_radians(),
@@ -661,7 +659,6 @@ fn main() -> anyhow::Result<()> {
 
                         unsafe {
                             device.queue_wait_idle(queue)?;
-                            //device.wait_for_fences(&multi_buffering_resources.in_flight_fences, true, u64::MAX)?;
                         }
 
                         // Replace the swapchain.
@@ -671,30 +668,24 @@ fn main() -> anyhow::Result<()> {
 
                         swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
-                        // Write to the descriptor sets again.
+                        let resize_command_buffer =
+                            command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
-                        let image_infos: Vec<_> = (0..image_count as usize)
-                            .map(|i| {
-                                *vk::DescriptorImageInfo::builder()
-                                    .image_view(swapchain.image_views[i])
-                                    .image_layout(vk::ImageLayout::GENERAL)
-                            })
-                            .collect();
-
-                        let descriptor_set_writes: Vec<_> = (0..image_count as usize)
-                            .map(|i| {
-                                *vk::WriteDescriptorSet::builder()
-                                    .dst_set(swapchain_image_descriptor_sets[i])
-                                    .dst_binding(0)
-                                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                                    // We can't use `&[image_infos[i]]` here as that results in a use-after-free
-                                    .image_info(&image_infos[i..i + 1])
-                            })
-                            .collect();
-
-                        unsafe {
-                            device.update_descriptor_sets(&descriptor_set_writes, &[]);
+                        for (i, frame) in multibuffering_frames.iter_mut().enumerate() {
+                            frame.resources.storage_image.cleanup(&mut allocator)?;
+                            frame.resources.storage_image = Image::new_storage_image(
+                                extent.width,
+                                extent.height,
+                                &format!("storage image {}", i),
+                                surface_format.format,
+                                resize_command_buffer.buffer(),
+                                &mut allocator,
+                            )?;
                         }
+
+                        resize_command_buffer.finish()?;
+
+                        write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -819,6 +810,7 @@ fn main() -> anyhow::Result<()> {
                     } {
                         Ok((swapchain_image_index, _suboptimal)) => {
                             let swapchain_image = swapchain.images[swapchain_image_index as usize];
+                            let resources = &frame.resources;
 
                             unsafe {
                                 device.begin_command_buffer(
@@ -826,34 +818,6 @@ fn main() -> anyhow::Result<()> {
                                     &vk::CommandBufferBeginInfo::builder()
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
-
-                                let subresource_range = vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .level_count(1)
-                                    .layer_count(1);
-
-                                // Switch swapchain image to general
-
-                                cmd_pipeline_image_memory_barrier_explicit(
-                                    &PipelineImageMemoryBarrierParams {
-                                        device: &device,
-                                        buffer: frame.command_buffer,
-                                        // We just wrote the color attachment
-                                        src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
-                                        // We need to do a transfer next.
-                                        dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                                        image_memory_barriers: &[
-                                            // prepare swapchain image to be a destination
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                                .new_layout(vk::ImageLayout::GENERAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::empty())
-                                                .dst_access_mask(vk::AccessFlags::SHADER_WRITE),
-                                        ],
-                                    },
-                                );
 
                                 device.cmd_bind_pipeline(
                                     frame.command_buffer,
@@ -866,11 +830,7 @@ fn main() -> anyhow::Result<()> {
                                     vk::PipelineBindPoint::RAY_TRACING_KHR,
                                     pipeline_layout,
                                     0,
-                                    &[
-                                        descriptor_set,
-                                        swapchain_image_descriptor_sets
-                                            [swapchain_image_index as usize],
-                                    ],
+                                    &[descriptor_set, resources.storage_image_ds],
                                     &[],
                                 );
 
@@ -897,23 +857,90 @@ fn main() -> anyhow::Result<()> {
                                     1,
                                 );
 
-                                // Switch swapchain image back to present
+                                let subresource = *vk::ImageSubresourceLayers::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .mip_level(0)
+                                    .base_array_layer(0)
+                                    .layer_count(1);
+
+                                let subresource_range = vk::ImageSubresourceRange::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .level_count(1)
+                                    .layer_count(1);
+
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: frame.command_buffer,
+                                        // We just wrote the color attachment
+                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                        // We need to do a transfer next.
+                                        dst_stage: vk::PipelineStageFlags::TRANSFER,
+                                        image_memory_barriers: &[
+                                            // prepare swapchain image to be a destination
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::empty())
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // prepare storage image to be a source
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(resources.storage_image.image)
+                                                .old_layout(vk::ImageLayout::GENERAL)
+                                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(
+                                                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                                )
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
+                                    },
+                                );
+
+                                device.cmd_copy_image(
+                                    frame.command_buffer,
+                                    resources.storage_image.image,
+                                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                    swapchain_image,
+                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                    &[*vk::ImageCopy::builder()
+                                        .src_subresource(subresource)
+                                        .dst_subresource(subresource)
+                                        .extent(vk::Extent3D {
+                                            width: extent.width,
+                                            height: extent.height,
+                                            depth: 1,
+                                        })],
+                                );
+
+                                // Reset image layouts
 
                                 cmd_pipeline_image_memory_barrier_explicit(
                                     &PipelineImageMemoryBarrierParams {
                                         device: &device,
                                         buffer: frame.command_buffer,
                                         // We just did a transfer
-                                        src_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                                        src_stage: vk::PipelineStageFlags::TRANSFER,
                                         // Nothing happens after this.
                                         dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                                        image_memory_barriers: &[*vk::ImageMemoryBarrier::builder(
-                                        )
-                                        .image(swapchain_image)
-                                        .old_layout(vk::ImageLayout::GENERAL)
-                                        .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                                        .subresource_range(*subresource_range)
-                                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)],
+                                        image_memory_barriers: &[
+                                            // Reset swapchain image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // Reset storage image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(resources.storage_image.image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::GENERAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
                                     },
                                 );
 
@@ -928,9 +955,7 @@ fn main() -> anyhow::Result<()> {
                                     queue,
                                     &[*vk::SubmitInfo::builder()
                                         .wait_semaphores(&[frame.present_semaphore])
-                                        .wait_dst_stage_mask(&[
-                                            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                                        ])
+                                        .wait_dst_stage_mask(&[vk::PipelineStageFlags::TRANSFER])
                                         .command_buffers(&[frame.command_buffer])
                                         .signal_semaphores(&[frame.render_semaphore])],
                                     frame.render_fence,
@@ -969,6 +994,10 @@ fn main() -> anyhow::Result<()> {
                     closest_hit_sbt.buffer.cleanup(&mut allocator)?;
 
                     image_manager.cleanup(&mut allocator)?;
+
+                    for frame in &mut multibuffering_frames {
+                        frame.resources.storage_image.cleanup(&mut allocator)?;
+                    }
                 },
                 _ => {}
             }
@@ -1126,10 +1155,15 @@ pub struct Frame {
     render_fence: vk::Fence,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
+    resources: PerFrameResources,
 }
 
 impl Frame {
-    unsafe fn new(device: &ash::Device, queue_family: u32) -> anyhow::Result<Self> {
+    unsafe fn new(
+        device: &ash::Device,
+        queue_family: u32,
+        resources: PerFrameResources,
+    ) -> anyhow::Result<Self> {
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
@@ -1149,8 +1183,14 @@ impl Frame {
                     .level(vk::CommandBufferLevel::PRIMARY)
                     .command_buffer_count(1),
             )?[0],
+            resources,
         })
     }
+}
+
+pub struct PerFrameResources {
+    storage_image: Image,
+    storage_image_ds: vk::DescriptorSet,
 }
 
 #[derive(Default)]
@@ -1400,4 +1440,30 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
+}
+
+fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame; 2]) {
+    let image_infos = &[
+        frames[0].resources.storage_image.descriptor_image_info(),
+        frames[1].resources.storage_image.descriptor_image_info(),
+    ];
+
+    let descriptor_set_write = |i| {
+        let frame: &Frame = &frames[i];
+
+        let dst_set = frame.resources.storage_image_ds;
+
+        *vk::WriteDescriptorSet::builder()
+            .dst_set(dst_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            // We can't use `&[image_infos[i]]` here as that results in a use-after-free
+            .image_info(&image_infos[i..i + 1])
+    };
+
+    let descriptor_set_writes = &[descriptor_set_write(0), descriptor_set_write(1)];
+
+    unsafe {
+        device.update_descriptor_sets(descriptor_set_writes, &[]);
+    }
 }
