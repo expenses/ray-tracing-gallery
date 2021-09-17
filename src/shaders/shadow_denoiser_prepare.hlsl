@@ -1,6 +1,6 @@
-[[vk::binding(0, 0)]] RWTexture2D<uint> input_ray_tracer_output;
+[[vk::binding(1, 0)]] RWTexture2D<uint> input_ray_tracer_output;
 
-[[vk::binding(1, 0)]] RWStructuredBuffer<uint> output_shadow_mask;
+[[vk::binding(0, 1)]] RWStructuredBuffer<uint> output_shadow_mask;
 
 [[vk::push_constant]] struct PushConstants {
     uint2 buffer_dimensions;

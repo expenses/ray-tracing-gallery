@@ -391,7 +391,7 @@ fn main() -> anyhow::Result<()> {
 
     // Shadow denoiser
 
-    let denoiser_pipelines = DenoiserPipelines::new(&device)?;
+    let denoiser_pipelines = DenoiserPipelines::new(&device, output_image_descriptor_set_layout)?;
 
     // Create frames for multibuffering and their resources.
 
@@ -911,6 +911,50 @@ fn main() -> anyhow::Result<()> {
                                     1,
                                 );
 
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: frame.command_buffer,
+                                        // We just wrote the color attachment
+                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                        // We need to do some compute shader stuff next.
+                                        dst_stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+                                        image_memory_barriers: &[],
+                                    },
+                                );
+
+                                device.cmd_bind_pipeline(
+                                    frame.command_buffer,
+                                    vk::PipelineBindPoint::COMPUTE,
+                                    denoiser_pipelines.prepare_pipeline,
+                                );
+
+                                device.cmd_bind_descriptor_sets(
+                                    frame.command_buffer,
+                                    vk::PipelineBindPoint::COMPUTE,
+                                    denoiser_pipelines.prepare_pipeline_layout,
+                                    0,
+                                    &[resources.storage_image_ds, resources.denoiser_prepare_ds],
+                                    &[],
+                                );
+
+                                device.cmd_push_constants(
+                                    frame.command_buffer,
+                                    denoiser_pipelines.prepare_pipeline_layout,
+                                    vk::ShaderStageFlags::COMPUTE,
+                                    0,
+                                    bytemuck::bytes_of(&denoiser::PreparePushConstants {
+                                        buffer_dimensions: [extent.width, extent.height],
+                                    }),
+                                );
+
+                                /*device.cmd_dispatch(
+                                    frame.command_buffer,
+                                    denoiser::div_round_up(extent.width, denoiser::TILE_SIZE_X * 4),
+                                    denoiser::div_round_up(extent.height, denoiser::TILE_SIZE_Y * 4),
+                                    1
+                                );*/
+
                                 let subresource = *vk::ImageSubresourceLayers::builder()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                                     .mip_level(0)
@@ -1119,6 +1163,11 @@ pub fn create_descriptors_sets(
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::COMPUTE),
             ]),
             None,
         )
@@ -1533,7 +1582,7 @@ fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[F
 
         *vk::WriteDescriptorSet::builder()
             .dst_set(frame.resources.denoiser_prepare_ds)
-            .dst_binding(1)
+            .dst_binding(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(&buffer_infos[i..i + 1])
     };

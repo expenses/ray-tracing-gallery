@@ -8,7 +8,11 @@
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
 
-layout(location = 0) rayPayloadInEXT vec3 hitValue;
+layout(location = 0) rayPayloadInEXT struct Payload {
+    vec3 hit_value;
+    bool in_shadow;
+} payload;
+
 layout(location = 1) rayPayloadEXT bool shadowed;
 hitAttributeEXT vec2 attribs;
 
@@ -107,7 +111,9 @@ void main() {
 	
     lighting *= float(!shadowed);
 
-    hitValue = colour;
+    payload.hit_value = colour;
 
-    hitValue *= (lighting * 0.6) + 0.4;
+    payload.hit_value *= (lighting * 0.6) + 0.4;
+
+    payload.in_shadow = shadowed;
 }

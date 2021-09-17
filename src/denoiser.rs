@@ -3,15 +3,15 @@ use ash::vk;
 use std::ffi::CStr;
 use ultraviolet::{Mat4, Vec2};
 
-const TILE_SIZE_X: u32 = 8;
-const TILE_SIZE_Y: u32 = 4;
+pub const TILE_SIZE_X: u32 = 8;
+pub const TILE_SIZE_Y: u32 = 4;
 
 pub fn tiles_buffer_size_for_dimensions(width: u32, height: u32) -> vk::DeviceSize {
     (div_round_up(width, TILE_SIZE_X) * div_round_up(height, TILE_SIZE_Y)) as vk::DeviceSize
         * std::mem::size_of::<u32>() as u64
 }
 
-fn div_round_up(a: u32, b: u32) -> u32 {
+pub fn div_round_up(a: u32, b: u32) -> u32 {
     (a + b - 1) / b
 }
 
@@ -53,10 +53,14 @@ impl ShaderModules {
     }
 }
 
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
 pub struct PreparePushConstants {
     pub buffer_dimensions: [u32; 2],
 }
 
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
 pub struct PassPushConstants {
     pub projection_inverse: Mat4,
     pub buffer_diemensions: [i32; 2],
@@ -84,7 +88,10 @@ pub struct Pipelines {
 }
 
 impl Pipelines {
-    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+    pub fn new(
+        device: &ash::Device,
+        storage_image_dsl: vk::DescriptorSetLayout,
+    ) -> anyhow::Result<Self> {
         let shader_modules = ShaderModules::new(device)?;
 
         let storage_buffer = |binding| {
@@ -105,8 +112,7 @@ impl Pipelines {
 
         let prepare_dsl = unsafe {
             device.create_descriptor_set_layout(
-                &*vk::DescriptorSetLayoutCreateInfo::builder()
-                    .bindings(&[storage_image(0), storage_buffer(1)]),
+                &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[storage_buffer(0)]),
                 None,
             )
         }?;
@@ -114,7 +120,7 @@ impl Pipelines {
         let prepare_pipeline_layout = unsafe {
             device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::builder()
-                    .set_layouts(&[prepare_dsl])
+                    .set_layouts(&[storage_image_dsl, prepare_dsl])
                     .push_constant_ranges(&[push_constant_range::<PreparePushConstants>()]),
                 None,
             )
