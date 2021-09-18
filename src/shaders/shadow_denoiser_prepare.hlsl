@@ -1,4 +1,4 @@
-[[vk::binding(1, 0)]] RWTexture2D<uint> input_ray_tracer_output;
+[[vk::binding(2, 0)]] RWTexture2D<uint> input_ray_tracer_output;
 
 [[vk::binding(0, 1)]] RWStructuredBuffer<uint> output_shadow_mask;
 
