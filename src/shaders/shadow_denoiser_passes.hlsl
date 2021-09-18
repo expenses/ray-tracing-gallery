@@ -1,10 +1,3 @@
-[[vk::push_constant]] struct PushConstants {
-    float4x4 ProjectionInverse;
-    int2     BufferDimensions;
-    float2   InvBufferDimensions;
-    float    DepthSimilaritySigma;
-} push_constants;
-
 [[vk::binding(0, 0)]] RWTexture2D<float> t2d_DepthBuffer;
 [[vk::binding(1, 0)]] RWTexture2D<float3> t2d_NormalBuffer;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> sb_tileMetaData;
@@ -13,6 +6,13 @@
 
 [[vk::binding(4, 0)]] RWTexture2D<float2> rwt2d_history;
 [[vk::binding(5, 0)]] RWTexture2D<unorm float4> rwt2d_output;
+
+[[vk::push_constant]] struct PushConstants {
+    float4x4 ProjectionInverse;
+    int2     BufferDimensions;
+    float2   InvBufferDimensions;
+    float    DepthSimilaritySigma;
+} push_constants;
 
 float2 FFX_DNSR_Shadows_GetInvBufferDimensions() {
     return push_constants.InvBufferDimensions;
@@ -31,11 +31,11 @@ float FFX_DNSR_Shadows_GetDepthSimilaritySigma() {
 }
 
 float FFX_DNSR_Shadows_ReadDepth(int2 p) {
-    return t2d_DepthBuffer.Load(int3(p, 0));
+    return t2d_DepthBuffer.Load(p);
 }
 
 float16_t3 FFX_DNSR_Shadows_ReadNormals(int2 p) {
-    return normalize(((float16_t3)t2d_NormalBuffer.Load(int3(p, 0))) * 2 - 1.f);
+    return normalize(((float16_t3)t2d_NormalBuffer.Load(p)) * 2 - 1.f);
 }
 
 bool FFX_DNSR_Shadows_IsShadowReciever(uint2 p) {
@@ -44,7 +44,7 @@ bool FFX_DNSR_Shadows_IsShadowReciever(uint2 p) {
 }
 
 float16_t2 FFX_DNSR_Shadows_ReadInput(int2 p) {
-    return (float16_t2)rqt2d_input.Load(int3(p, 0)).xy;
+    return (float16_t2)rqt2d_input.Load(p).xy;
 }
 
 uint FFX_DNSR_Shadows_ReadTileMetaData(uint p) {
@@ -54,6 +54,7 @@ uint FFX_DNSR_Shadows_ReadTileMetaData(uint p) {
 #include "../../external/FidelityFX-Denoiser/ffx-shadows-dnsr/ffx_denoiser_shadows_filter.h"
 
 [numthreads(8, 8, 1)]
+[shader("compute")]
 void Pass0(uint2 gid : SV_GroupID, uint2 gtid : SV_GroupThreadID, uint2 did : SV_DispatchThreadID) {
     const uint PASS_INDEX = 0;
     const uint STEP_SIZE = 1;
@@ -61,21 +62,20 @@ void Pass0(uint2 gid : SV_GroupID, uint2 gtid : SV_GroupThreadID, uint2 did : SV
     bool bWriteOutput = false;
     float2 const results = FFX_DNSR_Shadows_FilterSoftShadowsPass(gid, gtid, did, bWriteOutput, PASS_INDEX, STEP_SIZE);
 
-    if (bWriteOutput)
-    {
+    if (bWriteOutput) {
         rwt2d_history[did] = results;
     }
 }
 
 [numthreads(8, 8, 1)]
+[shader("compute")]
 void Pass1(uint2 gid : SV_GroupID, uint2 gtid : SV_GroupThreadID, uint2 did : SV_DispatchThreadID) {
     const uint PASS_INDEX = 1;
     const uint STEP_SIZE = 2;
 
     bool bWriteOutput = false;
     float2 const results = FFX_DNSR_Shadows_FilterSoftShadowsPass(gid, gtid, did, bWriteOutput, PASS_INDEX, STEP_SIZE);
-    if (bWriteOutput)
-    {
+    if (bWriteOutput) {
         rwt2d_history[did] = results;
     }
 }
@@ -106,8 +106,7 @@ void Pass2(uint2 gid : SV_GroupID, uint2 gtid : SV_GroupThreadID, uint2 did : SV
     const float shadow_remap = max(1.2f - results.y, 1.0f);
     const float mean = pow(abs(results.x), shadow_remap);
 
-    if (bWriteOutput)
-    {
+    if (bWriteOutput) {
         rwt2d_output[did].x = mean;
     }
 }

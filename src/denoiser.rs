@@ -1,4 +1,4 @@
-use crate::util_functions::load_shader_module;
+use crate::util_functions::{load_shader_module, load_shader_module_as_stage_info};
 use ash::vk;
 use std::ffi::CStr;
 use ultraviolet::{Mat4, Vec2};
@@ -15,40 +15,39 @@ pub fn div_round_up(a: u32, b: u32) -> u32 {
     (a + b - 1) / b
 }
 
-struct ShaderModules {
+struct ShaderStageInfo {
     prepare: vk::PipelineShaderStageCreateInfo,
     pass_0: vk::PipelineShaderStageCreateInfo,
     pass_1: vk::PipelineShaderStageCreateInfo,
     pass_2: vk::PipelineShaderStageCreateInfo,
 }
 
-impl ShaderModules {
+impl ShaderStageInfo {
     pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        let passes_module = load_shader_module(
+            include_bytes!("shaders/shadow_denoiser_passes.hlsl.spv"),
+            device,
+        )?;
+
         Ok(Self {
-            prepare: load_shader_module(
+            prepare: load_shader_module_as_stage_info(
                 include_bytes!("shaders/shadow_denoiser_prepare.hlsl.spv"),
                 vk::ShaderStageFlags::COMPUTE,
                 device,
                 None,
             )?,
-            pass_0: load_shader_module(
-                include_bytes!("shaders/shadow_denoiser_pass_0.hlsl.spv"),
-                vk::ShaderStageFlags::COMPUTE,
-                device,
-                Some(CStr::from_bytes_with_nul(b"Pass0\0")?),
-            )?,
-            pass_1: load_shader_module(
-                include_bytes!("shaders/shadow_denoiser_pass_1.hlsl.spv"),
-                vk::ShaderStageFlags::COMPUTE,
-                device,
-                Some(CStr::from_bytes_with_nul(b"Pass1\0")?),
-            )?,
-            pass_2: load_shader_module(
-                include_bytes!("shaders/shadow_denoiser_pass_2.hlsl.spv"),
-                vk::ShaderStageFlags::COMPUTE,
-                device,
-                Some(CStr::from_bytes_with_nul(b"Pass2\0")?),
-            )?,
+            pass_0: *vk::PipelineShaderStageCreateInfo::builder()
+                .module(passes_module)
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .name(CStr::from_bytes_with_nul(b"Pass0\0")?),
+            pass_1: *vk::PipelineShaderStageCreateInfo::builder()
+                .module(passes_module)
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .name(CStr::from_bytes_with_nul(b"Pass1\0")?),
+            pass_2: *vk::PipelineShaderStageCreateInfo::builder()
+                .module(passes_module)
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .name(CStr::from_bytes_with_nul(b"Pass2\0")?),
         })
     }
 }
@@ -92,7 +91,7 @@ impl Pipelines {
         device: &ash::Device,
         storage_image_dsl: vk::DescriptorSetLayout,
     ) -> anyhow::Result<Self> {
-        let shader_modules = ShaderModules::new(device)?;
+        let shader_stage_info = ShaderStageInfo::new(device)?;
 
         let storage_buffer = |binding| {
             *vk::DescriptorSetLayoutBinding::builder()
@@ -155,16 +154,16 @@ impl Pipelines {
                 &[
                     *vk::ComputePipelineCreateInfo::builder()
                         .layout(prepare_pipeline_layout)
-                        .stage(shader_modules.prepare),
+                        .stage(shader_stage_info.prepare),
                     *vk::ComputePipelineCreateInfo::builder()
                         .layout(passes_pipeline_layout)
-                        .stage(shader_modules.pass_0),
+                        .stage(shader_stage_info.pass_0),
                     *vk::ComputePipelineCreateInfo::builder()
                         .layout(passes_pipeline_layout)
-                        .stage(shader_modules.pass_1),
+                        .stage(shader_stage_info.pass_1),
                     *vk::ComputePipelineCreateInfo::builder()
                         .layout(passes_pipeline_layout)
-                        .stage(shader_modules.pass_2),
+                        .stage(shader_stage_info.pass_2),
                 ],
                 None,
             )

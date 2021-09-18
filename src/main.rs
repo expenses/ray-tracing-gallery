@@ -26,8 +26,8 @@ use util_structs::{
 
 use util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, load_gltf, load_rgba_png_image_from_bytes,
-    load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
-    PipelineImageMemoryBarrierParams,
+    load_shader_module_as_stage_info, sbt_aligned_size, select_physical_device,
+    shader_group_for_type, PipelineImageMemoryBarrierParams,
 };
 
 use denoiser::Pipelines as DenoiserPipelines;
@@ -508,25 +508,25 @@ fn main() -> anyhow::Result<()> {
     }?;
 
     let shader_stages = [
-        load_shader_module(
+        load_shader_module_as_stage_info(
             include_bytes!("shaders/raygen.rgen.spv"),
             vk::ShaderStageFlags::RAYGEN_KHR,
             &device,
             None,
         )?,
-        load_shader_module(
+        load_shader_module_as_stage_info(
             include_bytes!("shaders/closesthit.rchit.spv"),
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
             None,
         )?,
-        load_shader_module(
+        load_shader_module_as_stage_info(
             include_bytes!("shaders/miss.rmiss.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,
             None,
         )?,
-        load_shader_module(
+        load_shader_module_as_stage_info(
             include_bytes!("shaders/shadow.rmiss.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,

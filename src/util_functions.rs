@@ -151,16 +151,21 @@ unsafe fn cstr_from_array(array: &[c_char]) -> &CStr {
     CStr::from_ptr(array.as_ptr())
 }
 
-pub fn load_shader_module(
+pub fn load_shader_module(bytes: &[u8], device: &ash::Device) -> anyhow::Result<vk::ShaderModule> {
+    let spv = ash::util::read_spv(&mut std::io::Cursor::new(bytes))?;
+    let module = unsafe {
+        device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spv), None)
+    }?;
+    Ok(module)
+}
+
+pub fn load_shader_module_as_stage_info(
     bytes: &[u8],
     stage: vk::ShaderStageFlags,
     device: &ash::Device,
     entry_point: Option<&CStr>,
 ) -> anyhow::Result<vk::PipelineShaderStageCreateInfo> {
-    let spv = ash::util::read_spv(&mut std::io::Cursor::new(bytes))?;
-    let module = unsafe {
-        device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spv), None)
-    }?;
+    let module = load_shader_module(bytes, device)?;
 
     let entry_point = match entry_point {
         Some(entry_point) => entry_point,
