@@ -6,6 +6,7 @@ use ash::extensions::khr::{
     Swapchain as SwapchainLoader,
 };
 use ash::vk;
+use std::f32::consts::PI;
 use std::ffi::CStr;
 use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -383,8 +384,24 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
+    // Uniforms and state
+
+    let mut camera = FirstPersonCamera {
+        eye: Vec3::new(0.0, 2.0, -5.0),
+        pitch: 0.0,
+        yaw: 180.0_f32.to_radians(),
+    };
+
+    let mut camera_velocity = Vec3::zero();
+
+    let mut sun_velocity = Vec2::zero();
+    let mut sun = Sun {
+        pitch: 0.5,
+        yaw: 1.0,
+    };
+
     let mut uniforms = RayTracingUniforms {
-        sun_dir: Vec3::new(0.0, 0.25, -0.5).normalized(),
+        sun_dir: sun.as_normal(),
         sun_radius: 0.1,
         view_inverse: Mat4::identity(),
         proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
@@ -619,14 +636,6 @@ fn main() -> anyhow::Result<()> {
 
     // main loop
 
-    let mut camera = FirstPersonCamera {
-        eye: Vec3::new(0.0, 2.0, -5.0),
-        pitch: 0.0,
-        yaw: 180.0_f32.to_radians(),
-    };
-
-    let mut camera_velocity = Vec3::zero();
-
     let mut kbd_state = KbdState::default();
 
     let mut cursor_grab = false;
@@ -722,6 +731,10 @@ fn main() -> anyhow::Result<()> {
                                     window.set_cursor_grab(cursor_grab)?;
                                 }
                             }
+                            VirtualKeyCode::Up => kbd_state.sun_up = pressed,
+                            VirtualKeyCode::Right => kbd_state.sun_cw = pressed,
+                            VirtualKeyCode::Left => kbd_state.sun_ccw = pressed,
+                            VirtualKeyCode::Down => kbd_state.sun_down = pressed,
                             _ => {}
                         }
                     }
@@ -735,8 +748,6 @@ fn main() -> anyhow::Result<()> {
                             );
 
                             window.set_cursor_position(screen_center)?;
-
-                            use std::f32::consts::PI;
 
                             camera.yaw -= delta.x.to_radians() * 0.05;
                             camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
@@ -773,13 +784,45 @@ fn main() -> anyhow::Result<()> {
                         camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
                         let magnitude = camera_velocity.mag();
                         if magnitude > max_velocity {
-                            let clamped_magnitude = magnitude.max(max_velocity);
+                            let clamped_magnitude = magnitude.min(max_velocity);
                             camera_velocity *= clamped_magnitude / magnitude;
                         }
 
                         camera.eye += camera_velocity;
 
                         camera_velocity *= 0.9;
+                    }
+
+                    {
+                        let acceleration = 0.002;
+                        let max_velocity = 0.05;
+
+                        if kbd_state.sun_up {
+                            sun_velocity.y += acceleration;
+                        }
+
+                        if kbd_state.sun_down {
+                            sun_velocity.y -= acceleration;
+                        }
+
+                        if kbd_state.sun_cw {
+                            sun_velocity.x += acceleration;
+                        }
+
+                        if kbd_state.sun_ccw {
+                            sun_velocity.x -= acceleration;
+                        }
+
+                        let magnitude = sun_velocity.mag();
+                        if magnitude > max_velocity {
+                            let clamped_magnitude = magnitude.min(max_velocity);
+                            sun_velocity *= clamped_magnitude / magnitude;
+                        }
+
+                        sun.yaw += sun_velocity.x;
+                        sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(-PI / 2.0);
+
+                        sun_velocity *= 0.95;
                     }
 
                     window.request_redraw();
@@ -811,6 +854,7 @@ fn main() -> anyhow::Result<()> {
                             let resources = &mut frame.resources;
 
                             uniforms.view_inverse = camera.as_view_matrix().inversed();
+                            uniforms.sun_dir = sun.as_normal();
 
                             resources
                                 .ray_tracing_uniforms
@@ -1180,6 +1224,25 @@ pub struct KbdState {
     right: bool,
     forward: bool,
     back: bool,
+    sun_up: bool,
+    sun_down: bool,
+    sun_cw: bool,
+    sun_ccw: bool,
+}
+
+struct Sun {
+    pitch: f32,
+    yaw: f32,
+}
+
+impl Sun {
+    fn as_normal(&self) -> Vec3 {
+        Vec3::new(
+            self.pitch.cos() * self.yaw.sin(),
+            self.pitch.sin(),
+            self.pitch.cos() * self.yaw.cos(),
+        )
+    }
 }
 
 #[derive(Copy, Clone)]
