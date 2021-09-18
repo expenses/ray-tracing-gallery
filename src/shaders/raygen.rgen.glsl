@@ -5,7 +5,7 @@
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout(set = 1, binding = 0, rgba8) uniform image2D image;
-//layout(set = 2, binding = 0, r32ui) uniform image2D shadow_mask;
+layout(set = 1, binding = 2, r8ui) uniform uimage2D shadow_image;
 
 layout(location = 0) rayPayloadEXT struct Payload {
     vec3 hit_value;
@@ -30,4 +30,5 @@ void main()  {
     traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
 
 	imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.hit_value, 0.0));
+	imageStore(shadow_image, ivec2(gl_LaunchIDEXT.xy), uvec4(uint(!payload.in_shadow), uvec3(0)));
 }

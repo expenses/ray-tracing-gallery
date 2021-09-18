@@ -421,6 +421,18 @@ impl Buffer {
         drop(self);
         Ok(())
     }
+
+    pub fn replace<T: Fn(&mut Allocator) -> anyhow::Result<Self>>(
+        &mut self,
+        function: T,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<()> {
+        self.cleanup(allocator)?;
+
+        *self = function(allocator)?;
+
+        Ok(())
+    }
 }
 
 pub struct Image {
@@ -534,6 +546,18 @@ impl Image {
         unsafe { allocator.device.destroy_image_view(self.view, None) };
 
         unsafe { allocator.device.destroy_image(self.image, None) };
+
+        Ok(())
+    }
+
+    pub fn replace<T: Fn(&mut Allocator) -> anyhow::Result<Self>>(
+        &mut self,
+        function: T,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<()> {
+        self.cleanup(allocator)?;
+
+        *self = function(allocator)?;
 
         Ok(())
     }

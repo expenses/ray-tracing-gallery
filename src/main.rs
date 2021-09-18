@@ -423,6 +423,14 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
+                    shadow_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "shadow image 0",
+                        vk::Format::R8_UINT,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
                     ray_tracing_ds: frame_descriptor_sets[0],
                     denoiser_prepare_ds: frame_descriptor_sets[1],
                     denoiser_tile_metadata: Buffer::new_of_size(
@@ -448,6 +456,14 @@ fn main() -> anyhow::Result<()> {
                         extent.height,
                         "storage image 1",
                         surface_format.format,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    shadow_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "shadow image 1",
+                        vk::Format::R8_UINT,
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
@@ -702,13 +718,31 @@ fn main() -> anyhow::Result<()> {
                             command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
                         for (i, frame) in multibuffering_frames.iter_mut().enumerate() {
-                            frame.resources.storage_image.cleanup(&mut allocator)?;
-                            frame.resources.storage_image = Image::new_storage_image(
-                                extent.width,
-                                extent.height,
-                                &format!("storage image {}", i),
-                                surface_format.format,
-                                resize_command_buffer.buffer(),
+                            frame.resources.storage_image.replace(
+                                |allocator| {
+                                    Image::new_storage_image(
+                                        extent.width,
+                                        extent.height,
+                                        &format!("storage image {}", i),
+                                        surface_format.format,
+                                        resize_command_buffer.buffer(),
+                                        allocator,
+                                    )
+                                },
+                                &mut allocator,
+                            )?;
+
+                            frame.resources.shadow_image.replace(
+                                |allocator| {
+                                    Image::new_storage_image(
+                                        extent.width,
+                                        extent.height,
+                                        &format!("shadow image {}", i),
+                                        vk::Format::R8_UINT,
+                                        resize_command_buffer.buffer(),
+                                        allocator,
+                                    )
+                                },
                                 &mut allocator,
                             )?;
 
@@ -717,15 +751,15 @@ fn main() -> anyhow::Result<()> {
                                 extent.height,
                             );
 
-                            frame
-                                .resources
-                                .denoiser_tile_metadata
-                                .cleanup(&mut allocator)?;
-
-                            frame.resources.denoiser_tile_metadata = Buffer::new_of_size(
-                                denoiser_buffer_size,
-                                &format!("tile metadata {}", i),
-                                vk::BufferUsageFlags::STORAGE_BUFFER,
+                            frame.resources.denoiser_tile_metadata.replace(
+                                |allocator| {
+                                    Buffer::new_of_size(
+                                        denoiser_buffer_size,
+                                        &format!("tile metadata {}", i),
+                                        vk::BufferUsageFlags::STORAGE_BUFFER,
+                                        allocator,
+                                    )
+                                },
                                 &mut allocator,
                             )?;
                         }
@@ -939,12 +973,15 @@ fn main() -> anyhow::Result<()> {
                                     }),
                                 );
 
-                                /*device.cmd_dispatch(
+                                device.cmd_dispatch(
                                     frame.command_buffer,
                                     denoiser::div_round_up(extent.width, denoiser::TILE_SIZE_X * 4),
-                                    denoiser::div_round_up(extent.height, denoiser::TILE_SIZE_Y * 4),
-                                    1
-                                );*/
+                                    denoiser::div_round_up(
+                                        extent.height,
+                                        denoiser::TILE_SIZE_Y * 4,
+                                    ),
+                                    1,
+                                );
 
                                 let subresource = *vk::ImageSubresourceLayers::builder()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1078,16 +1115,12 @@ fn main() -> anyhow::Result<()> {
 
                     image_manager.cleanup(&mut allocator)?;
 
-                    for frame in &mut multibuffering_frames {
-                        frame.resources.storage_image.cleanup(&mut allocator)?;
-                        frame
-                            .resources
-                            .denoiser_tile_metadata
-                            .cleanup(&mut allocator)?;
-                        frame
-                            .resources
-                            .ray_tracing_uniforms
-                            .cleanup(&mut allocator)?;
+                    for frame in &multibuffering_frames {
+                        let resources = &frame.resources;
+                        resources.storage_image.cleanup(&mut allocator)?;
+                        resources.denoiser_tile_metadata.cleanup(&mut allocator)?;
+                        resources.ray_tracing_uniforms.cleanup(&mut allocator)?;
+                        resources.shadow_image.cleanup(&mut allocator)?;
                     }
                 },
                 _ => {}
@@ -1275,10 +1308,57 @@ impl Frame {
 
 pub struct PerFrameResources {
     storage_image: Image,
+    shadow_image: Image,
     denoiser_tile_metadata: Buffer,
     denoiser_prepare_ds: vk::DescriptorSet,
     ray_tracing_ds: vk::DescriptorSet,
     ray_tracing_uniforms: Buffer,
+}
+
+fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[Frame; 2]) {
+    for frame in frames {
+        let image_infos = &[
+            frame.resources.storage_image.descriptor_image_info(),
+            frame.resources.shadow_image.descriptor_image_info(),
+        ];
+        let buffer_infos = &[
+            frame
+                .resources
+                .ray_tracing_uniforms
+                .descriptor_buffer_info(),
+            frame
+                .resources
+                .denoiser_tile_metadata
+                .descriptor_buffer_info(),
+        ];
+
+        let writes = &[
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&image_infos[0..1]),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&image_infos[1..2]),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&buffer_infos[0..1]),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.denoiser_prepare_ds)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&buffer_infos[1..2]),
+        ];
+
+        unsafe {
+            device.update_descriptor_sets(writes, &[]);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1524,40 +1604,4 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
-}
-
-fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[Frame; 2]) {
-    for frame in frames {
-        let storage_image_info = &[frame.resources.storage_image.descriptor_image_info()];
-        let uniform_buffer_info = &[frame
-            .resources
-            .ray_tracing_uniforms
-            .descriptor_buffer_info()];
-        let buffer_info = &[frame
-            .resources
-            .denoiser_tile_metadata
-            .descriptor_buffer_info()];
-
-        let writes = &[
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(frame.resources.ray_tracing_ds)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(storage_image_info),
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(frame.resources.ray_tracing_ds)
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(uniform_buffer_info),
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(frame.resources.denoiser_prepare_ds)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(buffer_info),
-        ];
-
-        unsafe {
-            device.update_descriptor_sets(writes, &[]);
-        }
-    }
 }
