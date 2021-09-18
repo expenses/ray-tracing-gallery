@@ -383,16 +383,17 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
-    let sun_dir = Vec3::new(0.0, 0.25, -0.5).normalized();
-    let sun_radius = 0.1;
-
-    let uniforms = RayTracingUniforms {
-        sun_dir,
-        sun_radius,
+    let mut uniforms = RayTracingUniforms {
+        sun_dir: Vec3::new(0.0, 0.25, -0.5).normalized(),
+        sun_radius: 0.1,
         view_inverse: Mat4::identity(),
-        proj_inverse: Mat4::identity(),
+        proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
+            59.0_f32.to_radians(),
+            extent.width as f32 / extent.height as f32,
+            0.1,
+        )
+        .inversed(),
     };
-    let uniform_buffer_bytes = bytemuck::bytes_of(&uniforms);
 
     let mut multibuffering_frames = unsafe {
         [
@@ -410,7 +411,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[0],
                     ray_tracing_uniforms: Buffer::new(
-                        uniform_buffer_bytes,
+                        bytemuck::bytes_of(&uniforms),
                         "ray tracing uniforms 0",
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         &mut allocator,
@@ -431,7 +432,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[1],
                     ray_tracing_uniforms: Buffer::new(
-                        uniform_buffer_bytes,
+                        bytemuck::bytes_of(&uniforms),
                         "ray tracing uniforms 1",
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         &mut allocator,
@@ -618,12 +619,6 @@ fn main() -> anyhow::Result<()> {
 
     // main loop
 
-    let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
-        59.0_f32.to_radians(),
-        extent.width as f32 / extent.height as f32,
-        0.1,
-    );
-
     let mut camera = FirstPersonCamera {
         eye: Vec3::new(0.0, 2.0, -5.0),
         pitch: 0.0,
@@ -653,11 +648,12 @@ fn main() -> anyhow::Result<()> {
                             extent.height as f64 / 2.0,
                         );
 
-                        perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
+                        uniforms.proj_inverse = ultraviolet::projection::perspective_infinite_z_vk(
                             59.0_f32.to_radians(),
                             extent.width as f32 / extent.height as f32,
                             0.1,
-                        );
+                        )
+                        .inversed();
 
                         unsafe {
                             device.queue_wait_idle(queue)?;
@@ -814,14 +810,11 @@ fn main() -> anyhow::Result<()> {
                             let swapchain_image = swapchain.images[swapchain_image_index as usize];
                             let resources = &mut frame.resources;
 
+                            uniforms.view_inverse = camera.as_view_matrix().inversed();
+
                             resources
                                 .ray_tracing_uniforms
-                                .write_mapped(bytemuck::bytes_of(&RayTracingUniforms {
-                                    view_inverse: camera.as_view_matrix().inversed(),
-                                    proj_inverse: perspective_matrix.inversed(),
-                                    sun_dir,
-                                    sun_radius,
-                                }))?;
+                                .write_mapped(bytemuck::bytes_of(&uniforms))?;
 
                             unsafe {
                                 device.begin_command_buffer(
