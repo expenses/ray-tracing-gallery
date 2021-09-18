@@ -363,27 +363,8 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
-    let uniform_buffer = Buffer::new(
-        bytemuck::bytes_of(&Uniforms {
-            sun_dir: Vec3::new(0.0, 0.25, -0.5).normalized(),
-        }),
-        "uniforms",
-        vk::BufferUsageFlags::UNIFORM_BUFFER,
-        &mut allocator,
-    )?;
-
-    let (
-        descriptor_set_layout,
-        output_image_descriptor_set_layout,
-        descriptor_pool,
-        descriptor_set,
-    ) = create_descriptors_sets(
-        &device,
-        &image_manager,
-        &uniform_buffer,
-        &model_info_buffer,
-        &tlas,
-    )?;
+    let (general_dsl, per_frame_dsl, descriptor_pool, general_ds) =
+        create_descriptors_sets(&device, &image_manager, &model_info_buffer, &tlas)?;
 
     // Create frames for multibuffering and their resources.
 
@@ -394,13 +375,24 @@ fn main() -> anyhow::Result<()> {
         height: window_size.height,
     };
 
-    let storage_image_descriptor_sets = unsafe {
+    let ray_tracing_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[output_image_descriptor_set_layout; 2])
+                .set_layouts(&[per_frame_dsl; 2])
                 .descriptor_pool(descriptor_pool),
         )
     }?;
+
+    let sun_dir = Vec3::new(0.0, 0.25, -0.5).normalized();
+    let sun_radius = 0.1;
+
+    let uniforms = RayTracingUniforms {
+        sun_dir,
+        sun_radius,
+        view_inverse: Mat4::identity(),
+        proj_inverse: Mat4::identity(),
+    };
+    let uniform_buffer_bytes = bytemuck::bytes_of(&uniforms);
 
     let mut multibuffering_frames = unsafe {
         [
@@ -416,7 +408,13 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
-                    storage_image_ds: storage_image_descriptor_sets[0],
+                    ray_tracing_ds: ray_tracing_sets[0],
+                    ray_tracing_uniforms: Buffer::new(
+                        uniform_buffer_bytes,
+                        "ray tracing uniforms 0",
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        &mut allocator,
+                    )?,
                 },
             )?,
             Frame::new(
@@ -431,7 +429,13 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
-                    storage_image_ds: storage_image_descriptor_sets[1],
+                    ray_tracing_ds: ray_tracing_sets[1],
+                    ray_tracing_uniforms: Buffer::new(
+                        uniform_buffer_bytes,
+                        "ray tracing uniforms 1",
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        &mut allocator,
+                    )?,
                 },
             )?,
         ]
@@ -468,10 +472,8 @@ fn main() -> anyhow::Result<()> {
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[descriptor_set_layout, output_image_descriptor_set_layout])
-                .push_constant_ranges(&[*vk::PushConstantRange::builder()
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                    .size(std::mem::size_of::<PushConstants>() as u32)]),
+                .set_layouts(&[general_dsl, per_frame_dsl])
+                .push_constant_ranges(&[]),
             None,
         )
     }?;
@@ -787,7 +789,7 @@ fn main() -> anyhow::Result<()> {
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
-                    let frame = &multibuffering_frames[current_frame];
+                    let frame = &mut multibuffering_frames[current_frame];
 
                     unsafe {
                         device.wait_for_fences(&[frame.render_fence], true, u64::MAX)?;
@@ -810,7 +812,16 @@ fn main() -> anyhow::Result<()> {
                     } {
                         Ok((swapchain_image_index, _suboptimal)) => {
                             let swapchain_image = swapchain.images[swapchain_image_index as usize];
-                            let resources = &frame.resources;
+                            let resources = &mut frame.resources;
+
+                            resources
+                                .ray_tracing_uniforms
+                                .write_mapped(bytemuck::bytes_of(&RayTracingUniforms {
+                                    view_inverse: camera.as_view_matrix().inversed(),
+                                    proj_inverse: perspective_matrix.inversed(),
+                                    sun_dir,
+                                    sun_radius,
+                                }))?;
 
                             unsafe {
                                 device.begin_command_buffer(
@@ -830,19 +841,8 @@ fn main() -> anyhow::Result<()> {
                                     vk::PipelineBindPoint::RAY_TRACING_KHR,
                                     pipeline_layout,
                                     0,
-                                    &[descriptor_set, resources.storage_image_ds],
+                                    &[general_ds, resources.ray_tracing_ds],
                                     &[],
-                                );
-
-                                device.cmd_push_constants(
-                                    frame.command_buffer,
-                                    pipeline_layout,
-                                    vk::ShaderStageFlags::RAYGEN_KHR,
-                                    0,
-                                    bytemuck::bytes_of(&PushConstants {
-                                        view_inverse: camera.as_view_matrix().inversed(),
-                                        proj_inverse: perspective_matrix.inversed(),
-                                    }),
                                 );
 
                                 pipeline_loader.cmd_trace_rays(
@@ -987,7 +987,6 @@ fn main() -> anyhow::Result<()> {
                     lain_buffers.cleanup(&mut allocator)?;
 
                     model_info_buffer.cleanup(&mut allocator)?;
-                    uniform_buffer.cleanup(&mut allocator)?;
 
                     raygen_sbt.buffer.cleanup(&mut allocator)?;
                     miss_sbt.buffer.cleanup(&mut allocator)?;
@@ -997,6 +996,10 @@ fn main() -> anyhow::Result<()> {
 
                     for frame in &mut multibuffering_frames {
                         frame.resources.storage_image.cleanup(&mut allocator)?;
+                        frame
+                            .resources
+                            .ray_tracing_uniforms
+                            .cleanup(&mut allocator)?;
                     }
                 },
                 _ => {}
@@ -1014,7 +1017,6 @@ fn main() -> anyhow::Result<()> {
 pub fn create_descriptors_sets(
     device: &ash::Device,
     image_manager: &ImageManager,
-    uniform_buffer: &Buffer,
     model_info_buffer: &Buffer,
     tlas: &AccelerationStructure,
 ) -> anyhow::Result<(
@@ -1023,7 +1025,7 @@ pub fn create_descriptors_sets(
     vk::DescriptorPool,
     vk::DescriptorSet,
 )> {
-    let descriptor_set_layout = unsafe {
+    let general_dsl = unsafe {
         device.create_descriptor_set_layout(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
@@ -1040,11 +1042,6 @@ pub fn create_descriptors_sets(
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(2)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(3)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(image_manager.descriptor_count())
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
@@ -1053,7 +1050,7 @@ pub fn create_descriptors_sets(
         )
     }?;
 
-    let output_image_descriptor_set_layout = unsafe {
+    let per_frame_dsl = unsafe {
         device.create_descriptor_set_layout(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
@@ -1061,10 +1058,19 @@ pub fn create_descriptors_sets(
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    ),
             ]),
             None,
         )
     }?;
+
+    let num_frames = 2;
 
     let descriptor_pool = unsafe {
         device.create_descriptor_pool(
@@ -1075,18 +1081,18 @@ pub fn create_descriptors_sets(
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(3),
+                        .descriptor_count(num_frames),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1),
+                        .descriptor_count(num_frames),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .descriptor_count(image_manager.descriptor_count()),
                 ])
-                .max_sets(4),
+                .max_sets(num_frames + 1),
             None,
         )
     }?;
@@ -1094,12 +1100,12 @@ pub fn create_descriptors_sets(
     let descriptor_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[descriptor_set_layout])
+                .set_layouts(&[general_dsl])
                 .descriptor_pool(descriptor_pool),
         )
     }?;
 
-    let descriptor_set = descriptor_sets[0];
+    let general_ds = descriptor_sets[0];
 
     let structures = &[tlas.acceleration_structure];
 
@@ -1112,7 +1118,7 @@ pub fn create_descriptors_sets(
             &[
                 {
                     let mut write_as = *vk::WriteDescriptorSet::builder()
-                        .dst_set(descriptor_set)
+                        .dst_set(general_ds)
                         .dst_binding(0)
                         .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                         .push_next(&mut write_acceleration_structures);
@@ -1122,31 +1128,17 @@ pub fn create_descriptors_sets(
                     write_as
                 },
                 *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
+                    .dst_set(general_ds)
                     .dst_binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(model_info_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(uniform_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
-                *image_manager.write_descriptor_set(descriptor_set, 3),
+                    .buffer_info(&[model_info_buffer.descriptor_buffer_info()]),
+                *image_manager.write_descriptor_set(general_ds, 2),
             ],
             &[],
         );
     }
 
-    Ok((
-        descriptor_set_layout,
-        output_image_descriptor_set_layout,
-        descriptor_pool,
-        descriptor_set,
-    ))
+    Ok((general_dsl, per_frame_dsl, descriptor_pool, general_ds))
 }
 
 pub struct Frame {
@@ -1190,7 +1182,8 @@ impl Frame {
 
 pub struct PerFrameResources {
     storage_image: Image,
-    storage_image_ds: vk::DescriptorSet,
+    ray_tracing_ds: vk::DescriptorSet,
+    ray_tracing_uniforms: Buffer,
 }
 
 #[derive(Default)]
@@ -1237,15 +1230,11 @@ impl FirstPersonCamera {
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]
-struct PushConstants {
+struct RayTracingUniforms {
     view_inverse: Mat4,
     proj_inverse: Mat4,
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct Uniforms {
     sun_dir: Vec3,
+    sun_radius: f32,
 }
 
 fn build_blas(
@@ -1443,27 +1432,28 @@ pub struct ModelInfo {
 }
 
 fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame; 2]) {
-    let image_infos = &[
-        frames[0].resources.storage_image.descriptor_image_info(),
-        frames[1].resources.storage_image.descriptor_image_info(),
-    ];
+    for frame in frames {
+        let storage_image_info = &[frame.resources.storage_image.descriptor_image_info()];
+        let uniform_buffer_info = &[frame
+            .resources
+            .ray_tracing_uniforms
+            .descriptor_buffer_info()];
 
-    let descriptor_set_write = |i| {
-        let frame: &Frame = &frames[i];
+        let writes = &[
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(storage_image_info),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(uniform_buffer_info),
+        ];
 
-        let dst_set = frame.resources.storage_image_ds;
-
-        *vk::WriteDescriptorSet::builder()
-            .dst_set(dst_set)
-            .dst_binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            // We can't use `&[image_infos[i]]` here as that results in a use-after-free
-            .image_info(&image_infos[i..i + 1])
-    };
-
-    let descriptor_set_writes = &[descriptor_set_write(0), descriptor_set_write(1)];
-
-    unsafe {
-        device.update_descriptor_sets(descriptor_set_writes, &[]);
+        unsafe {
+            device.update_descriptor_sets(writes, &[]);
+        }
     }
 }

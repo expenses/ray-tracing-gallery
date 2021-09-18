@@ -392,6 +392,21 @@ impl Buffer {
         }
     }
 
+    pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
+        *vk::DescriptorBufferInfo::builder()
+            .buffer(self.buffer)
+            .range(vk::WHOLE_SIZE)
+    }
+
+    pub fn write_mapped(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let slice = self
+            .allocation
+            .mapped_slice_mut()
+            .ok_or_else(|| anyhow::anyhow!("Attempted to write to a buffer that wasn't mapped"))?;
+        slice[..bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         allocator.inner.free(self.allocation.clone())?;
 
