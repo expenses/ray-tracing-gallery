@@ -11,6 +11,8 @@ layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
 layout(location = 0) rayPayloadInEXT struct Payload {
     vec3 hit_value;
     bool in_shadow;
+    vec3 normals;
+    float hit_t;
 } payload;
 
 layout(location = 1) rayPayloadEXT bool shadowed;
@@ -110,9 +112,8 @@ void main() {
 	
     lighting *= float(!shadowed);
 
-    payload.hit_value = colour;
-
-    payload.hit_value *= (lighting * 0.6) + 0.4;
-
+    payload.hit_value = colour * ((lighting * 0.6) + 0.4);
     payload.in_shadow = shadowed;
+    payload.normals = normal;
+    payload.hit_t = gl_HitTEXT;
 }

@@ -431,6 +431,14 @@ fn main() -> anyhow::Result<()> {
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
+                    normals_and_depth_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "normals and depth image 0",
+                        vk::Format::R8G8B8A8_UNORM,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
                     ray_tracing_ds: frame_descriptor_sets[0],
                     denoiser_prepare_ds: frame_descriptor_sets[1],
                     denoiser_tile_metadata: Buffer::new_of_size(
@@ -464,6 +472,14 @@ fn main() -> anyhow::Result<()> {
                         extent.height,
                         "shadow image 1",
                         vk::Format::R8_UINT,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    normals_and_depth_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "normals and depth image 1",
+                        vk::Format::R8G8B8A8_UNORM,
                         init_command_buffer.buffer(),
                         &mut allocator,
                     )?,
@@ -739,6 +755,20 @@ fn main() -> anyhow::Result<()> {
                                         extent.height,
                                         &format!("shadow image {}", i),
                                         vk::Format::R8_UINT,
+                                        resize_command_buffer.buffer(),
+                                        allocator,
+                                    )
+                                },
+                                &mut allocator,
+                            )?;
+
+                            frame.resources.normals_and_depth_image.replace(
+                                |allocator| {
+                                    Image::new_storage_image(
+                                        extent.width,
+                                        extent.height,
+                                        &format!("normals and depth image {}", i),
+                                        vk::Format::R8G8B8A8_UNORM,
                                         resize_command_buffer.buffer(),
                                         allocator,
                                     )
@@ -1121,6 +1151,7 @@ fn main() -> anyhow::Result<()> {
                         resources.denoiser_tile_metadata.cleanup(&mut allocator)?;
                         resources.ray_tracing_uniforms.cleanup(&mut allocator)?;
                         resources.shadow_image.cleanup(&mut allocator)?;
+                        resources.normals_and_depth_image.cleanup(&mut allocator)?;
                     }
                 },
                 _ => {}
@@ -1191,6 +1222,11 @@ pub fn create_descriptors_sets(
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::COMPUTE),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::COMPUTE),
             ]),
             None,
         )
@@ -1207,7 +1243,7 @@ pub fn create_descriptors_sets(
                         .descriptor_count(1),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(num_frames * 2),
+                        .descriptor_count(num_frames * 3),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(num_frames + 1),
@@ -1309,6 +1345,7 @@ impl Frame {
 pub struct PerFrameResources {
     storage_image: Image,
     shadow_image: Image,
+    normals_and_depth_image: Image,
     denoiser_tile_metadata: Buffer,
     denoiser_prepare_ds: vk::DescriptorSet,
     ray_tracing_ds: vk::DescriptorSet,
@@ -1320,6 +1357,10 @@ fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[F
         let image_infos = &[
             frame.resources.storage_image.descriptor_image_info(),
             frame.resources.shadow_image.descriptor_image_info(),
+            frame
+                .resources
+                .normals_and_depth_image
+                .descriptor_image_info(),
         ];
         let buffer_infos = &[
             frame
@@ -1333,6 +1374,7 @@ fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[F
         ];
 
         let writes = &[
+            // Images
             *vk::WriteDescriptorSet::builder()
                 .dst_set(frame.resources.ray_tracing_ds)
                 .dst_binding(0)
@@ -1343,6 +1385,12 @@ fn write_multibuffering_frames_descriptor_sets(device: &ash::Device, frames: &[F
                 .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&image_infos[1..2]),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(frame.resources.ray_tracing_ds)
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&image_infos[2..3]),
+            // Buffers
             *vk::WriteDescriptorSet::builder()
                 .dst_set(frame.resources.ray_tracing_ds)
                 .dst_binding(1)

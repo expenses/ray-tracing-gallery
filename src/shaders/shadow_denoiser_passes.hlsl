@@ -1,11 +1,10 @@
-[[vk::binding(0, 0)]] RWTexture2D<float> t2d_DepthBuffer;
-[[vk::binding(1, 0)]] RWTexture2D<float3> t2d_NormalBuffer;
-[[vk::binding(2, 0)]] StructuredBuffer<uint> sb_tileMetaData;
+[[vk::binding(0, 0)]] RWTexture2D<float4> normals_and_depth_buffer;
+[[vk::binding(1, 0)]] StructuredBuffer<uint> sb_tileMetaData;
 
-[[vk::binding(3, 0)]] RWTexture2D<float2> rqt2d_input;
+[[vk::binding(2, 0)]] RWTexture2D<float2> rqt2d_input;
 
-[[vk::binding(4, 0)]] RWTexture2D<float2> rwt2d_history;
-[[vk::binding(5, 0)]] RWTexture2D<unorm float4> rwt2d_output;
+[[vk::binding(3, 0)]] RWTexture2D<float2> rwt2d_history;
+[[vk::binding(4, 0)]] RWTexture2D<unorm float4> rwt2d_output;
 
 [[vk::push_constant]] struct PushConstants {
     float4x4 ProjectionInverse;
@@ -31,11 +30,11 @@ float FFX_DNSR_Shadows_GetDepthSimilaritySigma() {
 }
 
 float FFX_DNSR_Shadows_ReadDepth(int2 p) {
-    return t2d_DepthBuffer.Load(p);
+    return normals_and_depth_buffer.Load(p).a;
 }
 
-float16_t3 FFX_DNSR_Shadows_ReadNormals(int2 p) {
-    return normalize(((float16_t3)t2d_NormalBuffer.Load(p)) * 2 - 1.f);
+float3 FFX_DNSR_Shadows_ReadNormals(int2 p) {
+    return normalize(normals_and_depth_buffer.Load(p).rgb * 2.0 - 1.0);
 }
 
 bool FFX_DNSR_Shadows_IsShadowReciever(uint2 p) {

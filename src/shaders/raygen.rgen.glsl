@@ -6,10 +6,13 @@
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout(set = 1, binding = 0, rgba8) uniform image2D image;
 layout(set = 1, binding = 2, r8ui) uniform uimage2D shadow_image;
+layout(set = 1, binding = 3, rgba8) uniform image2D normals_and_depth_image;
 
 layout(location = 0) rayPayloadEXT struct Payload {
     vec3 hit_value;
     bool in_shadow;
+    vec3 normals;
+    float hit_t;
 } payload;
 
 void main()  {
@@ -26,9 +29,17 @@ void main()  {
 
     payload.hit_value = vec3(0.0);
     payload.in_shadow = false;
+    payload.normals = vec3(0.0);
+    payload.hit_t = tmax;
 
     traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0, origin.xyz, tmin, direction.xyz, tmax, 0);
 
-	imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(payload.hit_value, 0.0));
-	imageStore(shadow_image, ivec2(gl_LaunchIDEXT.xy), uvec4(uint(!payload.in_shadow), uvec3(0)));
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+
+    float depth = payload.hit_t / tmax;
+    vec3 normals_in_range = (payload.normals + 1.0) * 0.5;
+
+	imageStore(image, pixel, vec4(payload.hit_value, 1.0));
+	imageStore(shadow_image, pixel, uvec4(uint(!payload.in_shadow), uvec3(0)));
+	imageStore(normals_and_depth_image, pixel, vec4(normals_in_range, depth));
 }

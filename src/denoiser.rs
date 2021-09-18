@@ -129,11 +129,10 @@ impl Pipelines {
             device.create_descriptor_set_layout(
                 &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                     storage_image(0),
-                    storage_image(1),
-                    storage_buffer(2),
+                    storage_buffer(1),
+                    storage_image(2),
                     storage_image(3),
                     storage_image(4),
-                    storage_image(5),
                 ]),
                 None,
             )
