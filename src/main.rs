@@ -946,11 +946,6 @@ fn main() -> anyhow::Result<()> {
 
                                 device.end_command_buffer(frame.command_buffer)?;
 
-                                // Submit the command buffer, present the queue and then wait for it to be idle.
-                                // We could potentially get more performance out of using multiple command buffers
-                                // framws in flight, but then we'd need to have multiple copies of resources and
-                                // I don't want to work out how to do that properly with acceleration structures right now.
-
                                 device.queue_submit(
                                     queue,
                                     &[*vk::SubmitInfo::builder()
