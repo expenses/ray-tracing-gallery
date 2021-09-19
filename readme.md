@@ -28,4 +28,4 @@ A work-in-progress
 * [Vulkan Guide - Double Buffering](https://vkguide.dev/docs/chapter-4/double_buffering/)
 * [Ray Tracing Gems II], Chapter 16, Page 239. for clarifying how in-place Acceleration Structures work.
 
-[Ray Tracing Gems II]: https://github.com/expenses/ray-tracing-gallery
+[Ray Tracing Gems II]: https://link.springer.com/content/pdf/10.1007%2F978-1-4842-7185-8.pdf
