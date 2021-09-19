@@ -4,6 +4,20 @@ A work-in-progress
 
 ![](screenshots/instances.png)
 
+## Features
+
+* Uses bindless textures and buffers to render multiple models via ray tracing
+* Top-Level Acceleration Structure updates to dynamically alter the scene.
+* Basic lighting and shadows
+* Double-buffering
+* A controllable camera and directional light source
+
+## Todo
+
+* Soft shadows ([Ray Tracing Gems II](https://link.springer.com/content/pdf/10.1007%2F978-1-4842-7185-8.pdf), Chapter 24) and a shadow denoiser pass
+* Fixes for the shadow terminator ([Ray Tracing Gems II], Chapter 4)
+* Ray traced ambient occlusion
+
 ## Acknowledgements and sources
 
 * The [NVIDIA Vulkan Ray Tracing Tutorial](https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/)
