@@ -7,7 +7,9 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::util_functions::{sbt_aligned_size, set_image_layout};
+use crate::util_functions::{
+    cmd_pipeline_image_memory_barrier_explicit, sbt_aligned_size, PipelineImageMemoryBarrierParams,
+};
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -80,6 +82,9 @@ impl Allocator {
 pub struct AccelerationStructure {
     pub buffer: Buffer,
     pub acceleration_structure: vk::AccelerationStructureKHR,
+    pub size: vk::DeviceSize,
+    pub flags: vk::BuildAccelerationStructureFlagsKHR,
+    pub ty: vk::AccelerationStructureTypeKHR,
 }
 
 impl AccelerationStructure {
@@ -98,7 +103,7 @@ impl AccelerationStructure {
 
         let buffer = Buffer::new_of_size(
             size,
-            name,
+            &format!("{} buffer", name),
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             allocator,
@@ -136,7 +141,135 @@ impl AccelerationStructure {
         Ok(Self {
             buffer,
             acceleration_structure,
+            size,
+            flags: geometry_info.flags,
+            ty,
         })
+    }
+
+    pub fn update_tlas(
+        &mut self,
+        instances: &Buffer,
+        num_instances: u32,
+        command_buffer: vk::CommandBuffer,
+        allocator: &mut Allocator,
+        loader: &AccelerationStructureLoader,
+        scratch_buffer: &mut ScratchBuffer,
+    ) -> anyhow::Result<()> {
+        let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
+            vk::DeviceOrHostAddressConstKHR {
+                device_address: instances.device_address(&allocator.device),
+            },
+        );
+
+        let geometry = vk::AccelerationStructureGeometryKHR::builder()
+            .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                instances: *instances,
+            })
+            .flags(vk::GeometryFlagsKHR::OPAQUE);
+
+        let geometries = &[*geometry];
+
+        let mut geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+            .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+            .flags(self.flags)
+            .geometries(geometries)
+            // These two are intended to be the same if we're doing an update-in-place.
+            // This was super unobvious!
+            // https://github.com/nvpro-samples/nvpro_core/blob/07b6dae2d966285aeb4f217f1b1bf6b9e8c769a2/nvvk/raytraceKHR_vk.cpp#L364-L365
+            //
+            // Ray Tracing Gems II, p 239.
+            // https://link.springer.com/content/pdf/10.1007%2F978-1-4842-7185-8.pdf
+            .src_acceleration_structure(self.acceleration_structure)
+            .dst_acceleration_structure(self.acceleration_structure);
+
+        let build_sizes = unsafe {
+            loader.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &geometry_info,
+                &[num_instances],
+            )
+        };
+
+        let scratch_buffer =
+            scratch_buffer.ensure_size_of(build_sizes.update_scratch_size, allocator)?;
+
+        geometry_info = geometry_info.scratch_data(vk::DeviceOrHostAddressKHR {
+            device_address: scratch_buffer.device_address(&allocator.device),
+        });
+
+        let offset =
+            vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
+
+        unsafe {
+            loader.cmd_build_acceleration_structures(
+                command_buffer,
+                &[*geometry_info],
+                &[&[*offset]],
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn clone(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        name: &str,
+        loader: &AccelerationStructureLoader,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let new_buffer = Buffer::new_of_size(
+            self.size,
+            &format!("{} buffer", name),
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            allocator,
+        )?;
+
+        let new_acceleration_structure = unsafe {
+            loader.create_acceleration_structure(
+                &vk::AccelerationStructureCreateInfoKHR::builder()
+                    .buffer(new_buffer.buffer)
+                    .offset(0)
+                    .size(self.size)
+                    .ty(self.ty),
+                None,
+            )
+        }?;
+
+        unsafe {
+            allocator.set_object_name(new_acceleration_structure, name)?;
+
+            loader.cmd_copy_acceleration_structure(
+                command_buffer,
+                &vk::CopyAccelerationStructureInfoKHR::builder()
+                    .src(self.acceleration_structure)
+                    .dst(new_acceleration_structure)
+                    .mode(vk::CopyAccelerationStructureModeKHR::CLONE),
+            );
+        }
+
+        Ok(Self {
+            buffer: new_buffer,
+            acceleration_structure: new_acceleration_structure,
+            size: self.size,
+            flags: self.flags,
+            ty: self.ty,
+        })
+    }
+
+    // Only changes the debug object name, not the allocation name.
+    // See:
+    // https://github.com/Traverse-Research/gpu-allocator/issues/66
+    pub fn rename(&self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
+        unsafe { allocator.set_object_name(self.acceleration_structure, name) }?;
+
+        self.buffer.rename(&format!("{} buffer", name), allocator)?;
+
+        Ok(())
     }
 }
 
@@ -147,12 +280,15 @@ enum ScratchBufferInner {
 
 pub struct ScratchBuffer {
     inner: ScratchBufferInner,
+    alignment: vk::DeviceSize,
 }
 
 impl ScratchBuffer {
-    pub fn new() -> Self {
+    pub fn new(as_props: &vk::PhysicalDeviceAccelerationStructurePropertiesKHR) -> Self {
         Self {
             inner: ScratchBufferInner::Unallocated,
+            alignment: as_props.min_acceleration_structure_scratch_offset_alignment
+                as vk::DeviceSize,
         }
     }
 
@@ -165,11 +301,12 @@ impl ScratchBuffer {
             ScratchBufferInner::Unallocated => {
                 log::info!("Creating a scratch buffer of {} bytes", size);
 
-                self.inner = ScratchBufferInner::Allocated(Buffer::new_of_size(
+                self.inner = ScratchBufferInner::Allocated(Buffer::new_of_size_with_alignment(
                     size,
                     "scratch buffer",
                     vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                         | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    self.alignment,
                     allocator,
                 )?);
             }
@@ -182,11 +319,12 @@ impl ScratchBuffer {
                         size
                     );
 
-                    *buffer = Buffer::new_of_size(
+                    *buffer = Buffer::new_of_size_with_alignment(
                         size,
                         "scratch buffer",
                         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                             | vk::BufferUsageFlags::STORAGE_BUFFER,
+                        self.alignment,
                         allocator,
                     )?;
                 }
@@ -199,11 +337,16 @@ impl ScratchBuffer {
         }
     }
 
-    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        if let ScratchBufferInner::Allocated(buffer) = self.inner {
-            buffer.cleanup_and_drop(allocator)?;
+    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        if let ScratchBufferInner::Allocated(buffer) = &self.inner {
+            buffer.cleanup(allocator)?;
         }
 
+        Ok(())
+    }
+
+    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+        self.cleanup(allocator)?;
         Ok(())
     }
 }
@@ -274,6 +417,47 @@ impl Buffer {
         }?;
 
         let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
+
+        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+            name,
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: true,
+        })?;
+
+        unsafe {
+            allocator.device.bind_buffer_memory(
+                buffer,
+                allocation.memory(),
+                allocation.offset(),
+            )?;
+
+            allocator.set_object_name(buffer, name)?;
+        };
+
+        Ok(Self { buffer, allocation })
+    }
+
+    pub fn new_of_size_with_alignment(
+        size: vk::DeviceSize,
+        name: &str,
+        usage: vk::BufferUsageFlags,
+        alignment: vk::DeviceSize,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<Self> {
+        let buffer = unsafe {
+            allocator.device.create_buffer(
+                &vk::BufferCreateInfo::builder()
+                    .size(size)
+                    .usage(usage)
+                    .queue_family_indices(&[allocator.queue_family]),
+                None,
+            )
+        }?;
+
+        let mut requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
+
+        requirements.alignment = alignment;
 
         let allocation = allocator.inner.allocate(&AllocationCreateDesc {
             name,
@@ -390,6 +574,32 @@ impl Buffer {
         }
     }
 
+    pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
+        *vk::DescriptorBufferInfo::builder()
+            .buffer(self.buffer)
+            .range(vk::WHOLE_SIZE)
+    }
+
+    pub fn write_mapped(&mut self, bytes: &[u8], offset: usize) -> anyhow::Result<()> {
+        let slice = self
+            .allocation
+            .mapped_slice_mut()
+            .ok_or_else(|| anyhow::anyhow!("Attempted to write to a buffer that wasn't mapped"))?;
+        slice[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    // Only changes the debug object name, not the allocation name.
+    // See:
+    // https://github.com/Traverse-Research/gpu-allocator/issues/66
+    pub fn rename(&self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
+        unsafe {
+            allocator.set_object_name(self.buffer, name)?;
+        }
+
+        Ok(())
+    }
+
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         allocator.inner.free(self.allocation.clone())?;
 
@@ -418,7 +628,7 @@ impl Image {
         height: u32,
         name: &str,
         format: vk::Format,
-        command_buffer_and_queue: &CommandBufferAndQueue,
+        command_buffer: vk::CommandBuffer,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
         let image = unsafe {
@@ -480,24 +690,35 @@ impl Image {
             .level_count(1)
             .layer_count(1);
 
-        command_buffer_and_queue.begin(&allocator.device)?;
-
-        set_image_layout(
-            &allocator.device,
-            command_buffer_and_queue.buffer,
-            image,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::GENERAL,
-            *subresource_range,
-        );
-
-        command_buffer_and_queue.finish_block_and_reset(&allocator.device)?;
+        unsafe {
+            cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+                device: &allocator.device,
+                buffer: command_buffer,
+                // No need to block on anything before this.
+                src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
+                // We're blocking the use of the texture in ray tracing
+                dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
+                    .image(image)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .subresource_range(*subresource_range)
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)],
+            });
+        }
 
         Ok(Self {
             image,
             view,
             allocation,
         })
+    }
+
+    pub fn descriptor_image_info(&self) -> vk::DescriptorImageInfo {
+        *vk::DescriptorImageInfo::builder()
+            .image_view(self.view)
+            .image_layout(vk::ImageLayout::GENERAL)
     }
 
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
@@ -587,32 +808,10 @@ impl ModelBuffers {
     }
 }
 
-pub struct Syncronisation {
-    pub acquire_complete_semaphore: vk::Semaphore,
-    pub rendering_complete_semaphore: vk::Semaphore,
-}
-
-impl Syncronisation {
-    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-
-        Ok(Self {
-            acquire_complete_semaphore: unsafe { device.create_semaphore(&semaphore_info, None) }?,
-            rendering_complete_semaphore: unsafe {
-                device.create_semaphore(&semaphore_info, None)
-            }?,
-        })
-    }
-
-    unsafe fn _cleanup(&self, device: &ash::Device) {
-        device.destroy_semaphore(self.acquire_complete_semaphore, None);
-        device.destroy_semaphore(self.rendering_complete_semaphore, None);
-    }
-}
-
 pub struct Swapchain {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
+    pub image_views: Vec<vk::ImageView>,
 }
 
 impl Swapchain {
@@ -629,7 +828,29 @@ impl Swapchain {
                 allocator.set_object_name(*image, &format!("Swapchain image {}", i))?;
             }
 
-            Ok(Self { images, swapchain })
+            let image_views: Vec<_> = images
+                .iter()
+                .map(|swapchain_image| {
+                    let image_view_info = vk::ImageViewCreateInfo::builder()
+                        .image(*swapchain_image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(info.image_format)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::builder()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .level_count(1)
+                                .layer_count(1)
+                                .build(),
+                        );
+                    allocator.device.create_image_view(&image_view_info, None)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Self {
+                images,
+                swapchain,
+                image_views,
+            })
         }
     }
 }

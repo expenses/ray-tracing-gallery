@@ -235,16 +235,22 @@ pub fn load_rgba_png_image_from_bytes(
         )
     }?;
 
-    set_image_layout(
-        &allocator.device,
-        command_buffer,
-        image,
-        vk::ImageLayout::UNDEFINED,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        *subresource_range,
-    );
-
     unsafe {
+        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+            device: &allocator.device,
+            buffer: command_buffer,
+            // We don't need to block on anything before this.
+            src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
+            // We're blocking a transfer
+            dst_stage: vk::PipelineStageFlags::TRANSFER,
+            image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
+                .image(image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .subresource_range(*subresource_range)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)],
+        });
+
         allocator.device.cmd_copy_buffer_to_image(
             command_buffer,
             staging_buffer.buffer,
@@ -261,16 +267,23 @@ pub fn load_rgba_png_image_from_bytes(
                 })
                 .image_extent(extent)],
         );
-    }
 
-    set_image_layout(
-        &allocator.device,
-        command_buffer,
-        image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        *subresource_range,
-    );
+        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+            device: &allocator.device,
+            buffer: command_buffer,
+            // We're blocking on a transfer.
+            src_stage: vk::PipelineStageFlags::TRANSFER,
+            // We're blocking the use of the texture in ray tracing
+            dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
+                .image(image)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .subresource_range(*subresource_range)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)],
+        });
+    }
 
     Ok((
         Image {
@@ -280,125 +293,6 @@ pub fn load_rgba_png_image_from_bytes(
         },
         staging_buffer,
     ))
-}
-
-// Copied pretty much verbatim from:
-// https://github.com/SaschaWillems/Vulkan/blob/eb11297312a164d00c60b06048100bac1d780bb4/base/VulkanTools.cpp#L119-L123
-//
-// This stuff is super annoying, I wish this image layout to access mask matching was
-// in the api itself.
-pub fn set_image_layout(
-    device: &ash::Device,
-    command_buffer: vk::CommandBuffer,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-    subresource_range: vk::ImageSubresourceRange,
-) {
-    let mut image_memory_barrier = vk::ImageMemoryBarrier::builder()
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .image(image)
-        .subresource_range(subresource_range);
-
-    // Source layouts (old)
-    // Source access mask controls actions that have to be finished on the old layout
-    // before it will be transitioned to the new layout
-    match old_layout {
-        vk::ImageLayout::UNDEFINED => {
-            // Image layout is undefined (or does not matter)
-            // Only valid as initial layout
-            // No flags required, listed only for completeness
-            image_memory_barrier.src_access_mask = vk::AccessFlags::empty();
-        }
-        vk::ImageLayout::PREINITIALIZED => {
-            // Image is preinitialized
-            // Only valid as initial layout for linear images, preserves memory contents
-            // Make sure host writes have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::HOST_WRITE;
-        }
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
-            // Image is a color attachment
-            // Make sure any writes to the color buffer have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
-        }
-        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
-            // Image is a depth/stencil attachment
-            // Make sure any writes to the depth/stencil buffer have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-        }
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => {
-            // Image is a transfer source
-            // Make sure any reads from the image have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-        }
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL => {
-            // Image is a transfer destination
-            // Make sure any writes to the image have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-        }
-
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
-            // Image is read by a shader
-            // Make sure any shader reads from the image have been finished
-            image_memory_barrier.src_access_mask = vk::AccessFlags::SHADER_READ;
-        }
-        // Other source layouts aren't handled (yet)
-        _ => {}
-    }
-
-    // Target layouts (new)
-    // Destination access mask controls the dependency for the new image layout
-    match new_layout {
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL => {
-            // Image will be used as a transfer destination
-            // Make sure any writes to the image have been finished
-            image_memory_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-        }
-
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => {
-            // Image will be used as a transfer source
-            // Make sure any reads from the image have been finished
-            image_memory_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
-        }
-
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
-            // Image will be used as a color attachment
-            // Make sure any writes to the color buffer have been finished
-            image_memory_barrier.dst_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
-        }
-
-        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
-            // Image layout will be used as a depth/stencil attachment
-            // Make sure any writes to depth/stencil buffer have been finished
-            image_memory_barrier.dst_access_mask |= vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-        }
-
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => {
-            // Image will be read in a shader (sampler, input attachment)
-            // Make sure any writes to the image have been finished
-            if image_memory_barrier.src_access_mask == vk::AccessFlags::empty() {
-                image_memory_barrier.src_access_mask =
-                    vk::AccessFlags::HOST_WRITE | vk::AccessFlags::TRANSFER_WRITE;
-            }
-            image_memory_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-        }
-        _ => {
-            // Other source layouts aren't handled (yet)
-        }
-    }
-
-    unsafe {
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[*image_memory_barrier],
-        )
-    }
 }
 
 pub fn load_gltf(
@@ -535,5 +429,28 @@ pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKH
     aligned_size(
         props.shader_group_handle_size,
         props.shader_group_handle_alignment,
+    )
+}
+
+pub struct PipelineImageMemoryBarrierParams<'a> {
+    pub device: &'a ash::Device,
+    pub buffer: vk::CommandBuffer,
+    pub src_stage: vk::PipelineStageFlags,
+    pub dst_stage: vk::PipelineStageFlags,
+    pub image_memory_barriers: &'a [vk::ImageMemoryBarrier],
+}
+
+// `cmd_pipeline_barrier` is one of those cases where it's nice if each param is clear.
+pub unsafe fn cmd_pipeline_image_memory_barrier_explicit(
+    params: &PipelineImageMemoryBarrierParams,
+) {
+    params.device.cmd_pipeline_barrier(
+        params.buffer,
+        params.src_stage,
+        params.dst_stage,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        params.image_memory_barriers,
     )
 }

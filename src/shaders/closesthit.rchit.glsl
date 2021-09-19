@@ -6,15 +6,14 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 #extension GL_EXT_scalar_block_layout : enable
 
-layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
 
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
 layout(location = 1) rayPayloadEXT bool shadowed;
+
 hitAttributeEXT vec2 attribs;
 
-layout(set = 0, binding = 3) uniform Uniforms {
-    vec3 sun_dir;
-};
+#include "common.glsl"
 
 struct Vertex {
     vec3 pos;
@@ -39,11 +38,11 @@ layout(buffer_reference, scalar) buffer Indices {
     uint16_t inner[];
 };
 
-layout(set = 0, binding = 2) buffer ModelInformations {
+layout(set = 0, binding = 0) buffer ModelInformations {
     ModelInfo model_info[];
 };
 
-layout(set = 0, binding = 4) uniform sampler2D textures[];
+layout(set = 0, binding = 1) uniform sampler2D textures[];
 
 Vertex load_vertex(uint index, ModelInfo info) {
     Vertex vertex;
@@ -83,16 +82,16 @@ float shadow_multiplier(vec2 rng) {
     float pointAngle = rng.y * 2.0f * 3.1415;
     vec2 diskPoint = vec2(pointRadius*cos(pointAngle), pointRadius*sin(pointAngle));
 
-    vec3 lightTangent = normalize(cross(sun_dir, vec3(0.0f, 1.0f, 0.0f)));
-    vec3 lightBitangent = normalize(cross(lightTangent, sun_dir));
+    vec3 lightTangent = normalize(cross(uniforms.sun_dir, vec3(0.0f, 1.0f, 0.0f)));
+    vec3 lightBitangent = normalize(cross(lightTangent, uniforms.sun_dir));
 
     // Shadow casting
 	float tmin = 0.001;
 	float tmax = 10000.0;
 	vec3 origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
-	shadowed = true;  
+	shadowed = true;
 
-    vec3 rayTarget = origin + sun_dir + diskPoint.x * lightTangent + diskPoint.y * lightBitangent;
+    vec3 rayTarget = origin + uniforms.sun_dir + diskPoint.x * lightTangent + diskPoint.y * lightBitangent;
     vec3 shadowRayDir = normalize(rayTarget - origin);
 
     // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
@@ -127,11 +126,11 @@ void main() {
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
     vec3 colour = texture(textures[nonuniformEXT(info.texture_index)], uv).rgb;
 
-    float lighting = max(dot(normal, sun_dir), 0.0);
+    float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 
-    float shadow_sum = shadow_multiplier(hash22(attribs * 1000.0));
-	
-    lighting *= shadow_sum;
+    float shadow_sum = shadow_multiplier(hash22(attribs * 1000.0)) + shadow_multiplier(hash22(attribs * 1000.0 + 50.0)) + shadow_multiplier(hash22(attribs * 1000.0 + 100.0));
+
+    lighting *= shadow_sum / 3.0;
 
     hitValue = colour;
 

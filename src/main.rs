@@ -6,6 +6,7 @@ use ash::extensions::khr::{
     Swapchain as SwapchainLoader,
 };
 use ash::vk;
+use std::f32::consts::PI;
 use std::ffi::CStr;
 use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -20,12 +21,13 @@ mod util_structs;
 
 use util_structs::{
     AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager,
-    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain, Syncronisation,
+    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
 use util_functions::{
-    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
-    select_physical_device, set_image_layout, shader_group_for_type,
+    cmd_pipeline_image_memory_barrier_explicit, load_gltf, load_rgba_png_image_from_bytes,
+    load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
+    PipelineImageMemoryBarrierParams,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -71,9 +73,9 @@ fn main() -> anyhow::Result<()> {
         instance_extensions
     });
 
-    let validation_layer_name = CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0")?;
-
-    let enabled_layers = CStrList::new(vec![validation_layer_name]);
+    let enabled_layers = CStrList::new(vec![CStr::from_bytes_with_nul(
+        b"VK_LAYER_KHRONOS_validation\0",
+    )?]);
 
     let device_extensions = CStrList::new(vec![
         SwapchainLoader::name(),
@@ -158,6 +160,19 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
+    let (ray_tracing_props, as_props) = {
+        let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        let mut as_props = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+
+        let mut device_props_2 = vk::PhysicalDeviceProperties2::builder()
+            .push_next(&mut ray_tracing_props)
+            .push_next(&mut as_props);
+
+        unsafe { instance.get_physical_device_properties2(physical_device, &mut device_props_2) }
+
+        (ray_tracing_props, as_props)
+    };
+
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
@@ -166,9 +181,9 @@ fn main() -> anyhow::Result<()> {
         queue_family,
     )?;
 
-    let mut command_buffer_and_queue = {
-        let queue = unsafe { device.get_device_queue(queue_family, 0) };
+    let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
+    let mut command_buffer_and_queue = {
         let command_pool = unsafe {
             device.create_command_pool(
                 &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
@@ -245,7 +260,7 @@ fn main() -> anyhow::Result<()> {
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
-    let mut scratch_buffer = ScratchBuffer::new();
+    let mut scratch_buffer = ScratchBuffer::new(&as_props);
 
     let plane_blas = build_blas(
         &plane_buffers,
@@ -276,7 +291,10 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let instances = &[
+    let lain_transform = Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
+    let mut lain_rotation = 150.0_f32.to_radians();
+
+    let mut instances = vec![
         tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
         tlas_instance(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
@@ -285,23 +303,43 @@ fn main() -> anyhow::Result<()> {
             1,
         ),
         tlas_instance(
-            Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0))
-                * Mat4::from_rotation_y(150.0_f32.to_radians())
-                * Mat4::from_scale(0.5),
+            lain_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
         ),
     ];
 
+    {
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            instances.push(tlas_instance(
+                Mat4::from_translation(Vec3::new(
+                    rng.gen_range(-10.0..10.0),
+                    rng.gen_range(0.5..2.5),
+                    rng.gen_range(-10.0..10.0),
+                )) * Mat4::from_rotation_y(rng.gen_range(0.0..100.0))
+                    * Mat4::from_scale(rng.gen_range(0.01..0.1)),
+                &tori_blas,
+                &device,
+                1,
+            ))
+        }
+    }
+
     let instances_buffer = Buffer::new_with_custom_alignment(
-        unsafe { instances_as_bytes(instances) },
+        unsafe { instances_as_bytes(&instances) },
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         16,
         &mut allocator,
     )?;
+
+    let num_instances = instances.len() as u32;
 
     // Create the tlas
 
@@ -322,12 +360,161 @@ fn main() -> anyhow::Result<()> {
 
     let tlas = build_tlas(
         &instances_buffer,
-        instances.len() as u32,
+        num_instances,
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
         init_command_buffer.buffer(),
     )?;
+
+    // Wait for TLAS build to finish
+    unsafe {
+        device.cmd_pipeline_barrier(
+            init_command_buffer.buffer(),
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::DependencyFlags::empty(),
+            &[*vk::MemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
+            &[],
+            &[],
+        );
+    }
+
+    // Create descriptor sets and set layouts
+
+    let model_info_buffer = Buffer::new(
+        bytemuck::cast_slice(&[
+            plane_buffers.model_info(&device),
+            tori_buffers.model_info(&device),
+            lain_buffers.model_info(&device),
+        ]),
+        "model info",
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+        &mut allocator,
+    )?;
+
+    let (general_dsl, per_frame_dsl, descriptor_pool, general_ds) =
+        create_descriptors_sets(&device, &image_manager, &model_info_buffer)?;
+
+    // Create frames for multibuffering and their resources.
+
+    let window_size = window.inner_size();
+
+    let mut extent = vk::Extent2D {
+        width: window_size.width,
+        height: window_size.height,
+    };
+
+    let ray_tracing_sets = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::builder()
+                .set_layouts(&[per_frame_dsl; 2])
+                .descriptor_pool(descriptor_pool),
+        )
+    }?;
+
+    // Uniforms and state
+
+    let mut camera = FirstPersonCamera {
+        eye: Vec3::new(0.0, 2.0, -5.0),
+        pitch: 0.0,
+        yaw: 180.0_f32.to_radians(),
+    };
+
+    let mut camera_velocity = Vec3::zero();
+
+    let mut sun_velocity = Vec2::zero();
+    let mut sun = Sun {
+        pitch: 0.5,
+        yaw: 1.0,
+    };
+
+    let mut uniforms = RayTracingUniforms {
+        sun_dir: sun.as_normal(),
+        sun_radius: 0.1,
+        view_inverse: Mat4::identity(),
+        proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
+            59.0_f32.to_radians(),
+            extent.width as f32 / extent.height as f32,
+            0.1,
+        )
+        .inversed(),
+    };
+
+    let mut multibuffering_frames = unsafe {
+        [
+            Frame::new(
+                &device,
+                queue_family,
+                PerFrameResources {
+                    storage_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "storage image 0",
+                        surface_format.format,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    ray_tracing_ds: ray_tracing_sets[0],
+                    ray_tracing_uniforms: Buffer::new(
+                        bytemuck::bytes_of(&uniforms),
+                        "ray tracing uniforms 0",
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        &mut allocator,
+                    )?,
+                    tlas: tlas.clone(
+                        init_command_buffer.buffer(),
+                        "tlas 0",
+                        &as_loader,
+                        &mut allocator,
+                    )?,
+                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    instances_buffer: Buffer::new_with_custom_alignment(
+                        instances_as_bytes(&instances),
+                        "instances buffer 0",
+                        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                        16,
+                        &mut allocator,
+                    )?,
+                },
+            )?,
+            Frame::new(
+                &device,
+                queue_family,
+                PerFrameResources {
+                    storage_image: Image::new_storage_image(
+                        extent.width,
+                        extent.height,
+                        "storage image 1",
+                        surface_format.format,
+                        init_command_buffer.buffer(),
+                        &mut allocator,
+                    )?,
+                    ray_tracing_ds: ray_tracing_sets[1],
+                    ray_tracing_uniforms: Buffer::new(
+                        bytemuck::bytes_of(&uniforms),
+                        "ray tracing uniforms 1",
+                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        &mut allocator,
+                    )?,
+                    tlas: {
+                        tlas.rename("tlas 1", &allocator)?;
+                        tlas
+                    },
+                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    instances_buffer: {
+                        instances_buffer.rename("instances buffer 1", &allocator)?;
+                        instances_buffer
+                    },
+                },
+            )?,
+        ]
+    };
+
+    write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
 
     init_command_buffer.finish()?;
 
@@ -347,165 +534,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        instances_buffer.cleanup_and_drop(&mut allocator)?;
         scratch_buffer.cleanup_and_drop(&mut allocator)?;
-    }
-
-    // Create storage image
-
-    let window_size = window.inner_size();
-
-    let mut extent = vk::Extent2D {
-        width: window_size.width,
-        height: window_size.height,
-    };
-
-    let model_info_buffer = Buffer::new(
-        bytemuck::cast_slice(&[
-            plane_buffers.model_info(&device),
-            tori_buffers.model_info(&device),
-            lain_buffers.model_info(&device),
-        ]),
-        "model info",
-        vk::BufferUsageFlags::STORAGE_BUFFER,
-        &mut allocator,
-    )?;
-
-    let mut storage_image = Image::new_storage_image(
-        extent.width,
-        extent.height,
-        "storage image",
-        surface_format.format,
-        &command_buffer_and_queue,
-        &mut allocator,
-    )?;
-
-    let uniform_buffer = Buffer::new(
-        bytemuck::bytes_of(&Uniforms {
-            sun_dir: Vec3::new(0.0, 0.25, -0.5).normalized(),
-        }),
-        "uniforms",
-        vk::BufferUsageFlags::UNIFORM_BUFFER,
-        &mut allocator,
-    )?;
-
-    // Create the descriptor set
-
-    let descriptor_set_layout = unsafe {
-        device.create_descriptor_set_layout(
-            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .descriptor_count(1)
-                    .stage_flags(
-                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-                    ),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(3)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(4)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(image_manager.descriptor_count())
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
-            ]),
-            None,
-        )
-    }?;
-
-    let descriptor_pool = unsafe {
-        device.create_descriptor_pool(
-            &vk::DescriptorPoolCreateInfo::builder()
-                .pool_sizes(&[
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(image_manager.descriptor_count()),
-                ])
-                .max_sets(1),
-            None,
-        )
-    }?;
-
-    let descriptor_sets = unsafe {
-        device.allocate_descriptor_sets(
-            &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[descriptor_set_layout])
-                .descriptor_pool(descriptor_pool),
-        )
-    }?;
-
-    let descriptor_set = descriptor_sets[0];
-
-    let structures = &[tlas.acceleration_structure];
-
-    let mut write_acceleration_structures =
-        vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-            .acceleration_structures(structures);
-
-    unsafe {
-        device.update_descriptor_sets(
-            &[
-                {
-                    let mut write_as = *vk::WriteDescriptorSet::builder()
-                        .dst_set(descriptor_set)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .push_next(&mut write_acceleration_structures);
-
-                    write_as.descriptor_count = 1;
-
-                    write_as
-                },
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&[*vk::DescriptorImageInfo::builder()
-                        .image_view(storage_image.view)
-                        .image_layout(vk::ImageLayout::GENERAL)]),
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(model_info_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(descriptor_set)
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&[*vk::DescriptorBufferInfo::builder()
-                        .buffer(uniform_buffer.buffer)
-                        .range(vk::WHOLE_SIZE)]),
-                *image_manager.write_descriptor_set(descriptor_set, 4),
-            ],
-            &[],
-        );
     }
 
     // Create pipelines
@@ -515,10 +544,8 @@ fn main() -> anyhow::Result<()> {
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[descriptor_set_layout])
-                .push_constant_ranges(&[*vk::PushConstantRange::builder()
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                    .size(std::mem::size_of::<PushConstants>() as u32)]),
+                .set_layouts(&[general_dsl, per_frame_dsl])
+                .push_constant_ranges(&[]),
             None,
         )
     }?;
@@ -571,17 +598,6 @@ fn main() -> anyhow::Result<()> {
     let pipeline = pipelines[0];
 
     // Shader binding tables
-
-    let ray_tracing_props = {
-        let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
-
-        let mut device_props_2 =
-            vk::PhysicalDeviceProperties2::builder().push_next(&mut ray_tracing_props);
-
-        unsafe { instance.get_physical_device_properties2(physical_device, &mut device_props_2) }
-
-        ray_tracing_props
-    };
 
     let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
     let num_groups = shader_groups.len() as u32;
@@ -639,6 +655,8 @@ fn main() -> anyhow::Result<()> {
         image_count = surface_caps.max_image_count;
     }
 
+    log::info!("Using {} swapchain images at a time.", image_count);
+
     let mut swapchain_info = *vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
         .min_image_count(image_count)
@@ -646,7 +664,7 @@ fn main() -> anyhow::Result<()> {
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+        .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(surface_caps.current_transform)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -657,23 +675,9 @@ fn main() -> anyhow::Result<()> {
     let swapchain_loader = SwapchainLoader::new(&instance, &device);
     let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
 
+    let mut current_frame = 0;
+
     // main loop
-
-    let syncronisation = Syncronisation::new(&device)?;
-
-    let mut perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
-        59.0_f32.to_radians(),
-        extent.width as f32 / extent.height as f32,
-        0.1,
-    );
-
-    let mut camera = FirstPersonCamera {
-        eye: Vec3::new(0.0, 2.0, -5.0),
-        pitch: 0.0,
-        yaw: 0.0,
-    };
-
-    let mut camera_velocity = Vec3::zero();
 
     let mut kbd_state = KbdState::default();
 
@@ -682,367 +686,602 @@ fn main() -> anyhow::Result<()> {
     let mut screen_center =
         winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
 
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(size) => {
-                extent.width = size.width as u32;
-                extent.height = size.height as u32;
+    event_loop.run(move |event, _, control_flow| {
+        let loop_closure = || -> anyhow::Result<()> {
+            match event {
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::Resized(size) => {
+                        extent.width = size.width as u32;
+                        extent.height = size.height as u32;
 
-                screen_center = winit::dpi::LogicalPosition::new(
-                    extent.width as f64 / 2.0,
-                    extent.height as f64 / 2.0,
-                );
-
-                perspective_matrix = ultraviolet::projection::perspective_infinite_z_vk(
-                    59.0_f32.to_radians(),
-                    extent.width as f32 / extent.height as f32,
-                    0.1,
-                );
-
-                let mut resize = || -> anyhow::Result<()> {
-                    // Free the old storage image, create a new one and write it to the descriptor set.
-
-                    storage_image.cleanup(&mut allocator)?;
-
-                    storage_image = Image::new_storage_image(
-                        extent.width,
-                        extent.height,
-                        "storage image",
-                        surface_format.format,
-                        &command_buffer_and_queue,
-                        &mut allocator,
-                    )?;
-
-                    unsafe {
-                        device.update_descriptor_sets(
-                            &[*vk::WriteDescriptorSet::builder()
-                                .dst_set(descriptor_set)
-                                .dst_binding(1)
-                                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                                .image_info(&[*vk::DescriptorImageInfo::builder()
-                                    .image_view(storage_image.view)
-                                    .image_layout(vk::ImageLayout::GENERAL)])],
-                            &[],
+                        screen_center = winit::dpi::LogicalPosition::new(
+                            extent.width as f64 / 2.0,
+                            extent.height as f64 / 2.0,
                         );
+
+                        uniforms.proj_inverse = ultraviolet::projection::perspective_infinite_z_vk(
+                            59.0_f32.to_radians(),
+                            extent.width as f32 / extent.height as f32,
+                            0.1,
+                        )
+                        .inversed();
+
+                        unsafe {
+                            device.queue_wait_idle(queue)?;
+                        }
+
+                        // Replace the swapchain.
+
+                        swapchain_info.image_extent = extent;
+                        swapchain_info.old_swapchain = swapchain.swapchain;
+
+                        swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
+
+                        let resize_command_buffer =
+                            command_buffer_and_queue.begin_buffer_guard(device.clone())?;
+
+                        for (i, frame) in multibuffering_frames.iter_mut().enumerate() {
+                            frame.resources.storage_image.cleanup(&mut allocator)?;
+                            frame.resources.storage_image = Image::new_storage_image(
+                                extent.width,
+                                extent.height,
+                                &format!("storage image {}", i),
+                                surface_format.format,
+                                resize_command_buffer.buffer(),
+                                &mut allocator,
+                            )?;
+                        }
+
+                        resize_command_buffer.finish()?;
+
+                        write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
                     }
-
-                    // Replace the swapchain.
-
-                    swapchain_info.image_extent = extent;
-                    swapchain_info.old_swapchain = swapchain.swapchain;
-
-                    swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
-
-                    Ok(())
-                };
-
-                if let Err(resize_error) = resize() {
-                    log::error!("Error while resizing: {}", resize_error);
-                }
-            }
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(key),
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state,
+                                virtual_keycode: Some(key),
+                                ..
+                            },
                         ..
-                    },
-                ..
-            } => {
-                let pressed = state == ElementState::Pressed;
+                    } => {
+                        let pressed = state == ElementState::Pressed;
 
-                match key {
-                    VirtualKeyCode::F11 => {
-                        if pressed {
-                            if window.fullscreen().is_some() {
-                                window.set_fullscreen(None);
-                            } else {
-                                window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                        match key {
+                            VirtualKeyCode::F11 => {
+                                if pressed {
+                                    if window.fullscreen().is_some() {
+                                        window.set_fullscreen(None);
+                                    } else {
+                                        window.set_fullscreen(Some(Fullscreen::Borderless(None)))
+                                    }
+                                }
                             }
+                            VirtualKeyCode::W => kbd_state.forward = pressed,
+                            VirtualKeyCode::S => kbd_state.back = pressed,
+                            VirtualKeyCode::A => kbd_state.left = pressed,
+                            VirtualKeyCode::D => kbd_state.right = pressed,
+                            VirtualKeyCode::G => {
+                                if pressed {
+                                    cursor_grab = !cursor_grab;
+
+                                    if cursor_grab {
+                                        window.set_cursor_position(screen_center)?;
+                                    }
+
+                                    window.set_cursor_visible(!cursor_grab);
+                                    window.set_cursor_grab(cursor_grab)?;
+                                }
+                            }
+                            VirtualKeyCode::Up => kbd_state.sun_up = pressed,
+                            VirtualKeyCode::Right => kbd_state.sun_cw = pressed,
+                            VirtualKeyCode::Left => kbd_state.sun_ccw = pressed,
+                            VirtualKeyCode::Down => kbd_state.sun_down = pressed,
+                            _ => {}
                         }
                     }
-                    VirtualKeyCode::W => kbd_state.forward = pressed,
-                    VirtualKeyCode::S => kbd_state.back = pressed,
-                    VirtualKeyCode::A => kbd_state.left = pressed,
-                    VirtualKeyCode::D => kbd_state.right = pressed,
-                    VirtualKeyCode::G => {
-                        if pressed {
-                            cursor_grab = !cursor_grab;
+                    WindowEvent::CursorMoved { position, .. } => {
+                        if cursor_grab {
+                            let position = position.to_logical::<f64>(window.scale_factor());
 
-                            if cursor_grab {
-                                window.set_cursor_position(screen_center).unwrap();
-                            }
+                            let delta = Vec2::new(
+                                (position.x - screen_center.x) as f32,
+                                (position.y - screen_center.y) as f32,
+                            );
 
-                            window.set_cursor_visible(!cursor_grab);
-                            window.set_cursor_grab(cursor_grab).unwrap();
+                            window.set_cursor_position(screen_center)?;
+
+                            camera.yaw -= delta.x.to_radians() * 0.05;
+                            camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
+                                .min(PI / 2.0)
+                                .max(-PI / 2.0);
                         }
                     }
                     _ => {}
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if cursor_grab {
-                    let position = position.to_logical::<f64>(window.scale_factor());
+                },
+                Event::MainEventsCleared => {
+                    {
+                        let mut local_velocity = Vec3::zero();
+                        let acceleration = 0.005;
+                        let max_velocity = 0.2;
 
-                    let delta = Vec2::new(
-                        (position.x - screen_center.x) as f32,
-                        (position.y - screen_center.y) as f32,
-                    );
-
-                    window.set_cursor_position(screen_center).unwrap();
-
-                    use std::f32::consts::PI;
-
-                    camera.yaw -= delta.x.to_radians() * 0.05;
-                    camera.pitch = (camera.pitch - delta.y.to_radians() * 0.05)
-                        .min(PI / 2.0)
-                        .max(-PI / 2.0);
-                }
-            }
-            _ => {}
-        },
-        Event::MainEventsCleared => {
-            {
-                let mut local_velocity = Vec3::zero();
-                let acceleration = 0.005;
-                let max_velocity = 0.2;
-
-                if kbd_state.forward {
-                    local_velocity.z -= acceleration * camera.pitch.cos();
-                    local_velocity.y += acceleration * camera.pitch.sin();
-                }
-
-                if kbd_state.back {
-                    local_velocity.z += acceleration * camera.pitch.cos();
-                    local_velocity.y -= acceleration * camera.pitch.sin();
-                }
-
-                if kbd_state.left {
-                    local_velocity.x -= acceleration;
-                }
-
-                if kbd_state.right {
-                    local_velocity.x += acceleration;
-                }
-
-                camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
-                let magnitude = camera_velocity.mag();
-                if magnitude > max_velocity {
-                    let clamped_magnitude = magnitude.max(max_velocity);
-                    camera_velocity *= clamped_magnitude / magnitude;
-                }
-
-                camera.eye += camera_velocity;
-
-                camera_velocity *= 0.9;
-            }
-
-            window.request_redraw();
-        }
-        Event::RedrawRequested(_) => {
-            match unsafe {
-                swapchain_loader.acquire_next_image(
-                    swapchain.swapchain,
-                    u64::MAX,
-                    syncronisation.acquire_complete_semaphore,
-                    vk::Fence::null(),
-                )
-            } {
-                Ok((image_index, _suboptimal)) => {
-                    let render = || -> anyhow::Result<()> {
-                        let swapchain_image = swapchain.images[image_index as usize];
-
-                        unsafe {
-                            device.begin_command_buffer(
-                                command_buffer_and_queue.buffer,
-                                &vk::CommandBufferBeginInfo::builder()
-                                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                            )?;
-
-                            device.cmd_bind_pipeline(
-                                command_buffer_and_queue.buffer,
-                                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                pipeline,
-                            );
-
-                            device.cmd_bind_descriptor_sets(
-                                command_buffer_and_queue.buffer,
-                                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                pipeline_layout,
-                                0,
-                                &[descriptor_set],
-                                &[],
-                            );
-
-                            device.cmd_push_constants(
-                                command_buffer_and_queue.buffer,
-                                pipeline_layout,
-                                vk::ShaderStageFlags::RAYGEN_KHR,
-                                0,
-                                bytemuck::bytes_of(&PushConstants {
-                                    view_inverse: camera.as_view_matrix().inversed(),
-                                    proj_inverse: perspective_matrix.inversed(),
-                                }),
-                            );
-
-                            pipeline_loader.cmd_trace_rays(
-                                command_buffer_and_queue.buffer,
-                                &raygen_sbt.address_region,
-                                &miss_sbt.address_region,
-                                &closest_hit_sbt.address_region,
-                                // We don't use callable shaders here
-                                &Default::default(),
-                                extent.width,
-                                extent.height,
-                                1,
-                            );
-
-                            let subresource = *vk::ImageSubresourceLayers::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .mip_level(0)
-                                .base_array_layer(0)
-                                .layer_count(1);
-
-                            let subresource_range = vk::ImageSubresourceRange::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .level_count(1)
-                                .layer_count(1);
-
-                            // prepare image to be a destimation
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                swapchain_image,
-                                vk::ImageLayout::UNDEFINED,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                *subresource_range,
-                            );
-
-                            // prepare storage image to be a source
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::GENERAL,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                *subresource_range,
-                            );
-
-                            device.cmd_copy_image(
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                swapchain_image,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                &[*vk::ImageCopy::builder()
-                                    .src_subresource(subresource)
-                                    .dst_subresource(subresource)
-                                    .extent(vk::Extent3D {
-                                        width: extent.width,
-                                        height: extent.height,
-                                        depth: 1,
-                                    })],
-                            );
-
-                            // Reset image layouts
-
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                swapchain_image,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                vk::ImageLayout::PRESENT_SRC_KHR,
-                                *subresource_range,
-                            );
-
-                            set_image_layout(
-                                &device,
-                                command_buffer_and_queue.buffer,
-                                storage_image.image,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                vk::ImageLayout::GENERAL,
-                                *subresource_range,
-                            );
-
-                            device.end_command_buffer(command_buffer_and_queue.buffer)?;
-
-                            // Submit the command buffer, present the queue and then wait for it to be idle.
-                            // We could potentially get more performance out of using multiple command buffers
-                            // framws in flight, but then we'd need to have multiple copies of resources and
-                            // I don't want to work out how to do that properly with acceleration structures right now.
-
-                            device.queue_submit(
-                                command_buffer_and_queue.queue,
-                                &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[syncronisation.acquire_complete_semaphore])
-                                    .wait_dst_stage_mask(&[
-                                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    ])
-                                    .command_buffers(&[command_buffer_and_queue.buffer])
-                                    .signal_semaphores(&[
-                                        syncronisation.rendering_complete_semaphore
-                                    ])],
-                                vk::Fence::null(),
-                            )?;
-
-                            swapchain_loader.queue_present(
-                                command_buffer_and_queue.queue,
-                                &vk::PresentInfoKHR::builder()
-                                    .wait_semaphores(&[syncronisation.rendering_complete_semaphore])
-                                    .swapchains(&[swapchain.swapchain])
-                                    .image_indices(&[image_index]),
-                            )?;
-
-                            device.queue_wait_idle(command_buffer_and_queue.queue)?;
-
-                            device.reset_command_pool(
-                                command_buffer_and_queue.pool,
-                                vk::CommandPoolResetFlags::empty(),
-                            )?;
+                        if kbd_state.forward {
+                            local_velocity.z -= acceleration * camera.pitch.cos();
+                            local_velocity.y += acceleration * camera.pitch.sin();
                         }
 
-                        Ok(())
-                    };
+                        if kbd_state.back {
+                            local_velocity.z += acceleration * camera.pitch.cos();
+                            local_velocity.y -= acceleration * camera.pitch.sin();
+                        }
 
-                    if let Err(render_error) = render() {
-                        log::error!("Error while rendering or presenting: {}", render_error);
+                        if kbd_state.left {
+                            local_velocity.x -= acceleration;
+                        }
+
+                        if kbd_state.right {
+                            local_velocity.x += acceleration;
+                        }
+
+                        camera_velocity += Mat3::from_rotation_y(camera.yaw) * local_velocity;
+                        let magnitude = camera_velocity.mag();
+                        if magnitude > max_velocity {
+                            let clamped_magnitude = magnitude.min(max_velocity);
+                            camera_velocity *= clamped_magnitude / magnitude;
+                        }
+
+                        camera.eye += camera_velocity;
+
+                        camera_velocity *= 0.9;
+                    }
+
+                    {
+                        let acceleration = 0.002;
+                        let max_velocity = 0.05;
+
+                        if kbd_state.sun_up {
+                            sun_velocity.y += acceleration;
+                        }
+
+                        if kbd_state.sun_down {
+                            sun_velocity.y -= acceleration;
+                        }
+
+                        if kbd_state.sun_cw {
+                            sun_velocity.x += acceleration;
+                        }
+
+                        if kbd_state.sun_ccw {
+                            sun_velocity.x -= acceleration;
+                        }
+
+                        let magnitude = sun_velocity.mag();
+                        if magnitude > max_velocity {
+                            let clamped_magnitude = magnitude.min(max_velocity);
+                            sun_velocity *= clamped_magnitude / magnitude;
+                        }
+
+                        sun.yaw += sun_velocity.x;
+                        sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(0.0);
+
+                        sun_velocity *= 0.95;
+                    }
+
+                    lain_rotation += 0.05;
+
+                    window.request_redraw();
+                }
+                Event::RedrawRequested(_) => {
+                    let frame = &mut multibuffering_frames[current_frame];
+
+                    unsafe {
+                        device.wait_for_fences(&[frame.render_fence], true, u64::MAX)?;
+
+                        device.reset_fences(&[frame.render_fence])?;
+
+                        device.reset_command_pool(
+                            frame.command_pool,
+                            vk::CommandPoolResetFlags::empty(),
+                        )?;
+                    }
+
+                    match unsafe {
+                        swapchain_loader.acquire_next_image(
+                            swapchain.swapchain,
+                            u64::MAX,
+                            frame.present_semaphore,
+                            vk::Fence::null(),
+                        )
+                    } {
+                        Ok((swapchain_image_index, _suboptimal)) => {
+                            let swapchain_image = swapchain.images[swapchain_image_index as usize];
+                            let resources = &mut frame.resources;
+
+                            uniforms.view_inverse = camera.as_view_matrix().inversed();
+                            uniforms.sun_dir = sun.as_normal();
+
+                            resources
+                                .ray_tracing_uniforms
+                                .write_mapped(bytemuck::bytes_of(&uniforms), 0)?;
+
+                            instances[2].transform.matrix = flatted_matrix(
+                                lain_transform * Mat4::from_rotation_y(lain_rotation),
+                            );
+
+                            resources.instances_buffer.write_mapped(
+                                unsafe { instances_as_bytes(&instances[2..3]) },
+                                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() * 2,
+                            )?;
+
+                            unsafe {
+                                device.begin_command_buffer(
+                                    frame.command_buffer,
+                                    &vk::CommandBufferBeginInfo::builder()
+                                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                                )?;
+
+                                resources.tlas.update_tlas(
+                                    &resources.instances_buffer,
+                                    num_instances,
+                                    frame.command_buffer,
+                                    &mut allocator,
+                                    &as_loader,
+                                    &mut resources.scratch_buffer,
+                                )?;
+
+                                // wait for tlas update to finish
+                                device.cmd_pipeline_barrier(
+                                    frame.command_buffer,
+                                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                                    vk::DependencyFlags::empty(),
+                                    &[*vk::MemoryBarrier::builder()
+                                        .src_access_mask(
+                                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                                        )
+                                        .dst_access_mask(
+                                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                                        )],
+                                    &[],
+                                    &[],
+                                );
+
+                                device.cmd_bind_pipeline(
+                                    frame.command_buffer,
+                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                    pipeline,
+                                );
+
+                                device.cmd_bind_descriptor_sets(
+                                    frame.command_buffer,
+                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
+                                    pipeline_layout,
+                                    0,
+                                    &[general_ds, resources.ray_tracing_ds],
+                                    &[],
+                                );
+
+                                pipeline_loader.cmd_trace_rays(
+                                    frame.command_buffer,
+                                    &raygen_sbt.address_region,
+                                    &miss_sbt.address_region,
+                                    &closest_hit_sbt.address_region,
+                                    // We don't use callable shaders here
+                                    &Default::default(),
+                                    extent.width,
+                                    extent.height,
+                                    1,
+                                );
+
+                                let subresource = *vk::ImageSubresourceLayers::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .mip_level(0)
+                                    .base_array_layer(0)
+                                    .layer_count(1);
+
+                                let subresource_range = vk::ImageSubresourceRange::builder()
+                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                    .level_count(1)
+                                    .layer_count(1);
+
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: frame.command_buffer,
+                                        // We just wrote the color attachment
+                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                        // We need to do a transfer next.
+                                        dst_stage: vk::PipelineStageFlags::TRANSFER,
+                                        image_memory_barriers: &[
+                                            // prepare swapchain image to be a destination
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::empty())
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // prepare storage image to be a source
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(resources.storage_image.image)
+                                                .old_layout(vk::ImageLayout::GENERAL)
+                                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(
+                                                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                                )
+                                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
+                                    },
+                                );
+
+                                device.cmd_copy_image(
+                                    frame.command_buffer,
+                                    resources.storage_image.image,
+                                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                    swapchain_image,
+                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                    &[*vk::ImageCopy::builder()
+                                        .src_subresource(subresource)
+                                        .dst_subresource(subresource)
+                                        .extent(vk::Extent3D {
+                                            width: extent.width,
+                                            height: extent.height,
+                                            depth: 1,
+                                        })],
+                                );
+
+                                // Reset image layouts
+
+                                cmd_pipeline_image_memory_barrier_explicit(
+                                    &PipelineImageMemoryBarrierParams {
+                                        device: &device,
+                                        buffer: frame.command_buffer,
+                                        // We just did a transfer
+                                        src_stage: vk::PipelineStageFlags::TRANSFER,
+                                        // Nothing happens after this.
+                                        dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                                        image_memory_barriers: &[
+                                            // Reset swapchain image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(swapchain_image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+                                            // Reset storage image
+                                            *vk::ImageMemoryBarrier::builder()
+                                                .image(resources.storage_image.image)
+                                                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                                .new_layout(vk::ImageLayout::GENERAL)
+                                                .subresource_range(*subresource_range)
+                                                .src_access_mask(vk::AccessFlags::TRANSFER_READ),
+                                        ],
+                                    },
+                                );
+
+                                device.end_command_buffer(frame.command_buffer)?;
+
+                                device.queue_submit(
+                                    queue,
+                                    &[*vk::SubmitInfo::builder()
+                                        .wait_semaphores(&[frame.present_semaphore])
+                                        .wait_dst_stage_mask(&[vk::PipelineStageFlags::TRANSFER])
+                                        .command_buffers(&[frame.command_buffer])
+                                        .signal_semaphores(&[frame.render_semaphore])],
+                                    frame.render_fence,
+                                )?;
+
+                                swapchain_loader.queue_present(
+                                    queue,
+                                    &vk::PresentInfoKHR::builder()
+                                        .wait_semaphores(&[frame.render_semaphore])
+                                        .swapchains(&[swapchain.swapchain])
+                                        .image_indices(&[swapchain_image_index]),
+                                )?;
+
+                                current_frame = (current_frame + 1) % multibuffering_frames.len();
+                            }
+                        }
+                        Err(error) => log::warn!("Next frame error: {:?}", error),
                     }
                 }
-                Err(error) => log::warn!("Next frame error: {:?}", error),
+                Event::LoopDestroyed => unsafe {
+                    device.device_wait_idle()?;
+
+                    plane_buffers.cleanup(&mut allocator)?;
+                    plane_blas.buffer.cleanup(&mut allocator)?;
+                    tori_blas.buffer.cleanup(&mut allocator)?;
+                    tori_buffers.cleanup(&mut allocator)?;
+                    lain_blas.buffer.cleanup(&mut allocator)?;
+                    lain_buffers.cleanup(&mut allocator)?;
+
+                    model_info_buffer.cleanup(&mut allocator)?;
+
+                    raygen_sbt.buffer.cleanup(&mut allocator)?;
+                    miss_sbt.buffer.cleanup(&mut allocator)?;
+                    closest_hit_sbt.buffer.cleanup(&mut allocator)?;
+
+                    image_manager.cleanup(&mut allocator)?;
+
+                    for frame in &mut multibuffering_frames {
+                        let resources = &mut frame.resources;
+
+                        resources.storage_image.cleanup(&mut allocator)?;
+                        resources.ray_tracing_uniforms.cleanup(&mut allocator)?;
+                        resources.tlas.buffer.cleanup(&mut allocator)?;
+                        resources.scratch_buffer.cleanup(&mut allocator)?;
+                        resources.instances_buffer.cleanup(&mut allocator)?;
+                    }
+                },
+                _ => {}
             }
+
+            Ok(())
+        };
+
+        if let Err(loop_closure) = loop_closure() {
+            log::error!("Error: {}", loop_closure);
         }
-        Event::LoopDestroyed => unsafe {
-            let mut cleanup = || -> anyhow::Result<()> {
-                device.device_wait_idle()?;
+    });
+}
 
-                tlas.buffer.cleanup(&mut allocator)?;
-                plane_buffers.cleanup(&mut allocator)?;
-                plane_blas.buffer.cleanup(&mut allocator)?;
-                tori_blas.buffer.cleanup(&mut allocator)?;
-                tori_buffers.cleanup(&mut allocator)?;
-                lain_blas.buffer.cleanup(&mut allocator)?;
-                lain_buffers.cleanup(&mut allocator)?;
+pub fn create_descriptors_sets(
+    device: &ash::Device,
+    image_manager: &ImageManager,
+    model_info_buffer: &Buffer,
+) -> anyhow::Result<(
+    vk::DescriptorSetLayout,
+    vk::DescriptorSetLayout,
+    vk::DescriptorPool,
+    vk::DescriptorSet,
+)> {
+    let general_dsl = unsafe {
+        device.create_descriptor_set_layout(
+            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(image_manager.descriptor_count())
+                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+            ]),
+            None,
+        )
+    }?;
 
-                model_info_buffer.cleanup(&mut allocator)?;
-                storage_image.cleanup(&mut allocator)?;
-                uniform_buffer.cleanup(&mut allocator)?;
+    let per_frame_dsl = unsafe {
+        device.create_descriptor_set_layout(
+            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .stage_flags(
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    ),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(2)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    ),
+            ]),
+            None,
+        )
+    }?;
 
-                raygen_sbt.buffer.cleanup(&mut allocator)?;
-                miss_sbt.buffer.cleanup(&mut allocator)?;
-                closest_hit_sbt.buffer.cleanup(&mut allocator)?;
+    let num_frames = 2;
 
-                image_manager.cleanup(&mut allocator)?;
+    let descriptor_pool = unsafe {
+        device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::builder()
+                .pool_sizes(&[
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                        .descriptor_count(num_frames),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::STORAGE_IMAGE)
+                        .descriptor_count(num_frames),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(num_frames),
+                    *vk::DescriptorPoolSize::builder()
+                        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .descriptor_count(image_manager.descriptor_count()),
+                ])
+                .max_sets(num_frames + 1),
+            None,
+        )
+    }?;
 
-                Ok(())
-            };
+    let descriptor_sets = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::builder()
+                .set_layouts(&[general_dsl])
+                .descriptor_pool(descriptor_pool),
+        )
+    }?;
 
-            if let Err(cleanup_error) = cleanup() {
-                log::error!("Clean up error: {}", cleanup_error);
-            }
-        },
-        _ => {}
-    })
+    let general_ds = descriptor_sets[0];
+
+    unsafe {
+        device.update_descriptor_sets(
+            &[
+                *vk::WriteDescriptorSet::builder()
+                    .dst_set(general_ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&[model_info_buffer.descriptor_buffer_info()]),
+                *image_manager.write_descriptor_set(general_ds, 1),
+            ],
+            &[],
+        );
+    }
+
+    Ok((general_dsl, per_frame_dsl, descriptor_pool, general_ds))
+}
+
+pub struct Frame {
+    present_semaphore: vk::Semaphore,
+    render_semaphore: vk::Semaphore,
+    render_fence: vk::Fence,
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
+    resources: PerFrameResources,
+}
+
+impl Frame {
+    unsafe fn new(
+        device: &ash::Device,
+        queue_family: u32,
+        resources: PerFrameResources,
+    ) -> anyhow::Result<Self> {
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+
+        let command_pool = device.create_command_pool(
+            &vk::CommandPoolCreateInfo::builder().queue_family_index(queue_family),
+            None,
+        )?;
+
+        Ok(Self {
+            command_pool,
+            present_semaphore: device.create_semaphore(&semaphore_info, None)?,
+            render_semaphore: device.create_semaphore(&semaphore_info, None)?,
+            render_fence: device.create_fence(&fence_info, None)?,
+            command_buffer: device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::builder()
+                    .command_pool(command_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )?[0],
+            resources,
+        })
+    }
+}
+
+pub struct PerFrameResources {
+    storage_image: Image,
+    ray_tracing_ds: vk::DescriptorSet,
+    ray_tracing_uniforms: Buffer,
+    tlas: AccelerationStructure,
+    scratch_buffer: ScratchBuffer,
+    instances_buffer: Buffer,
 }
 
 #[derive(Default)]
@@ -1051,6 +1290,25 @@ pub struct KbdState {
     right: bool,
     forward: bool,
     back: bool,
+    sun_up: bool,
+    sun_down: bool,
+    sun_cw: bool,
+    sun_ccw: bool,
+}
+
+struct Sun {
+    pitch: f32,
+    yaw: f32,
+}
+
+impl Sun {
+    fn as_normal(&self) -> Vec3 {
+        Vec3::new(
+            self.pitch.cos() * self.yaw.sin(),
+            self.pitch.sin(),
+            self.pitch.cos() * self.yaw.cos(),
+        )
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -1089,15 +1347,11 @@ impl FirstPersonCamera {
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]
-struct PushConstants {
+struct RayTracingUniforms {
     view_inverse: Mat4,
     proj_inverse: Mat4,
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct Uniforms {
     sun_dir: Vec3,
+    sun_radius: f32,
 }
 
 fn build_blas(
@@ -1181,7 +1435,10 @@ fn build_tlas(
     let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+        )
         .geometries(geometries);
 
     let build_sizes = unsafe {
@@ -1292,4 +1549,47 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
+}
+
+fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame]) {
+    for frame in frames {
+        let resources = &frame.resources;
+
+        let storage_image_info = &[resources.storage_image.descriptor_image_info()];
+        let uniform_buffer_info = &[resources.ray_tracing_uniforms.descriptor_buffer_info()];
+
+        let structures = &[resources.tlas.acceleration_structure];
+
+        let mut write_acceleration_structures =
+            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+                .acceleration_structures(structures);
+
+        let writes = &[
+            {
+                let mut write_as = *vk::WriteDescriptorSet::builder()
+                    .dst_set(resources.ray_tracing_ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .push_next(&mut write_acceleration_structures);
+
+                write_as.descriptor_count = 1;
+
+                write_as
+            },
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(resources.ray_tracing_ds)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(storage_image_info),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(resources.ray_tracing_ds)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(uniform_buffer_info),
+        ];
+
+        unsafe {
+            device.update_descriptor_sets(writes, &[]);
+        }
+    }
 }

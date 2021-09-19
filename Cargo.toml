@@ -14,6 +14,7 @@ gltf = { version = "0.16.0", default-features = false, features = ["utils"] }
 gpu-allocator = "0.9.0"
 image = { version = "0.23.14", features = ["png"], default-features = false }
 log = "0.4.14"
+rand = "0.8.4"
 simplelog = "0.10.0"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
