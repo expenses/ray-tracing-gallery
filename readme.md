@@ -11,11 +11,11 @@ A work-in-progress
 * Basic lighting and shadows
 * Double-buffering
 * A controllable camera and directional light source
+* Implements a fix for shadow terminator problems from [Ray Tracing Gems II], Chapter 4).
 
 ## Todo
 
 * Soft shadows ([Ray Tracing Gems II], Chapter 24) and a shadow denoiser pass
-* Fixes for the shadow terminator ([Ray Tracing Gems II], Chapter 4)
 * Ray traced ambient occlusion
 
 ## Acknowledgements and sources

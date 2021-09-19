@@ -53,6 +53,7 @@ fn main() -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Ray Tracing Gallery")
+        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
         .build(&event_loop)?;
 
     let entry = unsafe { ash::Entry::new() }?;
