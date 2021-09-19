@@ -820,7 +820,7 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         sun.yaw += sun_velocity.x;
-                        sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(-PI / 2.0);
+                        sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(0.0);
 
                         sun_velocity *= 0.95;
                     }
