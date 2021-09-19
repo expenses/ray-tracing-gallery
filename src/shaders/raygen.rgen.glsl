@@ -3,8 +3,8 @@
 
 #include "common.glsl"
 
-layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
-layout(set = 1, binding = 0, rgba8) uniform image2D image;
+layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 1, binding = 1, rgba8) uniform image2D image;
 
 layout(location = 0) rayPayloadEXT vec3 hitValue;
 

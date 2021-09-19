@@ -12,3 +12,4 @@ A work-in-progress
 * [Lain model by woopoodle on Sketchfab](https://sketchfab.com/3d-models/lain-bf255be16da34df08d48abb5443a6706)
 * [Yet another blog explaining Vulkan synchronization](https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/) - helped me a lot to fully understand pipeline barriers.
 * [Vulkan Guide - Double Buffering](https://vkguide.dev/docs/chapter-4/double_buffering/)
+* [Ray Tracing Gems II](https://link.springer.com/content/pdf/10.1007%2F978-1-4842-7185-8.pdf), Chapter 16, Page 239. for clarifying how in-place Acceleration Structures work.

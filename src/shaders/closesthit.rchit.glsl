@@ -6,7 +6,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 #extension GL_EXT_scalar_block_layout : enable
 
-layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
 
 layout(location = 0) rayPayloadInEXT vec3 hitValue;
 layout(location = 1) rayPayloadEXT bool shadowed;
@@ -38,11 +38,11 @@ layout(buffer_reference, scalar) buffer Indices {
     uint16_t inner[];
 };
 
-layout(set = 0, binding = 1) buffer ModelInformations {
+layout(set = 0, binding = 0) buffer ModelInformations {
     ModelInfo model_info[];
 };
 
-layout(set = 0, binding = 2) uniform sampler2D textures[];
+layout(set = 0, binding = 1) uniform sampler2D textures[];
 
 Vertex load_vertex(uint index, ModelInfo info) {
     Vertex vertex;

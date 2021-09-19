@@ -160,6 +160,19 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
+    let (ray_tracing_props, as_props) = {
+        let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        let mut as_props = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+
+        let mut device_props_2 = vk::PhysicalDeviceProperties2::builder()
+            .push_next(&mut ray_tracing_props)
+            .push_next(&mut as_props);
+
+        unsafe { instance.get_physical_device_properties2(physical_device, &mut device_props_2) }
+
+        (ray_tracing_props, as_props)
+    };
+
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
@@ -247,7 +260,7 @@ fn main() -> anyhow::Result<()> {
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
-    let mut scratch_buffer = ScratchBuffer::new();
+    let mut scratch_buffer = ScratchBuffer::new(&as_props);
 
     let plane_blas = build_blas(
         &plane_buffers,
@@ -278,6 +291,9 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
+    let lain_transform = Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
+    let mut lain_rotation = 150.0_f32.to_radians();
+
     let mut instances = vec![
         tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
         tlas_instance(
@@ -287,9 +303,7 @@ fn main() -> anyhow::Result<()> {
             1,
         ),
         tlas_instance(
-            Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0))
-                * Mat4::from_rotation_y(150.0_f32.to_radians())
-                * Mat4::from_scale(0.5),
+            lain_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
@@ -325,6 +339,8 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
+    let num_instances = instances.len() as u32;
+
     // Create the tlas
 
     // Wait for BLAS builds to finish
@@ -344,12 +360,27 @@ fn main() -> anyhow::Result<()> {
 
     let tlas = build_tlas(
         &instances_buffer,
-        instances.len() as u32,
+        num_instances,
         &as_loader,
         &mut allocator,
         &mut scratch_buffer,
         init_command_buffer.buffer(),
     )?;
+
+    // Wait for TLAS build to finish
+    unsafe {
+        device.cmd_pipeline_barrier(
+            init_command_buffer.buffer(),
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::DependencyFlags::empty(),
+            &[*vk::MemoryBarrier::builder()
+                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
+                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
+            &[],
+            &[],
+        );
+    }
 
     // Create descriptor sets and set layouts
 
@@ -365,7 +396,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let (general_dsl, per_frame_dsl, descriptor_pool, general_ds) =
-        create_descriptors_sets(&device, &image_manager, &model_info_buffer, &tlas)?;
+        create_descriptors_sets(&device, &image_manager, &model_info_buffer)?;
 
     // Create frames for multibuffering and their resources.
 
@@ -433,6 +464,21 @@ fn main() -> anyhow::Result<()> {
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         &mut allocator,
                     )?,
+                    tlas: tlas.clone(
+                        init_command_buffer.buffer(),
+                        "tlas 0",
+                        &as_loader,
+                        &mut allocator,
+                    )?,
+                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    instances_buffer: Buffer::new_with_custom_alignment(
+                        instances_as_bytes(&instances),
+                        "instances buffer 0",
+                        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                        16,
+                        &mut allocator,
+                    )?,
                 },
             )?,
             Frame::new(
@@ -454,6 +500,15 @@ fn main() -> anyhow::Result<()> {
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         &mut allocator,
                     )?,
+                    tlas: {
+                        tlas.rename("tlas 1", &allocator)?;
+                        tlas
+                    },
+                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    instances_buffer: {
+                        instances_buffer.rename("instances buffer 1", &allocator)?;
+                        instances_buffer
+                    },
                 },
             )?,
         ]
@@ -479,7 +534,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        instances_buffer.cleanup_and_drop(&mut allocator)?;
         scratch_buffer.cleanup_and_drop(&mut allocator)?;
     }
 
@@ -544,17 +598,6 @@ fn main() -> anyhow::Result<()> {
     let pipeline = pipelines[0];
 
     // Shader binding tables
-
-    let ray_tracing_props = {
-        let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
-
-        let mut device_props_2 =
-            vk::PhysicalDeviceProperties2::builder().push_next(&mut ray_tracing_props);
-
-        unsafe { instance.get_physical_device_properties2(physical_device, &mut device_props_2) }
-
-        ray_tracing_props
-    };
 
     let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
     let num_groups = shader_groups.len() as u32;
@@ -825,6 +868,8 @@ fn main() -> anyhow::Result<()> {
                         sun_velocity *= 0.95;
                     }
 
+                    lain_rotation += 0.05;
+
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
@@ -858,7 +903,16 @@ fn main() -> anyhow::Result<()> {
 
                             resources
                                 .ray_tracing_uniforms
-                                .write_mapped(bytemuck::bytes_of(&uniforms))?;
+                                .write_mapped(bytemuck::bytes_of(&uniforms), 0)?;
+
+                            instances[2].transform.matrix = flatted_matrix(
+                                lain_transform * Mat4::from_rotation_y(lain_rotation),
+                            );
+
+                            resources.instances_buffer.write_mapped(
+                                unsafe { instances_as_bytes(&instances[2..3]) },
+                                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() * 2,
+                            )?;
 
                             unsafe {
                                 device.begin_command_buffer(
@@ -866,6 +920,32 @@ fn main() -> anyhow::Result<()> {
                                     &vk::CommandBufferBeginInfo::builder()
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
+
+                                resources.tlas.update_tlas(
+                                    &resources.instances_buffer,
+                                    num_instances,
+                                    frame.command_buffer,
+                                    &mut allocator,
+                                    &as_loader,
+                                    &mut resources.scratch_buffer,
+                                )?;
+
+                                // wait for tlas update to finish
+                                device.cmd_pipeline_barrier(
+                                    frame.command_buffer,
+                                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                                    vk::DependencyFlags::empty(),
+                                    &[*vk::MemoryBarrier::builder()
+                                        .src_access_mask(
+                                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                                        )
+                                        .dst_access_mask(
+                                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                                        )],
+                                    &[],
+                                    &[],
+                                );
 
                                 device.cmd_bind_pipeline(
                                     frame.command_buffer,
@@ -1010,7 +1090,6 @@ fn main() -> anyhow::Result<()> {
                 Event::LoopDestroyed => unsafe {
                     device.device_wait_idle()?;
 
-                    tlas.buffer.cleanup(&mut allocator)?;
                     plane_buffers.cleanup(&mut allocator)?;
                     plane_blas.buffer.cleanup(&mut allocator)?;
                     tori_blas.buffer.cleanup(&mut allocator)?;
@@ -1027,11 +1106,13 @@ fn main() -> anyhow::Result<()> {
                     image_manager.cleanup(&mut allocator)?;
 
                     for frame in &mut multibuffering_frames {
-                        frame.resources.storage_image.cleanup(&mut allocator)?;
-                        frame
-                            .resources
-                            .ray_tracing_uniforms
-                            .cleanup(&mut allocator)?;
+                        let resources = &mut frame.resources;
+
+                        resources.storage_image.cleanup(&mut allocator)?;
+                        resources.ray_tracing_uniforms.cleanup(&mut allocator)?;
+                        resources.tlas.buffer.cleanup(&mut allocator)?;
+                        resources.scratch_buffer.cleanup(&mut allocator)?;
+                        resources.instances_buffer.cleanup(&mut allocator)?;
                     }
                 },
                 _ => {}
@@ -1050,7 +1131,6 @@ pub fn create_descriptors_sets(
     device: &ash::Device,
     image_manager: &ImageManager,
     model_info_buffer: &Buffer,
-    tlas: &AccelerationStructure,
 ) -> anyhow::Result<(
     vk::DescriptorSetLayout,
     vk::DescriptorSetLayout,
@@ -1062,18 +1142,11 @@ pub fn create_descriptors_sets(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .descriptor_count(1)
-                    .stage_flags(
-                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-                    ),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(2)
+                    .binding(1)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(image_manager.descriptor_count())
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
@@ -1087,11 +1160,18 @@ pub fn create_descriptors_sets(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .stage_flags(
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    ),
+                *vk::DescriptorSetLayoutBinding::builder()
+                    .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
+                    .binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(
@@ -1110,7 +1190,7 @@ pub fn create_descriptors_sets(
                 .pool_sizes(&[
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(1),
+                        .descriptor_count(num_frames),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
                         .descriptor_count(num_frames),
@@ -1139,32 +1219,15 @@ pub fn create_descriptors_sets(
 
     let general_ds = descriptor_sets[0];
 
-    let structures = &[tlas.acceleration_structure];
-
-    let mut write_acceleration_structures =
-        vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-            .acceleration_structures(structures);
-
     unsafe {
         device.update_descriptor_sets(
             &[
-                {
-                    let mut write_as = *vk::WriteDescriptorSet::builder()
-                        .dst_set(general_ds)
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .push_next(&mut write_acceleration_structures);
-
-                    write_as.descriptor_count = 1;
-
-                    write_as
-                },
                 *vk::WriteDescriptorSet::builder()
                     .dst_set(general_ds)
-                    .dst_binding(1)
+                    .dst_binding(0)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(&[model_info_buffer.descriptor_buffer_info()]),
-                *image_manager.write_descriptor_set(general_ds, 2),
+                *image_manager.write_descriptor_set(general_ds, 1),
             ],
             &[],
         );
@@ -1216,6 +1279,9 @@ pub struct PerFrameResources {
     storage_image: Image,
     ray_tracing_ds: vk::DescriptorSet,
     ray_tracing_uniforms: Buffer,
+    tlas: AccelerationStructure,
+    scratch_buffer: ScratchBuffer,
+    instances_buffer: Buffer,
 }
 
 #[derive(Default)]
@@ -1369,7 +1435,10 @@ fn build_tlas(
     let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+        )
         .geometries(geometries);
 
     let build_sizes = unsafe {
@@ -1482,23 +1551,39 @@ pub struct ModelInfo {
     _padding: u32,
 }
 
-fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame; 2]) {
+fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame]) {
     for frame in frames {
-        let storage_image_info = &[frame.resources.storage_image.descriptor_image_info()];
-        let uniform_buffer_info = &[frame
-            .resources
-            .ray_tracing_uniforms
-            .descriptor_buffer_info()];
+        let resources = &frame.resources;
+
+        let storage_image_info = &[resources.storage_image.descriptor_image_info()];
+        let uniform_buffer_info = &[resources.ray_tracing_uniforms.descriptor_buffer_info()];
+
+        let structures = &[resources.tlas.acceleration_structure];
+
+        let mut write_acceleration_structures =
+            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+                .acceleration_structures(structures);
 
         let writes = &[
+            {
+                let mut write_as = *vk::WriteDescriptorSet::builder()
+                    .dst_set(resources.ray_tracing_ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .push_next(&mut write_acceleration_structures);
+
+                write_as.descriptor_count = 1;
+
+                write_as
+            },
             *vk::WriteDescriptorSet::builder()
-                .dst_set(frame.resources.ray_tracing_ds)
-                .dst_binding(0)
+                .dst_set(resources.ray_tracing_ds)
+                .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(storage_image_info),
             *vk::WriteDescriptorSet::builder()
-                .dst_set(frame.resources.ray_tracing_ds)
-                .dst_binding(1)
+                .dst_set(resources.ray_tracing_ds)
+                .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(uniform_buffer_info),
         ];
