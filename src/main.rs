@@ -216,7 +216,7 @@ fn main() -> anyhow::Result<()> {
             &mut allocator,
         )?;
 
-        image_manager.push_image(green_texture);
+        image_manager.push_image(green_texture, false);
 
         let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
             include_bytes!("../resources/pink.png"),
@@ -225,7 +225,7 @@ fn main() -> anyhow::Result<()> {
             &mut allocator,
         )?;
 
-        image_manager.push_image(pink_texture);
+        image_manager.push_image(pink_texture, false);
 
         [green_texture_staging_buffer, pink_texture_staging_buffer]
     };

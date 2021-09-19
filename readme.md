@@ -11,7 +11,7 @@ A work-in-progress
 * Basic lighting and shadows
 * Double-buffering
 * A controllable camera and directional light source
-* Implements a fix for shadow terminator problems from [Ray Tracing Gems II], Chapter 4).
+* Implements a fix for shadow terminator problems from [Ray Tracing Gems II], Chapter 4.
 
 ## Todo
 

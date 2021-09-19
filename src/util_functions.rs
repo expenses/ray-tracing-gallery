@@ -353,6 +353,9 @@ pub fn load_gltf(
             .base_color_texture()?
             .texture();
 
+        let linear_filtering =
+            diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
+
         let image_view = match diffuse_texture.source().source() {
             gltf::image::Source::View { view, .. } => view,
             _ => return None,
@@ -369,7 +372,12 @@ pub fn load_gltf(
                 command_buffer,
                 allocator,
             )
-            .map(|(image, staging_buffer)| (image_manager.push_image(image), Some(staging_buffer))),
+            .map(|(image, staging_buffer)| {
+                (
+                    image_manager.push_image(image, linear_filtering),
+                    Some(staging_buffer),
+                )
+            }),
         )
     };
 

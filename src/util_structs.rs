@@ -857,18 +857,22 @@ impl Swapchain {
 
 pub struct ImageManager {
     images: Vec<Image>,
-    sampler: vk::Sampler,
+    nearest_sampler: vk::Sampler,
+    linear_sampler: vk::Sampler,
     image_infos: Vec<vk::DescriptorImageInfo>,
 }
 
 impl ImageManager {
     pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
         Ok(Self {
-            sampler: unsafe {
+            nearest_sampler: unsafe {
+                device.create_sampler(&vk::SamplerCreateInfo::builder(), None)
+            }?,
+            linear_sampler: unsafe {
                 device.create_sampler(
                     &vk::SamplerCreateInfo::builder()
-                        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-                        .max_lod(vk::LOD_CLAMP_NONE),
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR),
                     None,
                 )
             }?,
@@ -881,14 +885,20 @@ impl ImageManager {
         self.images.len() as u32
     }
 
-    pub fn push_image(&mut self, image: Image) -> u32 {
+    pub fn push_image(&mut self, image: Image, linear_filtering: bool) -> u32 {
         let index = self.images.len() as u32;
+
+        let sampler = if linear_filtering {
+            self.linear_sampler
+        } else {
+            self.nearest_sampler
+        };
 
         self.image_infos.push(
             *vk::DescriptorImageInfo::builder()
                 .image_view(image.view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .sampler(self.sampler),
+                .sampler(sampler),
         );
 
         self.images.push(image);
