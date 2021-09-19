@@ -112,7 +112,12 @@ void main() {
 
     vec3 interpolated_normal = interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords);
 
-    vec3 normal = normalize(vec3(interpolated_normal * gl_WorldToObjectEXT));
+    // Just in-case we do any non-uniform scaling, we use a normal matrix here.
+    // This is defined as 'the transpose of the inverse of the upper-left 3x3 part of the model matrix'
+    //
+    // See: https://learnopengl.com/Lighting/Basic-Lighting
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
+    vec3 normal = normalize(rotated_normal);
 
     vec2 uv = interpolate(v0.uv, v1.uv, v2.uv, barycentric_coords);
 
