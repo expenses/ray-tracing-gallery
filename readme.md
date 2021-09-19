@@ -17,6 +17,7 @@ A work-in-progress
 
 * Soft shadows ([Ray Tracing Gems II], Chapter 24) and a shadow denoiser pass
 * Ray traced ambient occlusion
+* Re-write some shaders using [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)
 
 ## Acknowledgements and sources
 

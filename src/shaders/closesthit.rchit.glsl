@@ -137,17 +137,22 @@ void main() {
 
     const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
     
-    Vertex v0 = load_vertex(index.x, info);
-    Vertex v1 = load_vertex(index.y, info);
-    Vertex v2 = load_vertex(index.z, info);
+    Vertex a = load_vertex(index.x, info);
+    Vertex b = load_vertex(index.y, info);
+    Vertex c = load_vertex(index.z, info);
 
-    vec3 interpolated_normal = interpolate(v0.normal, v1.normal, v2.normal, barycentric_coords);
+    vec3 interpolated_normal = interpolate(a.normal, b.normal, c.normal, barycentric_coords);
 
-    vec3 normal = normalize(vec3(interpolated_normal * gl_WorldToObjectEXT));
+    // Just in-case we do any non-uniform scaling, we use a normal matrix here.
+    // This is defined as 'the transpose of the inverse of the upper-left 3x3 part of the model matrix'
+    //
+    // See: https://learnopengl.com/Lighting/Basic-Lighting
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
+    vec3 normal = normalize(rotated_normal);
 
-    vec2 uv = interpolate(v0.uv, v1.uv, v2.uv, barycentric_coords);
+    vec2 uv = interpolate(a.uv, b.uv, c.uv, barycentric_coords);
 
-    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(v0, v1, v2, barycentric_coords);
+    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(a, b, c, barycentric_coords);
 
     // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
