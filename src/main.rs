@@ -519,8 +519,6 @@ fn main() -> anyhow::Result<()> {
         ]
     };
 
-    write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
-
     init_command_buffer.finish()?;
 
     // Clean up from initialisation.
@@ -738,20 +736,17 @@ fn main() -> anyhow::Result<()> {
                             command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
                         for (i, frame) in multibuffering_frames.iter_mut().enumerate() {
-                            frame.resources.storage_image.cleanup(&mut allocator)?;
-                            frame.resources.storage_image = Image::new_storage_image(
-                                extent.width,
-                                extent.height,
-                                &format!("storage image {}", i),
-                                surface_format.format,
+                            frame.resources.resize(
                                 resize_command_buffer.buffer(),
+                                extent,
+                                surface_format.format,
+                                i,
+                                &device,
                                 &mut allocator,
                             )?;
                         }
 
                         resize_command_buffer.finish()?;
-
-                        write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -1139,6 +1134,8 @@ impl Frame {
         queue_family: u32,
         resources: PerFrameResources,
     ) -> anyhow::Result<Self> {
+        resources.write_descriptor_sets(device);
+
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
@@ -1428,47 +1425,4 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
-}
-
-fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame]) {
-    for frame in frames {
-        let resources = &frame.resources;
-
-        let storage_image_info = &[resources.storage_image.descriptor_image_info()];
-        let uniform_buffer_info = &[resources.ray_tracing_uniforms.descriptor_buffer_info()];
-
-        let structures = &[resources.tlas.acceleration_structure];
-
-        let mut write_acceleration_structures =
-            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-                .acceleration_structures(structures);
-
-        let writes = &[
-            {
-                let mut write_as = *vk::WriteDescriptorSet::builder()
-                    .dst_set(resources.ray_tracing_ds)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .push_next(&mut write_acceleration_structures);
-
-                write_as.descriptor_count = 1;
-
-                write_as
-            },
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(resources.ray_tracing_ds)
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(storage_image_info),
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(resources.ray_tracing_ds)
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(uniform_buffer_info),
-        ];
-
-        unsafe {
-            device.update_descriptor_sets(writes, &[]);
-        }
-    }
 }

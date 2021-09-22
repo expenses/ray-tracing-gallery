@@ -33,6 +33,69 @@ pub struct PerFrameResources {
 }
 
 impl PerFrameResources {
+    pub fn resize(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        index: usize,
+        device: &ash::Device,
+        allocator: &mut Allocator,
+    ) -> anyhow::Result<()> {
+        self.storage_image.cleanup(allocator)?;
+        self.storage_image = Image::new_storage_image(
+            extent.width,
+            extent.height,
+            &format!("storage image {}", index),
+            format,
+            command_buffer,
+            allocator,
+        )?;
+
+        self.write_descriptor_sets(device);
+
+        Ok(())
+    }
+
+    pub fn write_descriptor_sets(&self, device: &ash::Device) {
+        let storage_image_info = &[self.storage_image.descriptor_image_info()];
+        let uniform_buffer_info = &[self.ray_tracing_uniforms.descriptor_buffer_info()];
+
+        let structures = &[self.tlas.acceleration_structure];
+
+        let mut write_acceleration_structures =
+            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+                .acceleration_structures(structures);
+
+        let writes = &[
+            {
+                let mut write_as = *vk::WriteDescriptorSet::builder()
+                    .dst_set(self.ray_tracing_ds)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .push_next(&mut write_acceleration_structures);
+
+                write_as.descriptor_count = 1;
+
+                write_as
+            },
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(self.ray_tracing_ds)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(storage_image_info),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(self.ray_tracing_ds)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(uniform_buffer_info),
+        ];
+
+        unsafe {
+            device.update_descriptor_sets(writes, &[]);
+        }
+    }
+
     pub unsafe fn record(
         &mut self,
         command_buffer: vk::CommandBuffer,
