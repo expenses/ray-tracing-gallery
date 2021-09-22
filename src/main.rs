@@ -16,6 +16,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+mod command_buffer_recording;
 mod util_functions;
 mod util_structs;
 
@@ -25,10 +26,11 @@ use util_structs::{
 };
 
 use util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, load_gltf, load_rgba_png_image_from_bytes,
-    load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
-    PipelineImageMemoryBarrierParams,
+    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
+    select_physical_device, shader_group_for_type,
 };
+
+use command_buffer_recording::{GlobalResources, PerFrameResources};
 
 fn main() -> anyhow::Result<()> {
     {
@@ -480,6 +482,7 @@ fn main() -> anyhow::Result<()> {
                         16,
                         &mut allocator,
                     )?,
+                    num_instances,
                 },
             )?,
             Frame::new(
@@ -510,6 +513,7 @@ fn main() -> anyhow::Result<()> {
                         instances_buffer.rename("instances buffer 1", &allocator)?;
                         instances_buffer
                     },
+                    num_instances,
                 },
             )?,
         ]
@@ -687,6 +691,17 @@ fn main() -> anyhow::Result<()> {
     let mut screen_center =
         winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
 
+    let global_resources = GlobalResources {
+        pipeline,
+        pipeline_layout,
+        raygen_sbt,
+        closest_hit_sbt,
+        miss_sbt,
+        general_ds,
+        as_loader,
+        pipeline_loader,
+    };
+
     event_loop.run(move |event, _, control_flow| {
         let loop_closure = || -> anyhow::Result<()> {
             match event {
@@ -863,7 +878,7 @@ fn main() -> anyhow::Result<()> {
                             sun_velocity *= clamped_magnitude / magnitude;
                         }
 
-                        sun.yaw += sun_velocity.x;
+                        sun.yaw -= sun_velocity.x;
                         sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(0.0);
 
                         sun_velocity *= 0.95;
@@ -922,145 +937,14 @@ fn main() -> anyhow::Result<()> {
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
 
-                                resources.tlas.update_tlas(
-                                    &resources.instances_buffer,
-                                    num_instances,
+                                resources.record(
                                     frame.command_buffer,
-                                    &mut allocator,
-                                    &as_loader,
-                                    &mut resources.scratch_buffer,
-                                )?;
-
-                                // wait for tlas update to finish
-                                device.cmd_pipeline_barrier(
-                                    frame.command_buffer,
-                                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                                    vk::DependencyFlags::empty(),
-                                    &[*vk::MemoryBarrier::builder()
-                                        .src_access_mask(
-                                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                                        )
-                                        .dst_access_mask(
-                                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                                        )],
-                                    &[],
-                                    &[],
-                                );
-
-                                device.cmd_bind_pipeline(
-                                    frame.command_buffer,
-                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                    pipeline,
-                                );
-
-                                device.cmd_bind_descriptor_sets(
-                                    frame.command_buffer,
-                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                    pipeline_layout,
-                                    0,
-                                    &[general_ds, resources.ray_tracing_ds],
-                                    &[],
-                                );
-
-                                pipeline_loader.cmd_trace_rays(
-                                    frame.command_buffer,
-                                    &raygen_sbt.address_region,
-                                    &miss_sbt.address_region,
-                                    &closest_hit_sbt.address_region,
-                                    // We don't use callable shaders here
-                                    &Default::default(),
-                                    extent.width,
-                                    extent.height,
-                                    1,
-                                );
-
-                                let subresource = *vk::ImageSubresourceLayers::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .mip_level(0)
-                                    .base_array_layer(0)
-                                    .layer_count(1);
-
-                                let subresource_range = vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .level_count(1)
-                                    .layer_count(1);
-
-                                cmd_pipeline_image_memory_barrier_explicit(
-                                    &PipelineImageMemoryBarrierParams {
-                                        device: &device,
-                                        buffer: frame.command_buffer,
-                                        // We just wrote the color attachment
-                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                        // We need to do a transfer next.
-                                        dst_stage: vk::PipelineStageFlags::TRANSFER,
-                                        image_memory_barriers: &[
-                                            // prepare swapchain image to be a destination
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::empty())
-                                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                            // prepare storage image to be a source
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(resources.storage_image.image)
-                                                .old_layout(vk::ImageLayout::GENERAL)
-                                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(
-                                                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                                                )
-                                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                        ],
-                                    },
-                                );
-
-                                device.cmd_copy_image(
-                                    frame.command_buffer,
-                                    resources.storage_image.image,
-                                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                     swapchain_image,
-                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                    &[*vk::ImageCopy::builder()
-                                        .src_subresource(subresource)
-                                        .dst_subresource(subresource)
-                                        .extent(vk::Extent3D {
-                                            width: extent.width,
-                                            height: extent.height,
-                                            depth: 1,
-                                        })],
-                                );
-
-                                // Reset image layouts
-
-                                cmd_pipeline_image_memory_barrier_explicit(
-                                    &PipelineImageMemoryBarrierParams {
-                                        device: &device,
-                                        buffer: frame.command_buffer,
-                                        // We just did a transfer
-                                        src_stage: vk::PipelineStageFlags::TRANSFER,
-                                        // Nothing happens after this.
-                                        dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                                        image_memory_barriers: &[
-                                            // Reset swapchain image
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                            // Reset storage image
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(resources.storage_image.image)
-                                                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                                .new_layout(vk::ImageLayout::GENERAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                        ],
-                                    },
-                                );
+                                    extent,
+                                    &global_resources,
+                                    &device,
+                                    &mut allocator,
+                                )?;
 
                                 device.end_command_buffer(frame.command_buffer)?;
 
@@ -1100,9 +984,12 @@ fn main() -> anyhow::Result<()> {
 
                     model_info_buffer.cleanup(&mut allocator)?;
 
-                    raygen_sbt.buffer.cleanup(&mut allocator)?;
-                    miss_sbt.buffer.cleanup(&mut allocator)?;
-                    closest_hit_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources.raygen_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources.miss_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources
+                        .closest_hit_sbt
+                        .buffer
+                        .cleanup(&mut allocator)?;
 
                     image_manager.cleanup(&mut allocator)?;
 
@@ -1274,15 +1161,6 @@ impl Frame {
             resources,
         })
     }
-}
-
-pub struct PerFrameResources {
-    storage_image: Image,
-    ray_tracing_ds: vk::DescriptorSet,
-    ray_tracing_uniforms: Buffer,
-    tlas: AccelerationStructure,
-    scratch_buffer: ScratchBuffer,
-    instances_buffer: Buffer,
 }
 
 #[derive(Default)]
