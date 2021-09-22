@@ -2,8 +2,10 @@
 name = "ray-tracing-gallery"
 version = "0.1.0"
 edition = "2018"
+resolver = "2"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [".", "shaders"]
 
 [dependencies]
 anyhow = "1.0.43"
@@ -19,5 +21,9 @@ simplelog = "0.10.0"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
 
-[profile.dev.package."*"]
-opt-level = 3
+#[profile.dev.package."*"]
+#opt-level = 3
+
+[build-dependencies]
+# Use Alpha 12
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu.git", rev = "44c9fdd8c511ff14ab64281c54910651fba86a0f", default-features = false, features = ["use-installed-tools"] }
