@@ -563,7 +563,7 @@ fn main() -> anyhow::Result<()> {
             &device,
         )?,
         load_shader_module(
-            include_bytes!("shaders/miss.rmiss.spv"),
+            include_bytes!("../shaders/ray-tracing.spv"),
             vk::ShaderStageFlags::MISS_KHR,
             &device,
         )?,

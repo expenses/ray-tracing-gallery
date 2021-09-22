@@ -4,7 +4,6 @@
     register_attr(spirv),
     no_std
 )]
-#![deny(warnings)]
 
 // This needs to be here to provide `#[panic_handler]`.
 extern crate spirv_std;
@@ -12,11 +11,12 @@ extern crate spirv_std;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
 
-
-#[spirv(fragment)]
-pub fn main() {
+#[spirv(miss)]
+pub fn main(#[spirv(incoming_ray_payload)] shadowed: &mut bool) {
+    *shadowed = false;
 }
 
-#[spirv(fragment)]
-pub fn main2() {
-}
+/*
+#[spirv(miss)]
+pub fn primary_miss()
+*/

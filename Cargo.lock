@@ -226,6 +226,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
+name = "compile-shaders"
+version = "0.1.0"
+dependencies = [
+ "spirv-builder",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1203,9 +1210,15 @@ dependencies = [
  "log",
  "rand",
  "simplelog",
- "spirv-builder",
  "ultraviolet",
  "winit",
+]
+
+[[package]]
+name = "ray-tracing-shaders"
+version = "0.1.0"
+dependencies = [
+ "spirv-std",
 ]
 
 [[package]]
@@ -1392,13 +1405,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "shaders"
-version = "0.1.0"
-dependencies = [
- "spirv-std",
 ]
 
 [[package]]

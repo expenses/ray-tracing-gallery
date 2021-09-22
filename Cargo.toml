@@ -5,7 +5,7 @@ edition = "2018"
 resolver = "2"
 
 [workspace]
-members = [".", "shaders"]
+members = [".", "shaders/ray-tracing", "compile-shaders"]
 
 [dependencies]
 anyhow = "1.0.43"
@@ -23,7 +23,3 @@ winit = "0.25.0"
 
 #[profile.dev.package."*"]
 #opt-level = 3
-
-[build-dependencies]
-# Use Alpha 12
-spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu.git", rev = "44c9fdd8c511ff14ab64281c54910651fba86a0f", default-features = false, features = ["use-installed-tools"] }
