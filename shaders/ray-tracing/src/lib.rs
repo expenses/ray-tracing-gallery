@@ -17,7 +17,7 @@ use spirv_std::glam::{const_vec3, IVec3, Mat4, Vec2, Vec3, Vec4};
 use spirv_std::{
     image::SampledImage,
     ray_tracing::{AccelerationStructure, RayFlags},
-    Image, RuntimeArray,
+    Image,
 };
 
 mod structs;
@@ -36,10 +36,41 @@ pub fn primary_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut PrimaryRayP
     payload.hit_value = SKY_COLOUR;
 }
 
+struct TraceRayExplicitParams<'a, T> {
+    tlas: &'a AccelerationStructure,
+    flags: RayFlags,
+    cull_mask: i32,
+    sbt_offset: i32,
+    sbt_stride: i32,
+    miss_shader_index: i32,
+    origin: Vec3,
+    t_min: f32,
+    direction: Vec3,
+    t_max: f32,
+    payload: &'a mut T,
+}
+
+fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
+    unsafe {
+        params.tlas.trace_ray(
+            params.flags,
+            params.cull_mask,
+            params.sbt_offset,
+            params.sbt_stride,
+            params.miss_shader_index,
+            params.origin,
+            params.t_min,
+            params.direction,
+            params.t_max,
+            params.payload,
+        )
+    }
+}
+
 #[spirv(ray_generation)]
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 0)] top_level_as: &AccelerationStructure,
+    #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
     #[spirv(descriptor_set = 1, binding = 1)] image: &Image!(2D, format = rgba8, sampled = false),
     #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
     #[spirv(launch_id)] launch_id: IVec3,
@@ -49,34 +80,37 @@ pub fn ray_generation(
     let launch_size_xy = launch_size.truncate();
 
     let pixel_center = launch_id_xy.as_f32() + 0.5;
-    let in_uv = pixel_center / launch_size_xy.as_f32();
 
-    let d = in_uv * 2.0 - 1.0;
+    let texture_coordinates = pixel_center / launch_size_xy.as_f32();
 
+    let render_coordinates = texture_coordinates * 2.0 - 1.0;
+
+    // Transform [0, 0, 0] in view-space into world space
     let origin = (uniforms.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
-    let target = (uniforms.proj_inverse * Vec4::new(d.x, d.y, 1.0, 1.0)).truncate();
-
-    let direction = (uniforms.view_inverse * target.normalize().extend(0.0)).truncate();
-
-    let t_min = 0.001;
-    let t_max = 10_000.0;
+    // Transform the render coordinates into project-y space
+    let target =
+        uniforms.proj_inverse * Vec4::new(render_coordinates.x, render_coordinates.y, 1.0, 1.0);
+    let local_direction_vector = target.truncate().normalize();
+    // Rotate the location direction vector into a global direction vector.
+    let direction = (uniforms.view_inverse * local_direction_vector.extend(0.0)).truncate();
 
     payload.hit_value = Vec3::splat(0.0);
 
-    unsafe {
-        top_level_as.trace_ray(
-            RayFlags::OPAQUE,
-            0xff,
-            0,
-            0,
-            0,
-            origin,
-            t_min,
-            direction,
-            t_max,
-            payload,
-        );
+    trace_ray_explicit(TraceRayExplicitParams {
+        tlas,
+        flags: RayFlags::OPAQUE,
+        origin,
+        direction,
+        t_min: 0.001,
+        t_max: 10_000.0,
+        payload,
+        cull_mask: 0xff,
+        sbt_offset: 0,
+        sbt_stride: 0,
+        miss_shader_index: 0,
+    });
 
+    unsafe {
         image.write(launch_id_xy, payload.hit_value.extend(1.0));
     }
 }
@@ -125,7 +159,7 @@ pub fn wip_closest_hit(
     #[spirv(descriptor_set = 0, binding = 1)] texture: &SampledImage<
         Image!(2D, type=f32, sampled=true),
     >,
-    #[spirv(descriptor_set = 1, binding = 0)] top_level_as: &AccelerationStructure,
+    #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
     #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
 ) {
     let info = &model_info[model_index as usize];
@@ -149,8 +183,6 @@ pub fn wip_closest_hit(
         hit_attributes.y,
     );
 
-    let index_offset = primitive_id * 3;
-
     payload.hit_value = barycentric_coords * colour_modulator;
 
     /*
@@ -160,30 +192,25 @@ pub fn wip_closest_hit(
     }
     */
 
-    let t_min = 0.001;
-    let t_max = 10_000.0;
-
-    let shadow_origin = world_ray_origin + world_ray_direction * ray_hit_t;
-
     let shadowed = {
         shadow_payload.shadowed = true;
 
-        unsafe {
-            top_level_as.trace_ray(
-                RayFlags::OPAQUE
-                    | RayFlags::TERMINATE_ON_FIRST_HIT
-                    | RayFlags::SKIP_CLOSEST_HIT_SHADER,
-                0xff,
-                1,
-                0,
-                1,
-                shadow_origin,
-                t_min,
-                uniforms.sun_dir,
-                t_max,
-                shadow_payload,
-            );
-        }
+        trace_ray_explicit(TraceRayExplicitParams {
+            tlas,
+            flags: RayFlags::OPAQUE
+                | RayFlags::TERMINATE_ON_FIRST_HIT
+                | RayFlags::SKIP_CLOSEST_HIT_SHADER,
+            origin: world_ray_origin + world_ray_direction * ray_hit_t,
+            direction: uniforms.sun_dir,
+            t_min: 0.001,
+            t_max: 10_000.0,
+            payload: shadow_payload,
+            cull_mask: 0xff,
+            // Not sure if we need this offset
+            sbt_offset: 1,
+            sbt_stride: 0,
+            miss_shader_index: 1,
+        });
 
         shadow_payload.shadowed
     };

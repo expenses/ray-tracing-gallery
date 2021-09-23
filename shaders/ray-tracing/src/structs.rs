@@ -1,4 +1,4 @@
-use spirv_std::glam::{const_vec3, IVec3, Mat4, Vec2, Vec3, Vec4};
+use spirv_std::glam::{Mat4, Vec2, Vec3};
 
 #[derive(Copy, Clone)]
 pub struct Uniforms {
