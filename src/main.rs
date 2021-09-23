@@ -294,19 +294,21 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let lain_transform = Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
+    let lain_base_transform =
+        Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
     let mut lain_rotation = 150.0_f32.to_radians();
+    let lain_instance_offset = std::mem::size_of::<AccelerationStructureInstance>() * 2;
 
     let mut instances = vec![
-        tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
-        tlas_instance(
+        AccelerationStructureInstance::new(Mat4::from_scale(10.0), &plane_blas, &device, 0),
+        AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
             1,
         ),
-        tlas_instance(
-            lain_transform * Mat4::from_rotation_y(lain_rotation),
+        AccelerationStructureInstance::new(
+            lain_base_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
@@ -319,7 +321,7 @@ fn main() -> anyhow::Result<()> {
         let mut rng = rand::thread_rng();
 
         for _ in 0..10000 {
-            instances.push(tlas_instance(
+            instances.push(AccelerationStructureInstance::new(
                 Mat4::from_translation(Vec3::new(
                     rng.gen_range(-10.0..10.0),
                     rng.gen_range(0.5..2.5),
@@ -334,7 +336,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let instances_buffer = Buffer::new_with_custom_alignment(
-        unsafe { instances_as_bytes(&instances) },
+        bytemuck::cast_slice(&instances),
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -475,7 +477,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     scratch_buffer: ScratchBuffer::new(&as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
-                        instances_as_bytes(&instances),
+                        bytemuck::cast_slice(&instances),
                         "instances buffer 0",
                         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -523,6 +525,8 @@ fn main() -> anyhow::Result<()> {
 
     // Clean up from initialisation.
     {
+        drop(instances);
+
         for staging_buffer in image_staging_buffers {
             staging_buffer.cleanup_and_drop(&mut allocator)?;
         }
@@ -621,8 +625,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "raygen shader binding table",
         &ray_tracing_props,
-        0,
-        1,
+        0..1,
         &device,
         &mut allocator,
     )?;
@@ -631,8 +634,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "closest hit shader binding table",
         &ray_tracing_props,
-        1,
-        1,
+        1..2,
         &device,
         &mut allocator,
     )?;
@@ -642,8 +644,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "miss shader binding table",
         &ray_tracing_props,
-        2,
-        2,
+        2..4,
         &device,
         &mut allocator,
     )?;
@@ -916,13 +917,14 @@ fn main() -> anyhow::Result<()> {
                                 .ray_tracing_uniforms
                                 .write_mapped(bytemuck::bytes_of(&uniforms), 0)?;
 
-                            instances[2].transform.matrix = flatted_matrix(
-                                lain_transform * Mat4::from_rotation_y(lain_rotation),
+                            let lain_instance_transform = transpose_matrix_for_instance(
+                                lain_base_transform * Mat4::from_rotation_y(lain_rotation),
                             );
 
                             resources.instances_buffer.write_mapped(
-                                unsafe { instances_as_bytes(&instances[2..3]) },
-                                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() * 2,
+                                // The transform is the first 48 bytes of the instance.
+                                bytemuck::bytes_of(&lain_instance_transform),
+                                lain_instance_offset,
                             )?;
 
                             unsafe {
@@ -967,8 +969,10 @@ fn main() -> anyhow::Result<()> {
                         Err(error) => log::warn!("Next frame error: {:?}", error),
                     }
                 }
-                Event::LoopDestroyed => unsafe {
-                    device.device_wait_idle()?;
+                Event::LoopDestroyed => {
+                    unsafe {
+                        device.device_wait_idle()?;
+                    }
 
                     plane_buffers.cleanup(&mut allocator)?;
                     plane_blas.buffer.cleanup(&mut allocator)?;
@@ -997,7 +1001,7 @@ fn main() -> anyhow::Result<()> {
                         resources.scratch_buffer.cleanup(&mut allocator)?;
                         resources.instances_buffer.cleanup(&mut allocator)?;
                     }
-                },
+                }
                 _ => {}
             }
 
@@ -1341,42 +1345,42 @@ fn build_tlas(
     )
 }
 
-// This is lazy because I could really just write a bytemuck'd struct for this.
-unsafe fn instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
-    std::slice::from_raw_parts(
-        instances.as_ptr() as *const u8,
-        instances.len() * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-    )
+// A `bytemuck`'d `vk::AccelerationStructureInstanceKHR`.
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+struct AccelerationStructureInstance {
+    transform: [Vec4; 3],
+    instance_custom_index_and_mask: u32,
+    instance_shader_binding_table_record_offset_and_flags: u32,
+    acceleration_structure_device_address: vk::DeviceAddress,
 }
 
-fn tlas_instance(
-    transform: Mat4,
-    blas: &AccelerationStructure,
-    device: &ash::Device,
-    custom_index: u32,
-) -> vk::AccelerationStructureInstanceKHR {
-    fn merge_fields(lower: u32, upper: u8) -> u32 {
-        ((upper as u32) << 24) | lower
-    }
+impl AccelerationStructureInstance {
+    fn new(
+        transform: Mat4,
+        blas: &AccelerationStructure,
+        device: &ash::Device,
+        custom_index: u32,
+    ) -> Self {
+        fn merge_fields(lower: u32, upper: u8) -> u32 {
+            ((upper as u32) << 24) | lower
+        }
 
-    vk::AccelerationStructureInstanceKHR {
-        transform: vk::TransformMatrixKHR {
-            matrix: flatted_matrix(transform),
-        },
-        instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
-        instance_shader_binding_table_record_offset_and_flags: merge_fields(
-            0,
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-        ),
-        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: blas.buffer.device_address(device),
-        },
+        Self {
+            transform: transpose_matrix_for_instance(transform),
+            instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
+            instance_shader_binding_table_record_offset_and_flags: merge_fields(
+                0,
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+            ),
+            acceleration_structure_device_address: blas.buffer.device_address(device),
+        }
     }
 }
 
-fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
-    use std::convert::TryInto;
-    matrix.transposed().as_array()[..12].try_into().unwrap()
+fn transpose_matrix_for_instance(matrix: Mat4) -> [Vec4; 3] {
+    let rows = matrix.transposed().cols;
+    [rows[0], rows[1], rows[2]]
 }
 
 unsafe extern "system" fn vulkan_debug_utils_callback(

@@ -361,11 +361,13 @@ impl ShaderBindingTable {
         group_handles: &[u8],
         name: &str,
         props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
-        offset: u32,
-        num_shaders: u64,
+        range: std::ops::Range<u32>,
         device: &ash::Device,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
+        let offset = range.start;
+        let num_shaders = (range.end - range.start) as u64;
+
         let handle_size_aligned = sbt_aligned_size(props);
 
         let offset = (handle_size_aligned * offset) as usize;
