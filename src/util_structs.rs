@@ -868,13 +868,17 @@ impl ImageManager {
     pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
         Ok(Self {
             nearest_sampler: unsafe {
-                device.create_sampler(&vk::SamplerCreateInfo::builder(), None)
+                device.create_sampler(
+                    &vk::SamplerCreateInfo::builder().max_lod(vk::LOD_CLAMP_NONE),
+                    None,
+                )
             }?,
             linear_sampler: unsafe {
                 device.create_sampler(
                     &vk::SamplerCreateInfo::builder()
                         .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR),
+                        .min_filter(vk::Filter::LINEAR)
+                        .max_lod(vk::LOD_CLAMP_NONE),
                     None,
                 )
             }?,

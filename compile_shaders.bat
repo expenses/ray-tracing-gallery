@@ -1,4 +1,5 @@
-glslc -g --target-spv=spv1.4 -fshader-stage=rchit src/shaders/closesthit.rchit.glsl -o src/shaders/closesthit.rchit.spv
-glslc -g --target-spv=spv1.4 -fshader-stage=rmiss src/shaders/miss.rmiss.glsl -o src/shaders/miss.rmiss.spv
-glslc -g --target-spv=spv1.4 -fshader-stage=rmiss src/shaders/shadow.rmiss.glsl -o src/shaders/shadow.rmiss.spv
-glslc -g --target-spv=spv1.4 -fshader-stage=rgen src/shaders/raygen.rgen.glsl -o src/shaders/raygen.rgen.spv
+:: Keep this target up-to-date with the rust-gpu one.
+:: rustup +nightly-2021-08-27-x86_64-pc-windows-msvc component add rust-src rustc-dev llvm-tools-preview
+cargo +nightly-2021-08-27-x86_64-pc-windows-msvc run -p compile-shaders --release
+
+glslc --target-spv=spv1.4 -fshader-stage=rchit shaders/closesthit.glsl -o shaders/closesthit.spv

@@ -26,8 +26,8 @@ use util_structs::{
 };
 
 use util_functions::{
-    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
-    select_physical_device, shader_group_for_type,
+    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, load_shader_module_as_stage,
+    sbt_aligned_size, select_physical_device, shader_group_for_type,
 };
 
 use command_buffer_recording::{GlobalResources, PerFrameResources};
@@ -133,6 +133,7 @@ fn main() -> anyhow::Result<()> {
             vk::PhysicalDevice16BitStorageFeatures::builder().storage_buffer16_bit_access(true);
 
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
+            .shader_int8(true)
             .buffer_device_address(true)
             .runtime_descriptor_array(true)
             .shader_sampled_image_array_non_uniform_indexing(true);
@@ -557,27 +558,26 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
+    let ray_tracing_module =
+        load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
+
     let shader_stages = [
-        load_shader_module(
-            include_bytes!("shaders/raygen.rgen.spv"),
-            vk::ShaderStageFlags::RAYGEN_KHR,
-            &device,
-        )?,
-        load_shader_module(
-            include_bytes!("shaders/closesthit.rchit.spv"),
-            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            &device,
-        )?,
-        load_shader_module(
-            include_bytes!("../shaders/ray-tracing.spv"),
-            vk::ShaderStageFlags::MISS_KHR,
-            &device,
-        )?,
-        load_shader_module(
-            include_bytes!("shaders/shadow.rmiss.spv"),
-            vk::ShaderStageFlags::MISS_KHR,
-            &device,
-        )?,
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+            .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+            .name(CStr::from_bytes_with_nul(b"closest_hit\0")?),
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
     ];
 
     let shader_groups = [

@@ -60,6 +60,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28ae2b3dec75a406790005a200b1bd89785afc02517a00ca99ecfe093ee9e6cf"
 
 [[package]]
+name = "ar"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d67af77d68a931ecd5cbd8a3b5987d63a1d1d1278f7f6a60ae33db485cdebb69"
+
+[[package]]
 name = "ash"
 version = "0.33.3+1.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,18 +503,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
-name = "filetime"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "975ccf83d8d9d0d84682850a38c8169027be83368805971cc4f238c2b245bc98"
-dependencies = [
- "cfg-if 1.0.0",
- "libc",
- "redox_syscall",
- "winapi",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -554,6 +548,15 @@ name = "gimli"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0a01e0497841a3b2db4f8afa483cce65f7e96a3498bd6c541734792aeac8fe7"
+
+[[package]]
+name = "glam"
+version = "0.17.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "gltf"
@@ -1256,13 +1259,14 @@ dependencies = [
 
 [[package]]
 name = "rspirv"
-version = "0.8.0"
-source = "git+https://github.com/gfx-rs/rspirv.git?rev=c2a11ba7961fa7c675800f50c1903f0e96c633f8#c2a11ba7961fa7c675800f50c1903f0e96c633f8"
+version = "0.10.0+1.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce0e0a01cf9883c6f2846168515b5be6c4995bb90d4eeb7595bb0088a1001759"
 dependencies = [
  "derive_more",
  "fxhash",
  "num-traits",
- "spirv_headers",
+ "spirv",
 ]
 
 [[package]]
@@ -1274,8 +1278,9 @@ checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu.git?rev=44c9fdd8c511ff14ab64281c54910651fba86a0f#44c9fdd8c511ff14ab64281c54910651fba86a0f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu.git#35172f7edb708868ac69c99b119df0d83956e004"
 dependencies = [
+ "ar",
  "bimap",
  "hashbrown",
  "indexmap",
@@ -1289,7 +1294,6 @@ dependencies = [
  "smallvec",
  "spirv-tools",
  "syn",
- "tar",
  "topological-sort",
 ]
 
@@ -1444,9 +1448,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spirv"
+version = "0.2.0+1.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "246bfa38fe3db3f1dfc8ca5a2cdeb7348c78be2112740cc0ec8ef18b6d94f830"
+dependencies = [
+ "bitflags",
+ "num-traits",
+]
+
+[[package]]
 name = "spirv-builder"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu.git?rev=44c9fdd8c511ff14ab64281c54910651fba86a0f#44c9fdd8c511ff14ab64281c54910651fba86a0f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu.git#35172f7edb708868ac69c99b119df0d83956e004"
 dependencies = [
  "memchr",
  "raw-string",
@@ -1458,9 +1472,10 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu.git?rev=44c9fdd8c511ff14ab64281c54910651fba86a0f#44c9fdd8c511ff14ab64281c54910651fba86a0f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu.git#35172f7edb708868ac69c99b119df0d83956e004"
 dependencies = [
  "bitflags",
+ "glam",
  "num-traits",
  "spirv-std-macros",
  "spirv-types",
@@ -1469,7 +1484,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu.git?rev=44c9fdd8c511ff14ab64281c54910651fba86a0f#44c9fdd8c511ff14ab64281c54910651fba86a0f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu.git#35172f7edb708868ac69c99b119df0d83956e004"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1480,9 +1495,9 @@ dependencies = [
 
 [[package]]
 name = "spirv-tools"
-version = "0.6.1"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "663d6a7c1627d47e402e3a41076f6147bbe4bf11fd98687e1016599b3979f6d3"
+checksum = "47ffcd721c949125c13b1213a292477a2d82621512b094564bd918c3a1c7f7ff"
 dependencies = [
  "memchr",
  "spirv-tools-sys",
@@ -1491,9 +1506,9 @@ dependencies = [
 
 [[package]]
 name = "spirv-tools-sys"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbb083780a3721ff6dd496dbdc3b90c033b443bec676918b89c179b330081983"
+checksum = "b967db819666ccf7a0373876321bfe852922edcc7f3e30e3a7668b02e1961119"
 dependencies = [
  "cc",
 ]
@@ -1501,16 +1516,7 @@ dependencies = [
 [[package]]
 name = "spirv-types"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu.git?rev=44c9fdd8c511ff14ab64281c54910651fba86a0f#44c9fdd8c511ff14ab64281c54910651fba86a0f"
-
-[[package]]
-name = "spirv_headers"
-version = "1.5.1"
-source = "git+https://github.com/gfx-rs/rspirv.git?rev=c2a11ba7961fa7c675800f50c1903f0e96c633f8#c2a11ba7961fa7c675800f50c1903f0e96c633f8"
-dependencies = [
- "bitflags",
- "num-traits",
-]
+source = "git+https://github.com/EmbarkStudios/rust-gpu.git#35172f7edb708868ac69c99b119df0d83956e004"
 
 [[package]]
 name = "strsim"
@@ -1527,17 +1533,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "tar"
-version = "0.4.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f5515d3add52e0bbdcad7b83c388bb36ba7b754dda3b5f5bc2d38640cdba5c"
-dependencies = [
- "filetime",
- "libc",
- "xattr",
 ]
 
 [[package]]
@@ -1822,15 +1817,6 @@ dependencies = [
  "libc",
  "maybe-uninit",
  "pkg-config",
-]
-
-[[package]]
-name = "xattr"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "244c3741f4240ef46274860397c7c74e50eb23624996930e484c16679633a54c"
-dependencies = [
- "libc",
 ]
 
 [[package]]

@@ -7,4 +7,4 @@ edition = "2018"
 crate-type = ["dylib", "lib"]
 
 [dependencies]
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu.git", rev = "44c9fdd8c511ff14ab64281c54910651fba86a0f" }
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu.git", features = ["glam"] }
