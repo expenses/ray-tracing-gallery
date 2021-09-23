@@ -16,6 +16,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+mod command_buffer_recording;
 mod util_functions;
 mod util_structs;
 
@@ -25,10 +26,11 @@ use util_structs::{
 };
 
 use util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, load_gltf, load_rgba_png_image_from_bytes,
-    load_shader_module, sbt_aligned_size, select_physical_device, shader_group_for_type,
-    PipelineImageMemoryBarrierParams,
+    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, sbt_aligned_size,
+    select_physical_device, shader_group_for_type,
 };
+
+use command_buffer_recording::{GlobalResources, PerFrameResources};
 
 fn main() -> anyhow::Result<()> {
     {
@@ -292,19 +294,21 @@ fn main() -> anyhow::Result<()> {
 
     // Allocate the instance buffer
 
-    let lain_transform = Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
+    let lain_base_transform =
+        Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
     let mut lain_rotation = 150.0_f32.to_radians();
+    let lain_instance_offset = std::mem::size_of::<AccelerationStructureInstance>() * 2;
 
     let mut instances = vec![
-        tlas_instance(Mat4::from_scale(10.0), &plane_blas, &device, 0),
-        tlas_instance(
+        AccelerationStructureInstance::new(Mat4::from_scale(10.0), &plane_blas, &device, 0),
+        AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
             1,
         ),
-        tlas_instance(
-            lain_transform * Mat4::from_rotation_y(lain_rotation),
+        AccelerationStructureInstance::new(
+            lain_base_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
@@ -317,7 +321,7 @@ fn main() -> anyhow::Result<()> {
         let mut rng = rand::thread_rng();
 
         for _ in 0..10000 {
-            instances.push(tlas_instance(
+            instances.push(AccelerationStructureInstance::new(
                 Mat4::from_translation(Vec3::new(
                     rng.gen_range(-10.0..10.0),
                     rng.gen_range(0.5..2.5),
@@ -332,7 +336,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let instances_buffer = Buffer::new_with_custom_alignment(
-        unsafe { instances_as_bytes(&instances) },
+        bytemuck::cast_slice(&instances),
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -473,13 +477,14 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     scratch_buffer: ScratchBuffer::new(&as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
-                        instances_as_bytes(&instances),
+                        bytemuck::cast_slice(&instances),
                         "instances buffer 0",
                         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                         16,
                         &mut allocator,
                     )?,
+                    num_instances,
                 },
             )?,
             Frame::new(
@@ -510,17 +515,18 @@ fn main() -> anyhow::Result<()> {
                         instances_buffer.rename("instances buffer 1", &allocator)?;
                         instances_buffer
                     },
+                    num_instances,
                 },
             )?,
         ]
     };
 
-    write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
-
     init_command_buffer.finish()?;
 
     // Clean up from initialisation.
     {
+        drop(instances);
+
         for staging_buffer in image_staging_buffers {
             staging_buffer.cleanup_and_drop(&mut allocator)?;
         }
@@ -619,8 +625,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "raygen shader binding table",
         &ray_tracing_props,
-        0,
-        1,
+        0..1,
         &device,
         &mut allocator,
     )?;
@@ -629,8 +634,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "closest hit shader binding table",
         &ray_tracing_props,
-        1,
-        1,
+        1..2,
         &device,
         &mut allocator,
     )?;
@@ -640,8 +644,7 @@ fn main() -> anyhow::Result<()> {
         &group_handles,
         "miss shader binding table",
         &ray_tracing_props,
-        2,
-        2,
+        2..4,
         &device,
         &mut allocator,
     )?;
@@ -687,6 +690,17 @@ fn main() -> anyhow::Result<()> {
     let mut screen_center =
         winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
 
+    let global_resources = GlobalResources {
+        pipeline,
+        pipeline_layout,
+        raygen_sbt,
+        closest_hit_sbt,
+        miss_sbt,
+        general_ds,
+        as_loader,
+        pipeline_loader,
+    };
+
     event_loop.run(move |event, _, control_flow| {
         let loop_closure = || -> anyhow::Result<()> {
             match event {
@@ -723,20 +737,17 @@ fn main() -> anyhow::Result<()> {
                             command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
                         for (i, frame) in multibuffering_frames.iter_mut().enumerate() {
-                            frame.resources.storage_image.cleanup(&mut allocator)?;
-                            frame.resources.storage_image = Image::new_storage_image(
-                                extent.width,
-                                extent.height,
-                                &format!("storage image {}", i),
-                                surface_format.format,
+                            frame.resources.resize(
                                 resize_command_buffer.buffer(),
+                                extent,
+                                surface_format.format,
+                                i,
+                                &device,
                                 &mut allocator,
                             )?;
                         }
 
                         resize_command_buffer.finish()?;
-
-                        write_multibuffering_frames_storage_images(&device, &multibuffering_frames);
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -863,7 +874,7 @@ fn main() -> anyhow::Result<()> {
                             sun_velocity *= clamped_magnitude / magnitude;
                         }
 
-                        sun.yaw += sun_velocity.x;
+                        sun.yaw -= sun_velocity.x;
                         sun.pitch = (sun.pitch + sun_velocity.y).min(PI / 2.0).max(0.0);
 
                         sun_velocity *= 0.95;
@@ -906,13 +917,14 @@ fn main() -> anyhow::Result<()> {
                                 .ray_tracing_uniforms
                                 .write_mapped(bytemuck::bytes_of(&uniforms), 0)?;
 
-                            instances[2].transform.matrix = flatted_matrix(
-                                lain_transform * Mat4::from_rotation_y(lain_rotation),
+                            let lain_instance_transform = transpose_matrix_for_instance(
+                                lain_base_transform * Mat4::from_rotation_y(lain_rotation),
                             );
 
                             resources.instances_buffer.write_mapped(
-                                unsafe { instances_as_bytes(&instances[2..3]) },
-                                std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() * 2,
+                                // The transform is the first 48 bytes of the instance.
+                                bytemuck::bytes_of(&lain_instance_transform),
+                                lain_instance_offset,
                             )?;
 
                             unsafe {
@@ -922,145 +934,14 @@ fn main() -> anyhow::Result<()> {
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
 
-                                resources.tlas.update_tlas(
-                                    &resources.instances_buffer,
-                                    num_instances,
+                                resources.record(
                                     frame.command_buffer,
-                                    &mut allocator,
-                                    &as_loader,
-                                    &mut resources.scratch_buffer,
-                                )?;
-
-                                // wait for tlas update to finish
-                                device.cmd_pipeline_barrier(
-                                    frame.command_buffer,
-                                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                                    vk::DependencyFlags::empty(),
-                                    &[*vk::MemoryBarrier::builder()
-                                        .src_access_mask(
-                                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                                        )
-                                        .dst_access_mask(
-                                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                                        )],
-                                    &[],
-                                    &[],
-                                );
-
-                                device.cmd_bind_pipeline(
-                                    frame.command_buffer,
-                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                    pipeline,
-                                );
-
-                                device.cmd_bind_descriptor_sets(
-                                    frame.command_buffer,
-                                    vk::PipelineBindPoint::RAY_TRACING_KHR,
-                                    pipeline_layout,
-                                    0,
-                                    &[general_ds, resources.ray_tracing_ds],
-                                    &[],
-                                );
-
-                                pipeline_loader.cmd_trace_rays(
-                                    frame.command_buffer,
-                                    &raygen_sbt.address_region,
-                                    &miss_sbt.address_region,
-                                    &closest_hit_sbt.address_region,
-                                    // We don't use callable shaders here
-                                    &Default::default(),
-                                    extent.width,
-                                    extent.height,
-                                    1,
-                                );
-
-                                let subresource = *vk::ImageSubresourceLayers::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .mip_level(0)
-                                    .base_array_layer(0)
-                                    .layer_count(1);
-
-                                let subresource_range = vk::ImageSubresourceRange::builder()
-                                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                    .level_count(1)
-                                    .layer_count(1);
-
-                                cmd_pipeline_image_memory_barrier_explicit(
-                                    &PipelineImageMemoryBarrierParams {
-                                        device: &device,
-                                        buffer: frame.command_buffer,
-                                        // We just wrote the color attachment
-                                        src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                        // We need to do a transfer next.
-                                        dst_stage: vk::PipelineStageFlags::TRANSFER,
-                                        image_memory_barriers: &[
-                                            // prepare swapchain image to be a destination
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::empty())
-                                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                            // prepare storage image to be a source
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(resources.storage_image.image)
-                                                .old_layout(vk::ImageLayout::GENERAL)
-                                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(
-                                                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                                                )
-                                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                        ],
-                                    },
-                                );
-
-                                device.cmd_copy_image(
-                                    frame.command_buffer,
-                                    resources.storage_image.image,
-                                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                     swapchain_image,
-                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                    &[*vk::ImageCopy::builder()
-                                        .src_subresource(subresource)
-                                        .dst_subresource(subresource)
-                                        .extent(vk::Extent3D {
-                                            width: extent.width,
-                                            height: extent.height,
-                                            depth: 1,
-                                        })],
-                                );
-
-                                // Reset image layouts
-
-                                cmd_pipeline_image_memory_barrier_explicit(
-                                    &PipelineImageMemoryBarrierParams {
-                                        device: &device,
-                                        buffer: frame.command_buffer,
-                                        // We just did a transfer
-                                        src_stage: vk::PipelineStageFlags::TRANSFER,
-                                        // Nothing happens after this.
-                                        dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                                        image_memory_barriers: &[
-                                            // Reset swapchain image
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(swapchain_image)
-                                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                                            // Reset storage image
-                                            *vk::ImageMemoryBarrier::builder()
-                                                .image(resources.storage_image.image)
-                                                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                                .new_layout(vk::ImageLayout::GENERAL)
-                                                .subresource_range(*subresource_range)
-                                                .src_access_mask(vk::AccessFlags::TRANSFER_READ),
-                                        ],
-                                    },
-                                );
+                                    extent,
+                                    &global_resources,
+                                    &device,
+                                    &mut allocator,
+                                )?;
 
                                 device.end_command_buffer(frame.command_buffer)?;
 
@@ -1088,8 +969,10 @@ fn main() -> anyhow::Result<()> {
                         Err(error) => log::warn!("Next frame error: {:?}", error),
                     }
                 }
-                Event::LoopDestroyed => unsafe {
-                    device.device_wait_idle()?;
+                Event::LoopDestroyed => {
+                    unsafe {
+                        device.device_wait_idle()?;
+                    }
 
                     plane_buffers.cleanup(&mut allocator)?;
                     plane_blas.buffer.cleanup(&mut allocator)?;
@@ -1100,9 +983,12 @@ fn main() -> anyhow::Result<()> {
 
                     model_info_buffer.cleanup(&mut allocator)?;
 
-                    raygen_sbt.buffer.cleanup(&mut allocator)?;
-                    miss_sbt.buffer.cleanup(&mut allocator)?;
-                    closest_hit_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources.raygen_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources.miss_sbt.buffer.cleanup(&mut allocator)?;
+                    global_resources
+                        .closest_hit_sbt
+                        .buffer
+                        .cleanup(&mut allocator)?;
 
                     image_manager.cleanup(&mut allocator)?;
 
@@ -1115,7 +1001,7 @@ fn main() -> anyhow::Result<()> {
                         resources.scratch_buffer.cleanup(&mut allocator)?;
                         resources.instances_buffer.cleanup(&mut allocator)?;
                     }
-                },
+                }
                 _ => {}
             }
 
@@ -1252,6 +1138,8 @@ impl Frame {
         queue_family: u32,
         resources: PerFrameResources,
     ) -> anyhow::Result<Self> {
+        resources.write_descriptor_sets(device);
+
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
@@ -1274,15 +1162,6 @@ impl Frame {
             resources,
         })
     }
-}
-
-pub struct PerFrameResources {
-    storage_image: Image,
-    ray_tracing_ds: vk::DescriptorSet,
-    ray_tracing_uniforms: Buffer,
-    tlas: AccelerationStructure,
-    scratch_buffer: ScratchBuffer,
-    instances_buffer: Buffer,
 }
 
 #[derive(Default)]
@@ -1466,42 +1345,42 @@ fn build_tlas(
     )
 }
 
-// This is lazy because I could really just write a bytemuck'd struct for this.
-unsafe fn instances_as_bytes(instances: &[vk::AccelerationStructureInstanceKHR]) -> &[u8] {
-    std::slice::from_raw_parts(
-        instances.as_ptr() as *const u8,
-        instances.len() * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
-    )
+// A `bytemuck`'d `vk::AccelerationStructureInstanceKHR`.
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+struct AccelerationStructureInstance {
+    transform: [Vec4; 3],
+    instance_custom_index_and_mask: u32,
+    instance_shader_binding_table_record_offset_and_flags: u32,
+    acceleration_structure_device_address: vk::DeviceAddress,
 }
 
-fn tlas_instance(
-    transform: Mat4,
-    blas: &AccelerationStructure,
-    device: &ash::Device,
-    custom_index: u32,
-) -> vk::AccelerationStructureInstanceKHR {
-    fn merge_fields(lower: u32, upper: u8) -> u32 {
-        ((upper as u32) << 24) | lower
-    }
+impl AccelerationStructureInstance {
+    fn new(
+        transform: Mat4,
+        blas: &AccelerationStructure,
+        device: &ash::Device,
+        custom_index: u32,
+    ) -> Self {
+        fn merge_fields(lower: u32, upper: u8) -> u32 {
+            ((upper as u32) << 24) | lower
+        }
 
-    vk::AccelerationStructureInstanceKHR {
-        transform: vk::TransformMatrixKHR {
-            matrix: flatted_matrix(transform),
-        },
-        instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
-        instance_shader_binding_table_record_offset_and_flags: merge_fields(
-            0,
-            vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-        ),
-        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-            device_handle: blas.buffer.device_address(device),
-        },
+        Self {
+            transform: transpose_matrix_for_instance(transform),
+            instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
+            instance_shader_binding_table_record_offset_and_flags: merge_fields(
+                0,
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+            ),
+            acceleration_structure_device_address: blas.buffer.device_address(device),
+        }
     }
 }
 
-fn flatted_matrix(matrix: Mat4) -> [f32; 12] {
-    use std::convert::TryInto;
-    matrix.transposed().as_array()[..12].try_into().unwrap()
+fn transpose_matrix_for_instance(matrix: Mat4) -> [Vec4; 3] {
+    let rows = matrix.transposed().cols;
+    [rows[0], rows[1], rows[2]]
 }
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
@@ -1550,47 +1429,4 @@ pub struct ModelInfo {
     index_buffer_address: vk::DeviceAddress,
     image_index: u32,
     _padding: u32,
-}
-
-fn write_multibuffering_frames_storage_images(device: &ash::Device, frames: &[Frame]) {
-    for frame in frames {
-        let resources = &frame.resources;
-
-        let storage_image_info = &[resources.storage_image.descriptor_image_info()];
-        let uniform_buffer_info = &[resources.ray_tracing_uniforms.descriptor_buffer_info()];
-
-        let structures = &[resources.tlas.acceleration_structure];
-
-        let mut write_acceleration_structures =
-            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-                .acceleration_structures(structures);
-
-        let writes = &[
-            {
-                let mut write_as = *vk::WriteDescriptorSet::builder()
-                    .dst_set(resources.ray_tracing_ds)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .push_next(&mut write_acceleration_structures);
-
-                write_as.descriptor_count = 1;
-
-                write_as
-            },
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(resources.ray_tracing_ds)
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(storage_image_info),
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(resources.ray_tracing_ds)
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(uniform_buffer_info),
-        ];
-
-        unsafe {
-            device.update_descriptor_sets(writes, &[]);
-        }
-    }
 }
