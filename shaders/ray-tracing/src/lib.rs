@@ -20,20 +20,13 @@ use spirv_std::{
     Image, RuntimeArray,
 };
 
-pub struct PrimaryRayPayload {
-    hit_value: Vec3,
-}
+mod structs;
 
-pub struct Uniforms {
-    view_inverse: Mat4,
-    proj_inverse: Mat4,
-    sun_dir: Vec3,
-    sun_radius: f32,
-}
+use structs::{Uniforms, Vertex, ModelInfo, PrimaryRayPayload, ShadowRayPayload};
 
 #[spirv(miss)]
-pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] shadowed: &mut bool) {
-    *shadowed = false;
+pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
+    payload.shadowed = false;
 }
 
 const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.2]);
@@ -52,15 +45,18 @@ pub fn ray_generation(
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
 ) {
-    let pixel_center = launch_id.truncate().as_f32() + 0.5;
-    let in_uv = pixel_center / launch_size.truncate().as_f32();
+    let launch_id_xy = launch_id.truncate();
+    let launch_size_xy = launch_size.truncate();
+
+    let pixel_center = launch_id_xy.as_f32() + 0.5;
+    let in_uv = pixel_center / launch_size_xy.as_f32();
 
     let d = in_uv * 2.0 - 1.0;
 
-    let origin = uniforms.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0);
-    let target = uniforms.proj_inverse * Vec4::new(d.x, d.y, 1.0, 1.0);
+    let origin = (uniforms.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
+    let target = (uniforms.proj_inverse * Vec4::new(d.x, d.y, 1.0, 1.0)).truncate();
 
-    let direction = uniforms.view_inverse * target.truncate().normalize().extend(0.0);
+    let direction = (uniforms.view_inverse * target.normalize().extend(0.0)).truncate();
 
     let t_min = 0.001;
     let t_max = 10_000.0;
@@ -74,32 +70,19 @@ pub fn ray_generation(
             0,
             0,
             0,
-            origin.truncate(),
+            origin,
             t_min,
-            direction.truncate(),
+            direction,
             t_max,
             payload,
         );
 
-        image.write(launch_id.truncate(), payload.hit_value.extend(1.0));
+        image.write(launch_id_xy, payload.hit_value.extend(1.0));
     }
 }
 
 fn interpolate(a: Vec3, b: Vec3, c: Vec3, barycentric_coords: Vec3) -> Vec3 {
     a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
-}
-
-pub struct ModelInfo {
-    vertex_buffer_address: u64,
-    index_buffer_address: u64,
-    texture_index: u32,
-}
-
-#[derive(Copy, Clone)]
-pub struct Vertex {
-    pos: Vec3,
-    normal: Vec3,
-    uv: Vec2,
 }
 
 fn get_shadow_terminator_fix_shadow_origin(
@@ -134,7 +117,7 @@ pub fn wip_closest_hit(
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
     #[spirv(primitive_id)] primitive_id: u32,
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(ray_payload)] shadowed: &mut bool,
+    #[spirv(ray_payload)] shadow_payload: &mut ShadowRayPayload,
     #[spirv(world_ray_origin)] world_ray_origin: Vec3,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
     #[spirv(ray_tmax)] ray_hit_t: f32,
@@ -181,7 +164,7 @@ pub fn wip_closest_hit(
     let shadow_origin = world_ray_origin + world_ray_direction * ray_hit_t;
 
     let shadowed = {
-        *shadowed = true;
+        shadow_payload.shadowed = true;
 
         unsafe {
             top_level_as.trace_ray(
@@ -196,11 +179,11 @@ pub fn wip_closest_hit(
                 t_min,
                 uniforms.sun_dir,
                 t_max,
-                shadowed,
+                shadow_payload,
             );
         }
 
-        *shadowed
+        shadow_payload.shadowed
     };
 
     let lighting = !shadowed as u8 as f32;

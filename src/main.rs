@@ -566,10 +566,11 @@ fn main() -> anyhow::Result<()> {
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::RAYGEN_KHR)
             .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-            .name(CStr::from_bytes_with_nul(b"closest_hit\0")?),
+        load_shader_module_as_stage(
+            include_bytes!("../shaders/closesthit.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::MISS_KHR)
