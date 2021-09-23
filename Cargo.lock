@@ -596,8 +596,7 @@ dependencies = [
 [[package]]
 name = "gpu-allocator"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1b81eefa8256114dbca0bd58c9959f77c8dd9acaf8f97c4d1a5b2f081b5df9"
+source = "git+https://github.com/Traverse-Research/gpu-allocator?branch=rename-allocation#a8f50451ca9586f0e57430937dad23bc22ac1709"
 dependencies = [
  "ash",
  "backtrace",

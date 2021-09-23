@@ -264,7 +264,7 @@ fn main() -> anyhow::Result<()> {
 
     let as_loader = AccelerationStructureLoader::new(&instance, &device);
 
-    let mut scratch_buffer = ScratchBuffer::new(&as_props);
+    let mut scratch_buffer = ScratchBuffer::new("init scratch buffer", &as_props);
 
     let plane_blas = build_blas(
         &plane_buffers,
@@ -336,7 +336,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let instances_buffer = Buffer::new_with_custom_alignment(
+    let mut instances_buffer = Buffer::new_with_custom_alignment(
         bytemuck::cast_slice(&instances),
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
@@ -364,7 +364,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let tlas = build_tlas(
+    let mut tlas = build_tlas(
         &instances_buffer,
         num_instances,
         &as_loader,
@@ -476,7 +476,7 @@ fn main() -> anyhow::Result<()> {
                         &as_loader,
                         &mut allocator,
                     )?,
-                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    scratch_buffer: ScratchBuffer::new("scratch buffer 0", &as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
                         bytemuck::cast_slice(&instances),
                         "instances buffer 0",
@@ -508,12 +508,12 @@ fn main() -> anyhow::Result<()> {
                         &mut allocator,
                     )?,
                     tlas: {
-                        tlas.rename("tlas 1", &allocator)?;
+                        tlas.rename("tlas 1", &mut allocator)?;
                         tlas
                     },
-                    scratch_buffer: ScratchBuffer::new(&as_props),
+                    scratch_buffer: ScratchBuffer::new("scratch buffer 1", &as_props),
                     instances_buffer: {
-                        instances_buffer.rename("instances buffer 1", &allocator)?;
+                        instances_buffer.rename("instances buffer 1", &mut allocator)?;
                         instances_buffer
                     },
                     num_instances,

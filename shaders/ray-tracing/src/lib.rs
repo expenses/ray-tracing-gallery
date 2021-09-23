@@ -22,7 +22,7 @@ use spirv_std::{
 
 mod structs;
 
-use structs::{Uniforms, Vertex, ModelInfo, PrimaryRayPayload, ShadowRayPayload};
+use structs::{ModelInfo, PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
 
 #[spirv(miss)]
 pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
@@ -132,8 +132,10 @@ pub fn wip_closest_hit(
 
     // Missing features:
     //
-    // * casting u64 addresses to pointers
+    // * casting u64 addresses to pointers (OpConvertUToPtr)
+    //   - https://github.com/EmbarkStudios/rust-gpu/issues/383
     // * `SampledImage`s don't seem to work
+    //   - https://github.com/EmbarkStudios/rust-gpu/issues/754
 
     let colour_modulator = {
         let mut components = [1.0, 1.0, 1.0];

@@ -261,10 +261,7 @@ impl AccelerationStructure {
         })
     }
 
-    // Only changes the debug object name, not the allocation name.
-    // See:
-    // https://github.com/Traverse-Research/gpu-allocator/issues/66
-    pub fn rename(&self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
+    pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
         unsafe { allocator.set_object_name(self.acceleration_structure, name) }?;
 
         self.buffer.rename(&format!("{} buffer", name), allocator)?;
@@ -281,14 +278,19 @@ enum ScratchBufferInner {
 pub struct ScratchBuffer {
     inner: ScratchBufferInner,
     alignment: vk::DeviceSize,
+    name: String,
 }
 
 impl ScratchBuffer {
-    pub fn new(as_props: &vk::PhysicalDeviceAccelerationStructurePropertiesKHR) -> Self {
+    pub fn new(
+        name: &str,
+        as_props: &vk::PhysicalDeviceAccelerationStructurePropertiesKHR,
+    ) -> Self {
         Self {
             inner: ScratchBufferInner::Unallocated,
             alignment: as_props.min_acceleration_structure_scratch_offset_alignment
                 as vk::DeviceSize,
+            name: name.into(),
         }
     }
 
@@ -303,7 +305,7 @@ impl ScratchBuffer {
 
                 self.inner = ScratchBufferInner::Allocated(Buffer::new_of_size_with_alignment(
                     size,
-                    "scratch buffer",
+                    &self.name,
                     vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                         | vk::BufferUsageFlags::STORAGE_BUFFER,
                     self.alignment,
@@ -314,14 +316,15 @@ impl ScratchBuffer {
                 if buffer.allocation.size() < size {
                     buffer.cleanup(allocator)?;
                     log::info!(
-                        "Resizing scratch buffer from {} bytes to {} bytes",
+                        "Resizing {} from {} bytes to {} bytes",
+                        self.name,
                         buffer.allocation.size(),
                         size
                     );
 
                     *buffer = Buffer::new_of_size_with_alignment(
                         size,
-                        "scratch buffer",
+                        &self.name,
                         vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                             | vk::BufferUsageFlags::STORAGE_BUFFER,
                         self.alignment,
@@ -591,13 +594,14 @@ impl Buffer {
         Ok(())
     }
 
-    // Only changes the debug object name, not the allocation name.
-    // See:
-    // https://github.com/Traverse-Research/gpu-allocator/issues/66
-    pub fn rename(&self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
+    pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
         unsafe {
             allocator.set_object_name(self.buffer, name)?;
         }
+
+        allocator
+            .inner
+            .rename_allocation(&mut self.allocation, name)?;
 
         Ok(())
     }
