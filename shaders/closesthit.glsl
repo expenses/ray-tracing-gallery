@@ -26,21 +26,26 @@ struct Vertex {
     vec2 uv;
 };
 
-struct ModelInfo {
-    uint64_t vertex_buffer_address;
-    uint64_t index_buffer_address;
-    uint texture_index;
+struct PackedVertex {
+    vec4 first_half;
+    vec4 second_half;
 };
 
 // Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
 // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
 
 layout(buffer_reference, scalar) buffer Vertices {
-    float inner[];
+    PackedVertex buf[];
 };
 
 layout(buffer_reference, scalar) buffer Indices {
-    uint16_t inner[];
+    uint16_t buf[];
+};
+
+struct ModelInfo {
+    uint64_t vertex_buffer_address;
+    uint64_t index_buffer_address;
+    uint texture_index;
 };
 
 layout(set = 0, binding = 0) buffer ModelInformations {
@@ -49,18 +54,12 @@ layout(set = 0, binding = 0) buffer ModelInformations {
 
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 
-Vertex load_vertex(uint index, ModelInfo info) {
+Vertex unpack_vertex(PackedVertex packed) {
     Vertex vertex;
- 
-    Vertices vertices = Vertices(info.vertex_buffer_address);
 
-    const uint VERTEX_SIZE = 8;
-
-    uint offset = index * VERTEX_SIZE;
-
-    vertex.pos = vec3(vertices.inner[offset], vertices.inner[offset + 1], vertices.inner[offset + 2]);
-    vertex.normal = vec3(vertices.inner[offset + 3], vertices.inner[offset + 4], vertices.inner[offset + 5]);
-    vertex.uv = vec2(vertices.inner[offset + 6], vertices.inner[offset + 7]);
+    vertex.pos = packed.first_half.xyz;
+    vertex.normal = vec3(packed.first_half.w, packed.second_half.xy);
+    vertex.uv = packed.second_half.zw;
 
     return vertex;
 }
@@ -103,17 +102,23 @@ void main() {
     uint model_index = gl_InstanceCustomIndexEXT;
     ModelInfo info = model_info[model_index];
 
-    Indices indices = Indices(info.index_buffer_address);
-
     uint index_offset = gl_PrimitiveID * 3;
 
-    uvec3 index = uvec3(indices.inner[index_offset], indices.inner[index_offset + 1], indices.inner[index_offset + 2]);
+    Indices indices = Indices(info.index_buffer_address);
+
+    uvec3 index = uvec3(
+        indices.buf[index_offset],
+        indices.buf[index_offset + 1],
+        indices.buf[index_offset + 2]
+    );
+
+    Vertices vertices = Vertices(info.vertex_buffer_address);
+
+    Vertex a = unpack_vertex(vertices.buf[index.x]);
+    Vertex b = unpack_vertex(vertices.buf[index.y]);
+    Vertex c = unpack_vertex(vertices.buf[index.z]);
 
     const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
-    
-    Vertex a = load_vertex(index.x, info);
-    Vertex b = load_vertex(index.y, info);
-    Vertex c = load_vertex(index.z, info);
 
     vec3 interpolated_normal = interpolate(a.normal, b.normal, c.normal, barycentric_coords);
 
