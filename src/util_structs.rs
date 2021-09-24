@@ -916,6 +916,13 @@ impl ImageManager {
         index
     }
 
+    pub fn fill_with_dummy_images_up_to(&mut self, items: usize) {
+        while self.image_infos.len() < items {
+            self.image_infos
+                .push(*vk::DescriptorImageInfo::builder().sampler(self.nearest_sampler));
+        }
+    }
+
     pub fn write_descriptor_set(
         &self,
         set: vk::DescriptorSet,

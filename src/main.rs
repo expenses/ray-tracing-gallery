@@ -39,6 +39,8 @@ use gpu_structs::{
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 
+const MAX_BOUND_IMAGES: u32 = 128;
+
 fn main() -> anyhow::Result<()> {
     {
         use simplelog::*;
@@ -118,6 +120,8 @@ fn main() -> anyhow::Result<()> {
 
     let surface = unsafe { ash_window::create_surface(&entry, &instance, &window, None) }?;
 
+    // Pick a physical device
+
     let (physical_device, queue_family, surface_format) =
         match select_physical_device(&instance, &device_extensions, &surface_loader, surface)? {
             Some(selection) => selection,
@@ -126,6 +130,8 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
         };
+
+    // Create the logical device.
 
     let device = {
         let queue_info = [*vk::DeviceQueueCreateInfo::builder()
@@ -157,6 +163,9 @@ fn main() -> anyhow::Result<()> {
             vk::PhysicalDeviceAccelerationStructureFeaturesKHR::builder()
                 .acceleration_structure(true);
 
+        let mut robustness_features =
+            vk::PhysicalDeviceRobustness2FeaturesEXT::builder().null_descriptor(true);
+
         let device_info = vk::DeviceCreateInfo::builder()
             .queue_create_infos(&queue_info)
             .enabled_features(&device_features)
@@ -166,10 +175,13 @@ fn main() -> anyhow::Result<()> {
             .push_next(&mut amd_device_coherent_memory)
             .push_next(&mut ray_tracing_features)
             .push_next(&mut acceleration_structure_features)
-            .push_next(&mut storage16_features);
+            .push_next(&mut storage16_features)
+            .push_next(&mut robustness_features);
 
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
+
+    // Get some properties relating to ray tracing and acceleration structures
 
     let (ray_tracing_props, as_props) = {
         let mut ray_tracing_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
@@ -184,6 +196,75 @@ fn main() -> anyhow::Result<()> {
         (ray_tracing_props, as_props)
     };
 
+    // Create descriptor set layouts
+
+    let (general_dsl, per_frame_dsl, descriptor_pool) =
+        create_descriptor_set_layouts_and_pool(&device)?;
+
+    // Create pipelines
+
+    let pipeline_loader = RayTracingPipelineLoader::new(&instance, &device);
+
+    let pipeline_layout = unsafe {
+        device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[general_dsl, per_frame_dsl])
+                .push_constant_ranges(&[]),
+            None,
+        )
+    }?;
+
+    let ray_tracing_module =
+        load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
+
+    let shader_stages = [
+        // Ray generation shader
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+            .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
+        // Closest hit shaders
+        load_shader_module_as_stage(
+            include_bytes!("../shaders/closesthit.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+            .name(CStr::from_bytes_with_nul(b"closest_hit_mirror\0")?),
+        // Miss shaders
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
+    ];
+
+    let shader_groups = shader_groups_for_stages(&shader_stages);
+
+    let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
+        .stages(&shader_stages)
+        .groups(&shader_groups)
+        .max_pipeline_ray_recursion_depth(1)
+        .layout(pipeline_layout);
+
+    let pipelines = unsafe {
+        pipeline_loader.create_ray_tracing_pipelines(
+            vk::DeferredOperationKHR::null(),
+            vk::PipelineCache::null(),
+            &[*create_pipeline],
+            None,
+        )
+    }?;
+
+    let pipeline = pipelines[0];
+
+    // Create an allocator
+
     let mut allocator = Allocator::new(
         instance.clone(),
         device.clone(),
@@ -191,6 +272,52 @@ fn main() -> anyhow::Result<()> {
         physical_device,
         queue_family,
     )?;
+
+    // Shader binding tables
+
+    let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
+    let num_groups = shader_groups.len() as u32;
+    let shader_binding_table_size = num_groups * handle_size_aligned;
+
+    // Fetch the SBT handles and upload them to buffers.
+
+    let group_handles = unsafe {
+        pipeline_loader.get_ray_tracing_shader_group_handles(
+            pipeline,
+            0,
+            num_groups,
+            shader_binding_table_size as usize,
+        )
+    }?;
+
+    let shader_binding_tables = ShaderBindingTables {
+        raygen: ShaderBindingTable::new(
+            &group_handles,
+            "raygen shader binding table",
+            &ray_tracing_props,
+            0..1,
+            &device,
+            &mut allocator,
+        )?,
+        hit: ShaderBindingTable::new(
+            &group_handles,
+            "closest hit shader binding table",
+            &ray_tracing_props,
+            1..3,
+            &device,
+            &mut allocator,
+        )?,
+        miss: ShaderBindingTable::new(
+            &group_handles,
+            "miss shader binding table",
+            &ray_tracing_props,
+            3..5,
+            &device,
+            &mut allocator,
+        )?,
+    };
+
+    // Now we can start loading models, textures and creating acceleration structures.
 
     let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
@@ -266,6 +393,10 @@ fn main() -> anyhow::Result<()> {
         &mut image_manager,
         init_command_buffer.buffer(),
     )?;
+
+    // Add dummy image bindings up to the bound limit. This avoids a warning about
+    // bidings being using in draws but not having been updated.
+    image_manager.fill_with_dummy_images_up_to(MAX_BOUND_IMAGES as usize);
 
     // Create the BLASes
 
@@ -398,7 +529,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Create descriptor sets and set layouts
+    // Create descriptor sets
 
     let model_info_buffer = Buffer::new(
         bytemuck::cast_slice(&[
@@ -411,8 +542,13 @@ fn main() -> anyhow::Result<()> {
         &mut allocator,
     )?;
 
-    let (general_dsl, per_frame_dsl, descriptor_pool, general_ds) =
-        create_descriptors_sets(&device, &image_manager, &model_info_buffer)?;
+    let (descriptor_pool, general_ds) = create_descriptors_sets(
+        &device,
+        &image_manager,
+        &model_info_buffer,
+        general_dsl,
+        descriptor_pool,
+    )?;
 
     // Create frames for multibuffering and their resources.
 
@@ -551,112 +687,6 @@ fn main() -> anyhow::Result<()> {
 
         scratch_buffer.cleanup_and_drop(&mut allocator)?;
     }
-
-    // Create pipelines
-
-    let pipeline_loader = RayTracingPipelineLoader::new(&instance, &device);
-
-    let pipeline_layout = unsafe {
-        device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[general_dsl, per_frame_dsl])
-                .push_constant_ranges(&[]),
-            None,
-        )
-    }?;
-
-    let ray_tracing_module =
-        load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
-
-    let shader_stages = [
-        // Ray generation shader
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
-            .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
-        // Closest hit shaders
-        load_shader_module_as_stage(
-            include_bytes!("../shaders/closesthit.spv"),
-            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            &device,
-        )?,
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-            .name(CStr::from_bytes_with_nul(b"closest_hit_mirror\0")?),
-        // Miss shaders
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
-    ];
-
-    let shader_groups = shader_groups_for_stages(&shader_stages);
-
-    let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
-        .stages(&shader_stages)
-        .groups(&shader_groups)
-        .max_pipeline_ray_recursion_depth(1)
-        .layout(pipeline_layout);
-
-    let pipelines = unsafe {
-        pipeline_loader.create_ray_tracing_pipelines(
-            vk::DeferredOperationKHR::null(),
-            vk::PipelineCache::null(),
-            &[*create_pipeline],
-            None,
-        )
-    }?;
-
-    let pipeline = pipelines[0];
-
-    // Shader binding tables
-
-    let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
-    let num_groups = shader_groups.len() as u32;
-    let shader_binding_table_size = num_groups * handle_size_aligned;
-
-    // Fetch the SBT handles and upload them to buffers.
-
-    let group_handles = unsafe {
-        pipeline_loader.get_ray_tracing_shader_group_handles(
-            pipeline,
-            0,
-            num_groups,
-            shader_binding_table_size as usize,
-        )
-    }?;
-
-    let shader_binding_tables = ShaderBindingTables {
-        raygen: ShaderBindingTable::new(
-            &group_handles,
-            "raygen shader binding table",
-            &ray_tracing_props,
-            0..1,
-            &device,
-            &mut allocator,
-        )?,
-        hit: ShaderBindingTable::new(
-            &group_handles,
-            "closest hit shader binding table",
-            &ray_tracing_props,
-            1..3,
-            &device,
-            &mut allocator,
-        )?,
-        miss: ShaderBindingTable::new(
-            &group_handles,
-            "miss shader binding table",
-            &ray_tracing_props,
-            3..5,
-            &device,
-            &mut allocator,
-        )?,
-    };
 
     // Create swapchain
 
@@ -1020,15 +1050,12 @@ fn main() -> anyhow::Result<()> {
     });
 }
 
-pub fn create_descriptors_sets(
+pub fn create_descriptor_set_layouts_and_pool(
     device: &ash::Device,
-    image_manager: &ImageManager,
-    model_info_buffer: &Buffer,
 ) -> anyhow::Result<(
     vk::DescriptorSetLayout,
     vk::DescriptorSetLayout,
     vk::DescriptorPool,
-    vk::DescriptorSet,
 )> {
     let general_dsl = unsafe {
         device.create_descriptor_set_layout(
@@ -1041,7 +1068,7 @@ pub fn create_descriptors_sets(
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(1)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(image_manager.descriptor_count())
+                    .descriptor_count(MAX_BOUND_IMAGES)
                     .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
             ]),
             None,
@@ -1095,13 +1122,23 @@ pub fn create_descriptors_sets(
                         .descriptor_count(num_frames),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(image_manager.descriptor_count()),
+                        .descriptor_count(MAX_BOUND_IMAGES),
                 ])
                 .max_sets(num_frames + 1),
             None,
         )
     }?;
 
+    Ok((general_dsl, per_frame_dsl, descriptor_pool))
+}
+
+pub fn create_descriptors_sets(
+    device: &ash::Device,
+    image_manager: &ImageManager,
+    model_info_buffer: &Buffer,
+    general_dsl: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+) -> anyhow::Result<(vk::DescriptorPool, vk::DescriptorSet)> {
     let descriptor_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
@@ -1126,7 +1163,7 @@ pub fn create_descriptors_sets(
         );
     }
 
-    Ok((general_dsl, per_frame_dsl, descriptor_pool, general_ds))
+    Ok((descriptor_pool, general_ds))
 }
 
 pub struct Frame {
