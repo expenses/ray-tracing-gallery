@@ -146,6 +146,11 @@ fn get_shadow_terminator_fix_shadow_origin(
 }
 
 #[spirv(closest_hit)]
+pub fn closest_hit_mirror(#[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload) {
+    payload.hit_value = Vec3::splat(1.0);
+}
+
+#[spirv(closest_hit)]
 pub fn wip_closest_hit(
     #[spirv(instance_custom_index)] model_index: u32,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
@@ -171,6 +176,7 @@ pub fn wip_closest_hit(
     // * `SampledImage`s don't seem to work
     //   - https://github.com/EmbarkStudios/rust-gpu/issues/754
 
+    // To check that reading from model_info works.
     let colour_modulator = {
         let mut components = [1.0, 1.0, 1.0];
         components[info.texture_index as usize % 3] = 0.0;

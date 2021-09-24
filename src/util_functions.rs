@@ -1,11 +1,15 @@
 use crate::SurfaceLoader;
 use crate::Vertex;
+use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::vk;
 use gpu_allocator::vulkan::AllocationCreateDesc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::util_structs::{Allocator, Buffer, CStrList, Image, ImageManager, ModelBuffers};
+use crate::util_structs::{
+    AccelerationStructure, Allocator, Buffer, CStrList, Image, ImageManager, ModelBuffers,
+    ScratchBuffer,
+};
 
 pub fn select_physical_device(
     instance: &ash::Instance,
@@ -396,9 +400,9 @@ pub fn load_gltf(
     ))
 }
 
-pub fn shader_group_for_type(
+fn shader_group_for_stage(
     index: u32,
-    ty: vk::ShaderGroupShaderKHR,
+    stage: vk::ShaderStageFlags,
 ) -> vk::RayTracingShaderGroupCreateInfoKHR {
     let mut info = vk::RayTracingShaderGroupCreateInfoKHR {
         general_shader: vk::SHADER_UNUSED_KHR,
@@ -408,27 +412,38 @@ pub fn shader_group_for_type(
         ..Default::default()
     };
 
-    match ty {
-        vk::ShaderGroupShaderKHR::GENERAL => {
-            info.ty = vk::RayTracingShaderGroupTypeKHR::GENERAL;
-            info.general_shader = index;
-        }
-        vk::ShaderGroupShaderKHR::CLOSEST_HIT => {
+    match stage {
+        vk::ShaderStageFlags::CLOSEST_HIT_KHR => {
             info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
             info.closest_hit_shader = index;
         }
-        vk::ShaderGroupShaderKHR::ANY_HIT => {
+        vk::ShaderStageFlags::ANY_HIT_KHR => {
             info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
             info.any_hit_shader = index;
         }
-        vk::ShaderGroupShaderKHR::INTERSECTION => {
+        vk::ShaderStageFlags::INTERSECTION_KHR => {
             info.ty = vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP;
             info.intersection_shader = index;
         }
-        _ => {}
+        _ => {
+            info.ty = vk::RayTracingShaderGroupTypeKHR::GENERAL;
+            info.general_shader = index;
+        }
     }
 
     info
+}
+
+pub fn shader_groups_for_stages<const N: usize>(
+    stages: &[vk::PipelineShaderStageCreateInfo; N],
+) -> [vk::RayTracingShaderGroupCreateInfoKHR; N] {
+    let mut groups = [vk::RayTracingShaderGroupCreateInfoKHR::default(); N];
+
+    for (i, stage) in stages.iter().enumerate() {
+        groups[i] = shader_group_for_stage(i as u32, stage.stage);
+    }
+
+    groups
 }
 
 pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR) -> u32 {
@@ -465,4 +480,146 @@ pub unsafe fn cmd_pipeline_image_memory_barrier_explicit(
         &[],
         params.image_memory_barriers,
     )
+}
+
+pub fn build_blas(
+    model_buffers: &ModelBuffers,
+    name: &str,
+    as_loader: &AccelerationStructureLoader,
+    scratch_buffer: &mut ScratchBuffer,
+    allocator: &mut Allocator,
+    command_buffer: vk::CommandBuffer,
+) -> anyhow::Result<AccelerationStructure> {
+    let geometry = vk::AccelerationStructureGeometryKHR::builder()
+        .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+        .geometry(vk::AccelerationStructureGeometryDataKHR {
+            triangles: model_buffers.triangles_data,
+        })
+        .flags(vk::GeometryFlagsKHR::OPAQUE);
+
+    let offset = vk::AccelerationStructureBuildRangeInfoKHR::builder()
+        .primitive_count(model_buffers.primitive_count);
+
+    let geometries = &[*geometry];
+
+    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .geometries(geometries);
+
+    let build_sizes = unsafe {
+        as_loader.get_acceleration_structure_build_sizes(
+            vk::AccelerationStructureBuildTypeKHR::DEVICE,
+            &geometry_info,
+            &[model_buffers.primitive_count],
+        )
+    };
+
+    let scratch_buffer =
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
+
+    let blas = AccelerationStructure::new(
+        build_sizes.acceleration_structure_size,
+        name,
+        vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+        as_loader,
+        allocator,
+        scratch_buffer,
+        geometry_info,
+        offset,
+        command_buffer,
+    )?;
+
+    Ok(blas)
+}
+
+pub fn build_tlas(
+    instances: &Buffer,
+    num_instances: u32,
+    as_loader: &AccelerationStructureLoader,
+    allocator: &mut Allocator,
+    scratch_buffer: &mut ScratchBuffer,
+    command_buffer: vk::CommandBuffer,
+) -> anyhow::Result<AccelerationStructure> {
+    let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
+        vk::DeviceOrHostAddressConstKHR {
+            device_address: instances.device_address(&allocator.device),
+        },
+    );
+
+    let geometry = vk::AccelerationStructureGeometryKHR::builder()
+        .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+        .geometry(vk::AccelerationStructureGeometryDataKHR {
+            instances: *instances,
+        })
+        .flags(vk::GeometryFlagsKHR::OPAQUE);
+
+    let offset =
+        vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
+
+    let geometries = &[*geometry];
+
+    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+        .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .flags(
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
+        )
+        .geometries(geometries);
+
+    let build_sizes = unsafe {
+        as_loader.get_acceleration_structure_build_sizes(
+            vk::AccelerationStructureBuildTypeKHR::DEVICE,
+            &geometry_info,
+            &[num_instances],
+        )
+    };
+
+    let scratch_buffer =
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
+
+    AccelerationStructure::new(
+        build_sizes.acceleration_structure_size,
+        "tlas",
+        vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+        as_loader,
+        allocator,
+        scratch_buffer,
+        geometry_info,
+        offset,
+        command_buffer,
+    )
+}
+
+pub unsafe extern "system" fn vulkan_debug_utils_callback(
+    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _p_user_data: *mut std::ffi::c_void,
+) -> vk::Bool32 {
+    let filter_out = (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+        && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
+        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
+        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION);
+
+    if filter_out {
+        return vk::FALSE;
+    }
+
+    let level = match message_severity {
+        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
+        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
+        _ => log::Level::Info,
+    };
+
+    let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
+    let ty = format!("{:?}", message_type).to_lowercase();
+    log::log!(level, "[Debug Msg][{}] {:?}", ty, message);
+    vk::FALSE
 }

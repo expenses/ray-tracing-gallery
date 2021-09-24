@@ -17,20 +17,27 @@ use winit::{
 };
 
 mod command_buffer_recording;
+mod gpu_structs;
 mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    AccelerationStructure, Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager,
-    ModelBuffers, ScratchBuffer, ShaderBindingTable, Swapchain,
+    Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager, ScratchBuffer,
+    ShaderBindingTable, Swapchain,
 };
 
 use util_functions::{
-    load_gltf, load_rgba_png_image_from_bytes, load_shader_module, load_shader_module_as_stage,
-    sbt_aligned_size, select_physical_device, shader_group_for_type,
+    build_blas, build_tlas, load_gltf, load_rgba_png_image_from_bytes, load_shader_module,
+    load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
+    shader_groups_for_stages, vulkan_debug_utils_callback,
 };
 
-use command_buffer_recording::{GlobalResources, PerFrameResources};
+use gpu_structs::{
+    transpose_matrix_for_instance, AccelerationStructureInstance, ModelInfo, RayTracingUniforms,
+    Vertex,
+};
+
+use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 
 fn main() -> anyhow::Result<()> {
     {
@@ -301,18 +308,20 @@ fn main() -> anyhow::Result<()> {
     let lain_instance_offset = std::mem::size_of::<AccelerationStructureInstance>() * 2;
 
     let mut instances = vec![
-        AccelerationStructureInstance::new(Mat4::from_scale(10.0), &plane_blas, &device, 0),
+        AccelerationStructureInstance::new(Mat4::from_scale(10.0), &plane_blas, &device, 0, 0),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
             1,
+            0,
         ),
         AccelerationStructureInstance::new(
             lain_base_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
+            0,
         ),
     ];
 
@@ -332,6 +341,7 @@ fn main() -> anyhow::Result<()> {
                 &tori_blas,
                 &device,
                 1,
+                rng.gen_range(0..=1),
             ))
         }
     }
@@ -528,18 +538,15 @@ fn main() -> anyhow::Result<()> {
     {
         drop(instances);
 
-        for staging_buffer in image_staging_buffers {
-            staging_buffer.cleanup_and_drop(&mut allocator)?;
-        }
-
-        for staging_buffer in [
+        for staging_buffer in std::array::IntoIter::new([
             plane_staging_buffer,
             tori_staging_buffer,
             lain_staging_buffer,
-        ] {
-            if let Some(staging_buffer) = staging_buffer {
-                staging_buffer.cleanup_and_drop(&mut allocator)?;
-            }
+        ])
+        .flatten()
+        .chain(image_staging_buffers)
+        {
+            staging_buffer.cleanup_and_drop(&mut allocator)?;
         }
 
         scratch_buffer.cleanup_and_drop(&mut allocator)?;
@@ -562,15 +569,22 @@ fn main() -> anyhow::Result<()> {
         load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
 
     let shader_stages = [
+        // Ray generation shader
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::RAYGEN_KHR)
             .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
+        // Closest hit shaders
         load_shader_module_as_stage(
             include_bytes!("../shaders/closesthit.spv"),
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+            .name(CStr::from_bytes_with_nul(b"closest_hit_mirror\0")?),
+        // Miss shaders
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::MISS_KHR)
@@ -581,12 +595,7 @@ fn main() -> anyhow::Result<()> {
             .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
     ];
 
-    let shader_groups = [
-        shader_group_for_type(0, vk::ShaderGroupShaderKHR::GENERAL),
-        shader_group_for_type(1, vk::ShaderGroupShaderKHR::CLOSEST_HIT),
-        shader_group_for_type(2, vk::ShaderGroupShaderKHR::GENERAL),
-        shader_group_for_type(3, vk::ShaderGroupShaderKHR::GENERAL),
-    ];
+    let shader_groups = shader_groups_for_stages(&shader_stages);
 
     let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
         .stages(&shader_stages)
@@ -622,33 +631,32 @@ fn main() -> anyhow::Result<()> {
         )
     }?;
 
-    let raygen_sbt = ShaderBindingTable::new(
-        &group_handles,
-        "raygen shader binding table",
-        &ray_tracing_props,
-        0..1,
-        &device,
-        &mut allocator,
-    )?;
-
-    let closest_hit_sbt = ShaderBindingTable::new(
-        &group_handles,
-        "closest hit shader binding table",
-        &ray_tracing_props,
-        1..2,
-        &device,
-        &mut allocator,
-    )?;
-
-    // 2 miss shaders
-    let miss_sbt = ShaderBindingTable::new(
-        &group_handles,
-        "miss shader binding table",
-        &ray_tracing_props,
-        2..4,
-        &device,
-        &mut allocator,
-    )?;
+    let shader_binding_tables = ShaderBindingTables {
+        raygen: ShaderBindingTable::new(
+            &group_handles,
+            "raygen shader binding table",
+            &ray_tracing_props,
+            0..1,
+            &device,
+            &mut allocator,
+        )?,
+        hit: ShaderBindingTable::new(
+            &group_handles,
+            "closest hit shader binding table",
+            &ray_tracing_props,
+            1..3,
+            &device,
+            &mut allocator,
+        )?,
+        miss: ShaderBindingTable::new(
+            &group_handles,
+            "miss shader binding table",
+            &ray_tracing_props,
+            3..5,
+            &device,
+            &mut allocator,
+        )?,
+    };
 
     // Create swapchain
 
@@ -694,9 +702,7 @@ fn main() -> anyhow::Result<()> {
     let global_resources = GlobalResources {
         pipeline,
         pipeline_layout,
-        raygen_sbt,
-        closest_hit_sbt,
-        miss_sbt,
+        shader_binding_tables,
         general_ds,
         as_loader,
         pipeline_loader,
@@ -984,12 +990,11 @@ fn main() -> anyhow::Result<()> {
 
                     model_info_buffer.cleanup(&mut allocator)?;
 
-                    global_resources.raygen_sbt.buffer.cleanup(&mut allocator)?;
-                    global_resources.miss_sbt.buffer.cleanup(&mut allocator)?;
-                    global_resources
-                        .closest_hit_sbt
-                        .buffer
-                        .cleanup(&mut allocator)?;
+                    let sbts = &global_resources.shader_binding_tables;
+
+                    sbts.raygen.buffer.cleanup(&mut allocator)?;
+                    sbts.miss.buffer.cleanup(&mut allocator)?;
+                    sbts.hit.buffer.cleanup(&mut allocator)?;
 
                     image_manager.cleanup(&mut allocator)?;
 
@@ -1224,210 +1229,4 @@ impl FirstPersonCamera {
             Vec4::new(-x_axis.dot(eye), -y_axis.dot(eye), -z_axis.dot(eye), 1.0),
         )
     }
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct RayTracingUniforms {
-    view_inverse: Mat4,
-    proj_inverse: Mat4,
-    sun_dir: Vec3,
-    sun_radius: f32,
-}
-
-fn build_blas(
-    model_buffers: &ModelBuffers,
-    name: &str,
-    as_loader: &AccelerationStructureLoader,
-    scratch_buffer: &mut ScratchBuffer,
-    allocator: &mut Allocator,
-    command_buffer: vk::CommandBuffer,
-) -> anyhow::Result<AccelerationStructure> {
-    let geometry = vk::AccelerationStructureGeometryKHR::builder()
-        .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-        .geometry(vk::AccelerationStructureGeometryDataKHR {
-            triangles: model_buffers.triangles_data,
-        })
-        .flags(vk::GeometryFlagsKHR::OPAQUE);
-
-    let offset = vk::AccelerationStructureBuildRangeInfoKHR::builder()
-        .primitive_count(model_buffers.primitive_count);
-
-    let geometries = &[*geometry];
-
-    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
-        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-        .geometries(geometries);
-
-    let build_sizes = unsafe {
-        as_loader.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &geometry_info,
-            &[model_buffers.primitive_count],
-        )
-    };
-
-    let scratch_buffer =
-        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
-
-    let blas = AccelerationStructure::new(
-        build_sizes.acceleration_structure_size,
-        name,
-        vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-        as_loader,
-        allocator,
-        scratch_buffer,
-        geometry_info,
-        offset,
-        command_buffer,
-    )?;
-
-    Ok(blas)
-}
-
-fn build_tlas(
-    instances: &Buffer,
-    num_instances: u32,
-    as_loader: &AccelerationStructureLoader,
-    allocator: &mut Allocator,
-    scratch_buffer: &mut ScratchBuffer,
-    command_buffer: vk::CommandBuffer,
-) -> anyhow::Result<AccelerationStructure> {
-    let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
-        vk::DeviceOrHostAddressConstKHR {
-            device_address: instances.device_address(&allocator.device),
-        },
-    );
-
-    let geometry = vk::AccelerationStructureGeometryKHR::builder()
-        .geometry_type(vk::GeometryTypeKHR::INSTANCES)
-        .geometry(vk::AccelerationStructureGeometryDataKHR {
-            instances: *instances,
-        })
-        .flags(vk::GeometryFlagsKHR::OPAQUE);
-
-    let offset =
-        vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
-
-    let geometries = &[*geometry];
-
-    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
-        .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(
-            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
-        )
-        .geometries(geometries);
-
-    let build_sizes = unsafe {
-        as_loader.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &geometry_info,
-            &[num_instances],
-        )
-    };
-
-    let scratch_buffer =
-        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
-
-    AccelerationStructure::new(
-        build_sizes.acceleration_structure_size,
-        "tlas",
-        vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-        as_loader,
-        allocator,
-        scratch_buffer,
-        geometry_info,
-        offset,
-        command_buffer,
-    )
-}
-
-// A `bytemuck`'d `vk::AccelerationStructureInstanceKHR`.
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct AccelerationStructureInstance {
-    transform: [Vec4; 3],
-    instance_custom_index_and_mask: u32,
-    instance_shader_binding_table_record_offset_and_flags: u32,
-    acceleration_structure_device_address: vk::DeviceAddress,
-}
-
-impl AccelerationStructureInstance {
-    fn new(
-        transform: Mat4,
-        blas: &AccelerationStructure,
-        device: &ash::Device,
-        custom_index: u32,
-    ) -> Self {
-        fn merge_fields(lower: u32, upper: u8) -> u32 {
-            ((upper as u32) << 24) | lower
-        }
-
-        Self {
-            transform: transpose_matrix_for_instance(transform),
-            instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
-            instance_shader_binding_table_record_offset_and_flags: merge_fields(
-                0,
-                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
-            ),
-            acceleration_structure_device_address: blas.buffer.device_address(device),
-        }
-    }
-}
-
-fn transpose_matrix_for_instance(matrix: Mat4) -> [Vec4; 3] {
-    let rows = matrix.transposed().cols;
-    [rows[0], rows[1], rows[2]]
-}
-
-unsafe extern "system" fn vulkan_debug_utils_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _p_user_data: *mut std::ffi::c_void,
-) -> vk::Bool32 {
-    let filter_out = (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-        && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
-        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
-            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::GENERAL)
-        || (message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::INFO
-            && message_type == vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION);
-
-    if filter_out {
-        return vk::FALSE;
-    }
-
-    let level = match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
-        vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
-        _ => log::Level::Info,
-    };
-
-    let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message);
-    let ty = format!("{:?}", message_type).to_lowercase();
-    log::log!(level, "[Debug Msg][{}] {:?}", ty, message);
-    vk::FALSE
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-struct Vertex {
-    pos: Vec3,
-    normal: Vec3,
-    uv: Vec2,
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
-pub struct ModelInfo {
-    vertex_buffer_address: vk::DeviceAddress,
-    index_buffer_address: vk::DeviceAddress,
-    image_index: u32,
-    _padding: u32,
 }

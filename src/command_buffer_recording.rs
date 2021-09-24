@@ -10,14 +10,17 @@ use ash::extensions::khr::{
 };
 use ash::vk;
 
+pub struct ShaderBindingTables {
+    pub raygen: ShaderBindingTable,
+    pub hit: ShaderBindingTable,
+    pub miss: ShaderBindingTable,
+}
+
 pub struct GlobalResources {
     pub pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,
-    pub raygen_sbt: ShaderBindingTable,
-    pub closest_hit_sbt: ShaderBindingTable,
-    pub miss_sbt: ShaderBindingTable,
     pub general_ds: vk::DescriptorSet,
-
+    pub shader_binding_tables: ShaderBindingTables,
     pub as_loader: AccelerationStructureLoader,
     pub pipeline_loader: RayTracingPipelineLoader,
 }
@@ -144,9 +147,9 @@ impl PerFrameResources {
 
         global.pipeline_loader.cmd_trace_rays(
             command_buffer,
-            &global.raygen_sbt.address_region,
-            &global.miss_sbt.address_region,
-            &global.closest_hit_sbt.address_region,
+            &global.shader_binding_tables.raygen.address_region,
+            &global.shader_binding_tables.miss.address_region,
+            &global.shader_binding_tables.hit.address_region,
             // We don't use callable shaders here
             &Default::default(),
             extent.width,
