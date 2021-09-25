@@ -86,13 +86,13 @@ pub fn ray_generation(
     let render_coordinates = texture_coordinates * 2.0 - 1.0;
 
     // Transform [0, 0, 0] in view-space into world space
-    let origin = (uniforms.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
+    let mut origin = (uniforms.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
     // Transform the render coordinates into project-y space
     let target =
         uniforms.proj_inverse * Vec4::new(render_coordinates.x, render_coordinates.y, 1.0, 1.0);
     let local_direction_vector = target.truncate().normalize();
     // Rotate the location direction vector into a global direction vector.
-    let direction = (uniforms.view_inverse * local_direction_vector.extend(0.0)).truncate();
+    let mut direction = (uniforms.view_inverse * local_direction_vector.extend(0.0)).truncate();
 
     *payload = PrimaryRayPayload {
         colour: Vec3::splat(0.0),
@@ -100,28 +100,13 @@ pub fn ray_generation(
         ray_hit_t: 0.0,
     };
 
-    trace_ray_explicit(TraceRayExplicitParams {
-        tlas,
-        flags: RayFlags::OPAQUE,
-        origin,
-        direction,
-        t_min: 0.001,
-        t_max: 10_000.0,
-        cull_mask: 0xff,
-        sbt_offset: 0,
-        sbt_stride: 0,
-        miss_shader_index: 0,
-        payload,
-    });
-
-    if payload.reflected_direction != Vec3::splat(0.0) {
+    for _ in 0 .. 3 {
         trace_ray_explicit(TraceRayExplicitParams {
             tlas,
             flags: RayFlags::OPAQUE,
-            origin: origin + direction * payload.ray_hit_t,
-            direction: payload.reflected_direction,
-            // This needs to be a bit higher than before because of precision errors.
-            t_min: 0.1,
+            origin,
+            direction,
+            t_min: 0.001,
             t_max: 10_000.0,
             cull_mask: 0xff,
             sbt_offset: 0,
@@ -129,6 +114,13 @@ pub fn ray_generation(
             miss_shader_index: 0,
             payload,
         });
+
+        if payload.reflected_direction != Vec3::splat(0.0) {
+            origin = origin + direction * payload.ray_hit_t;
+            direction = payload.reflected_direction;
+        } else {
+            break;
+        }
     }
 
     unsafe {
