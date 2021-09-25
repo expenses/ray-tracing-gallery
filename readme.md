@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/instances.png)
+![](screenshots/reflections.png)
 
 ## Features
 
