@@ -234,6 +234,11 @@ fn main() -> anyhow::Result<()> {
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
+        load_shader_module_as_stage(
+            include_bytes!("../shaders/closest_hit_portal.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
         // Miss shaders
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
@@ -315,7 +320,7 @@ fn main() -> anyhow::Result<()> {
             &group_handles,
             "closest hit shader binding table",
             &ray_tracing_props,
-            1..3,
+            1..4,
             &device,
             &mut allocator,
         )?,
@@ -323,7 +328,7 @@ fn main() -> anyhow::Result<()> {
             &group_handles,
             "miss shader binding table",
             &ray_tracing_props,
-            3..5,
+            4..6,
             &device,
             &mut allocator,
         )?,
@@ -466,6 +471,13 @@ fn main() -> anyhow::Result<()> {
             2,
             0,
         ),
+        AccelerationStructureInstance::new(
+            Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+            &plane_blas,
+            &device,
+            0,
+            2,
+        ),
     ];
 
     {
@@ -473,7 +485,7 @@ fn main() -> anyhow::Result<()> {
 
         let mut rng = rand::thread_rng();
 
-        for _ in 0..10000 {
+        for _ in 0..100 {
             instances.push(AccelerationStructureInstance::new(
                 Mat4::from_translation(Vec3::new(
                     rng.gen_range(-10.0..10.0),

@@ -10,8 +10,8 @@ layout(set = 1, binding = 2) uniform Uniforms {
 
 struct PrimaryRayPayload {
     vec3 colour;
-    float ray_hit_t;
-    vec3 reflected_direction;
+    vec3 new_ray_origin;
+    vec3 new_ray_direction;
 };
 
 struct ShadowRayPayload {

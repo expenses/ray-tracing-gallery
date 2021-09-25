@@ -35,6 +35,6 @@ void main() {
     vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
     vec3 normal = normalize(rotated_normal);
 
-    primary_payload.reflected_direction = reflect(gl_WorldRayDirectionEXT, normal);
-    primary_payload.ray_hit_t = gl_HitTEXT;
+    primary_payload.new_ray_direction = reflect(gl_WorldRayDirectionEXT, normal);
+    primary_payload.new_ray_origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 }

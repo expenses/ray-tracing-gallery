@@ -1,5 +1,6 @@
 use spirv_std::glam::{Mat4, Vec2, Vec3};
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Uniforms {
     pub view_inverse: Mat4,
@@ -8,6 +9,7 @@ pub struct Uniforms {
     pub sun_radius: f32,
 }
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Vertex {
     pub pos: Vec3,
@@ -15,6 +17,7 @@ pub struct Vertex {
     pub uv: Vec2,
 }
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ModelInfo {
     pub vertex_buffer_address: u64,
@@ -26,10 +29,11 @@ pub struct ModelInfo {
 #[derive(Copy, Clone)]
 pub struct PrimaryRayPayload {
     pub colour: Vec3,
-    pub ray_hit_t: f32,
-    pub reflected_direction: Vec3,
+    pub new_ray_origin: Vec3,
+    pub new_ray_direction: Vec3,
 }
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ShadowRayPayload {
     pub shadowed: bool,

@@ -94,13 +94,13 @@ pub fn ray_generation(
     // Rotate the location direction vector into a global direction vector.
     let mut direction = (uniforms.view_inverse * local_direction_vector.extend(0.0)).truncate();
 
-    *payload = PrimaryRayPayload {
-        colour: Vec3::splat(0.0),
-        reflected_direction: Vec3::splat(0.0),
-        ray_hit_t: 0.0,
-    };
+    for _ in 0..3 {
+        *payload = PrimaryRayPayload {
+            colour: Vec3::splat(0.0),
+            new_ray_origin: Vec3::splat(0.0),
+            new_ray_direction: Vec3::splat(0.0),
+        };
 
-    for _ in 0 .. 3 {
         trace_ray_explicit(TraceRayExplicitParams {
             tlas,
             flags: RayFlags::OPAQUE,
@@ -115,12 +115,12 @@ pub fn ray_generation(
             payload,
         });
 
-        if payload.reflected_direction == Vec3::splat(0.0) {
+        if payload.new_ray_direction == Vec3::splat(0.0) {
             // We've hit a non-reflecting object.
             break;
         } else {
-            origin = origin + direction * payload.ray_hit_t;
-            direction = payload.reflected_direction;
+            origin = payload.new_ray_origin;
+            direction = payload.new_ray_direction;
         }
     }
 
