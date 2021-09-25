@@ -1,4 +1,5 @@
 use crate::util_structs::AccelerationStructure;
+use crate::HitShader;
 use ash::vk;
 use ultraviolet::{Mat4, Vec2, Vec3, Vec4};
 
@@ -44,11 +45,13 @@ impl AccelerationStructureInstance {
         blas: &AccelerationStructure,
         device: &ash::Device,
         custom_index: u32,
-        sbt_offset: u32,
+        hit_shader: HitShader,
     ) -> Self {
         fn merge_fields(lower: u32, upper: u8) -> u32 {
             ((upper as u32) << 24) | lower
         }
+
+        let sbt_offset = hit_shader as u32;
 
         Self {
             transform: transpose_matrix_for_instance(transform),

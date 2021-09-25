@@ -41,6 +41,12 @@ use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBinding
 
 const MAX_BOUND_IMAGES: u32 = 128;
 
+pub enum HitShader {
+    Textured = 0,
+    Mirror = 1,
+    Portal = 2,
+}
+
 fn main() -> anyhow::Result<()> {
     {
         use simplelog::*;
@@ -456,27 +462,33 @@ fn main() -> anyhow::Result<()> {
     let lain_instance_offset = std::mem::size_of::<AccelerationStructureInstance>() * 2;
 
     let mut instances = vec![
-        AccelerationStructureInstance::new(Mat4::from_scale(10.0), &plane_blas, &device, 0, 0),
+        AccelerationStructureInstance::new(
+            Mat4::from_scale(10.0),
+            &plane_blas,
+            &device,
+            0,
+            HitShader::Textured,
+        ),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &tori_blas,
             &device,
             1,
-            0,
+            HitShader::Textured,
         ),
         AccelerationStructureInstance::new(
             lain_base_transform * Mat4::from_rotation_y(lain_rotation),
             &lain_blas,
             &device,
             2,
-            0,
+            HitShader::Textured,
         ),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             &plane_blas,
             &device,
             0,
-            2,
+            HitShader::Portal,
         ),
     ];
 
@@ -496,7 +508,11 @@ fn main() -> anyhow::Result<()> {
                 &tori_blas,
                 &device,
                 1,
-                rng.gen_range(0..=1),
+                if rng.gen() {
+                    HitShader::Textured
+                } else {
+                    HitShader::Mirror
+                },
             ))
         }
     }
