@@ -166,8 +166,7 @@ impl AccelerationStructure {
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
             .geometry(vk::AccelerationStructureGeometryDataKHR {
                 instances: *instances,
-            })
-            .flags(vk::GeometryFlagsKHR::OPAQUE);
+            });
 
         let geometries = &[*geometry];
 
@@ -193,8 +192,11 @@ impl AccelerationStructure {
             )
         };
 
-        let scratch_buffer =
-            scratch_buffer.ensure_size_of(build_sizes.update_scratch_size, allocator)?;
+        let scratch_buffer = scratch_buffer.ensure_size_of(
+            build_sizes.update_scratch_size,
+            command_buffer,
+            allocator,
+        )?;
 
         geometry_info = geometry_info.scratch_data(vk::DeviceOrHostAddressKHR {
             device_address: scratch_buffer.device_address(&allocator.device),
@@ -297,6 +299,7 @@ impl ScratchBuffer {
     pub fn ensure_size_of(
         &mut self,
         size: vk::DeviceSize,
+        command_buffer: vk::CommandBuffer,
         allocator: &mut Allocator,
     ) -> anyhow::Result<&Buffer> {
         match &mut self.inner {
@@ -330,6 +333,30 @@ impl ScratchBuffer {
                         self.alignment,
                         allocator,
                     )?;
+                } else {
+                    // This is important! If we're re-using the scratch buffer, then we need to
+                    // insert a pipeline barrier so that we don't try and write to it during 2
+                    // concurrent acceleration structure builds.
+                    //
+                    // Atleast, I think this is the case. It seems to crash my gpu sometimes if I don't do this.
+
+                    log::debug!("Inserting a scratch buffer re-use command buffer.");
+
+                    unsafe {
+                        allocator.device.cmd_pipeline_barrier(
+                            command_buffer,
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::DependencyFlags::empty(),
+                            // We don't *seem* to need a memory barrier, but I don't know why not.
+                            /*&[*vk::MemoryBarrier::builder()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)],*/
+                            &[],
+                            &[],
+                            &[],
+                        )
+                    }
                 }
             }
         }

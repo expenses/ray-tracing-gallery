@@ -103,7 +103,7 @@ pub fn ray_generation(
 
         trace_ray_explicit(TraceRayExplicitParams {
             tlas,
-            flags: RayFlags::OPAQUE,
+            flags: RayFlags::empty(),
             origin,
             direction,
             t_min: 0.001,

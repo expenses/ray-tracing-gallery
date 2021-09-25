@@ -31,10 +31,11 @@ void main() {
 
     const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
 
-    vec3 interpolated_normal = interpolate(a.normal, b.normal, c.normal, barycentric_coords);
-    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
-    vec3 normal = normalize(rotated_normal);
+    vec2 uv = interpolate(a.uv, b.uv, c.uv, barycentric_coords);
 
-    primary_payload.new_ray_direction = reflect(gl_WorldRayDirectionEXT, normal);
-    primary_payload.new_ray_origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+    float alpha = texture(textures[nonuniformEXT(info.texture_index)], uv).a;
+
+    if (alpha < 0.5) {
+        ignoreIntersectionEXT;
+    }
 }

@@ -400,10 +400,15 @@ pub fn load_gltf(
     ))
 }
 
-fn shader_group_for_stage(
-    index: u32,
-    stage: vk::ShaderStageFlags,
-) -> vk::RayTracingShaderGroupCreateInfoKHR {
+pub enum ShaderGroup {
+    TriangleHitGroup {
+        closest_hit_shader: u32,
+        any_hit_shader: u32,
+    },
+    General(u32),
+}
+
+pub fn info_from_group(group: ShaderGroup) -> vk::RayTracingShaderGroupCreateInfoKHR {
     let mut info = vk::RayTracingShaderGroupCreateInfoKHR {
         general_shader: vk::SHADER_UNUSED_KHR,
         closest_hit_shader: vk::SHADER_UNUSED_KHR,
@@ -412,38 +417,22 @@ fn shader_group_for_stage(
         ..Default::default()
     };
 
-    match stage {
-        vk::ShaderStageFlags::CLOSEST_HIT_KHR => {
+    match group {
+        ShaderGroup::TriangleHitGroup {
+            closest_hit_shader,
+            any_hit_shader,
+        } => {
             info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
-            info.closest_hit_shader = index;
+            info.closest_hit_shader = closest_hit_shader;
+            info.any_hit_shader = any_hit_shader;
         }
-        vk::ShaderStageFlags::ANY_HIT_KHR => {
-            info.ty = vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP;
-            info.any_hit_shader = index;
-        }
-        vk::ShaderStageFlags::INTERSECTION_KHR => {
-            info.ty = vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP;
-            info.intersection_shader = index;
-        }
-        _ => {
+        ShaderGroup::General(general_shader) => {
             info.ty = vk::RayTracingShaderGroupTypeKHR::GENERAL;
-            info.general_shader = index;
+            info.general_shader = general_shader;
         }
     }
 
     info
-}
-
-pub fn shader_groups_for_stages<const N: usize>(
-    stages: &[vk::PipelineShaderStageCreateInfo; N],
-) -> [vk::RayTracingShaderGroupCreateInfoKHR; N] {
-    let mut groups = [vk::RayTracingShaderGroupCreateInfoKHR::default(); N];
-
-    for (i, stage) in stages.iter().enumerate() {
-        groups[i] = shader_group_for_stage(i as u32, stage.stage);
-    }
-
-    groups
 }
 
 pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR) -> u32 {
@@ -489,13 +478,20 @@ pub fn build_blas(
     scratch_buffer: &mut ScratchBuffer,
     allocator: &mut Allocator,
     command_buffer: vk::CommandBuffer,
+    opaque: bool,
 ) -> anyhow::Result<AccelerationStructure> {
+    let flags = if opaque {
+        vk::GeometryFlagsKHR::OPAQUE
+    } else {
+        vk::GeometryFlagsKHR::empty()
+    };
+
     let geometry = vk::AccelerationStructureGeometryKHR::builder()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
         .geometry(vk::AccelerationStructureGeometryDataKHR {
             triangles: model_buffers.triangles_data,
         })
-        .flags(vk::GeometryFlagsKHR::OPAQUE);
+        .flags(flags);
 
     let offset = vk::AccelerationStructureBuildRangeInfoKHR::builder()
         .primitive_count(model_buffers.primitive_count);
@@ -517,7 +513,7 @@ pub fn build_blas(
     };
 
     let scratch_buffer =
-        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, command_buffer, allocator)?;
 
     let blas = AccelerationStructure::new(
         build_sizes.acceleration_structure_size,
@@ -552,8 +548,7 @@ pub fn build_tlas(
         .geometry_type(vk::GeometryTypeKHR::INSTANCES)
         .geometry(vk::AccelerationStructureGeometryDataKHR {
             instances: *instances,
-        })
-        .flags(vk::GeometryFlagsKHR::OPAQUE);
+        });
 
     let offset =
         vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
@@ -578,7 +573,7 @@ pub fn build_tlas(
     };
 
     let scratch_buffer =
-        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, allocator)?;
+        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, command_buffer, allocator)?;
 
     AccelerationStructure::new(
         build_sizes.acceleration_structure_size,

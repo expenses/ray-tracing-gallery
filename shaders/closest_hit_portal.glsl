@@ -7,7 +7,7 @@
 #extension GL_EXT_buffer_reference: enable
 #extension GL_EXT_scalar_block_layout : enable
 
-#include "closest_hit_common.glsl"
+#include "hit_shader_common.glsl"
 
 void main() {
     vec3 portal_relative_position = vec3(0.0, 5.0, 0.0);

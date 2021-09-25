@@ -7,7 +7,7 @@
 #extension GL_EXT_buffer_reference: enable
 #extension GL_EXT_scalar_block_layout : enable
 
-#include "closest_hit_common.glsl"
+#include "hit_shader_common.glsl"
 
 vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
     vec3 vector_to_point = point - vert.pos;
@@ -83,7 +83,7 @@ void main() {
     // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
 	traceRayEXT(
         topLevelAS,
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
         0xFF, 1, 0, 1,
         shadow_origin, t_min, uniforms.sun_dir, t_max, 1
     );

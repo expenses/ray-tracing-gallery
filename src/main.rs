@@ -27,9 +27,9 @@ use util_structs::{
 };
 
 use util_functions::{
-    build_blas, build_tlas, load_gltf, load_rgba_png_image_from_bytes, load_shader_module,
-    load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
-    shader_groups_for_stages, vulkan_debug_utils_callback,
+    build_blas, build_tlas, info_from_group, load_gltf, load_rgba_png_image_from_bytes,
+    load_shader_module, load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
+    vulkan_debug_utils_callback, ShaderGroup,
 };
 
 use gpu_structs::{
@@ -229,7 +229,21 @@ fn main() -> anyhow::Result<()> {
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::RAYGEN_KHR)
             .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
-        // Closest hit shaders
+        // Miss shaders
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::MISS_KHR)
+            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
+        // Hit shaders
+        load_shader_module_as_stage(
+            include_bytes!("../shaders/any_hit_alpha_clip.spv"),
+            vk::ShaderStageFlags::ANY_HIT_KHR,
+            &device,
+        )?,
         load_shader_module_as_stage(
             include_bytes!("../shaders/closest_hit_textured.spv"),
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
@@ -245,18 +259,25 @@ fn main() -> anyhow::Result<()> {
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
-        // Miss shaders
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
     ];
 
-    let shader_groups = shader_groups_for_stages(&shader_stages);
+    let shader_groups = [
+        info_from_group(ShaderGroup::General(0)),
+        info_from_group(ShaderGroup::General(1)),
+        info_from_group(ShaderGroup::General(2)),
+        info_from_group(ShaderGroup::TriangleHitGroup {
+            any_hit_shader: 3,
+            closest_hit_shader: 4,
+        }),
+        info_from_group(ShaderGroup::TriangleHitGroup {
+            any_hit_shader: 3,
+            closest_hit_shader: 5,
+        }),
+        info_from_group(ShaderGroup::TriangleHitGroup {
+            any_hit_shader: 3,
+            closest_hit_shader: 6,
+        }),
+    ];
 
     let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
         .stages(&shader_stages)
@@ -322,19 +343,20 @@ fn main() -> anyhow::Result<()> {
             &device,
             &mut allocator,
         )?,
-        hit: ShaderBindingTable::new(
-            &group_handles,
-            "closest hit shader binding table",
-            &ray_tracing_props,
-            1..4,
-            &device,
-            &mut allocator,
-        )?,
+        // 2 miss shaders
         miss: ShaderBindingTable::new(
             &group_handles,
             "miss shader binding table",
             &ray_tracing_props,
-            4..6,
+            1..3,
+            &device,
+            &mut allocator,
+        )?,
+        hit: ShaderBindingTable::new(
+            &group_handles,
+            "hit shader binding table",
+            &ray_tracing_props,
+            3..6,
             &device,
             &mut allocator,
         )?,
@@ -387,7 +409,20 @@ fn main() -> anyhow::Result<()> {
 
         image_manager.push_image(pink_texture, false);
 
-        [green_texture_staging_buffer, pink_texture_staging_buffer]
+        let (fence_texture, fence_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+            include_bytes!("../resources/fence.png"),
+            "fence texture",
+            init_command_buffer.buffer(),
+            &mut allocator,
+        )?;
+
+        image_manager.push_image(fence_texture, true);
+
+        [
+            green_texture_staging_buffer,
+            pink_texture_staging_buffer,
+            fence_texture_staging_buffer,
+        ]
     };
 
     let (plane_buffers, plane_staging_buffer) = load_gltf(
@@ -417,6 +452,15 @@ fn main() -> anyhow::Result<()> {
         init_command_buffer.buffer(),
     )?;
 
+    let (fence_buffers, fence_staging_buffer) = load_gltf(
+        include_bytes!("../resources/plane.glb"),
+        "fence",
+        2,
+        &mut allocator,
+        &mut image_manager,
+        init_command_buffer.buffer(),
+    )?;
+
     // Add dummy image bindings up to the bound limit. This avoids a warning about
     // bidings being using in draws but not having been updated.
     image_manager.fill_with_dummy_images_up_to(MAX_BOUND_IMAGES as usize);
@@ -434,6 +478,7 @@ fn main() -> anyhow::Result<()> {
         &mut scratch_buffer,
         &mut allocator,
         init_command_buffer.buffer(),
+        true,
     )?;
 
     let tori_blas = build_blas(
@@ -443,6 +488,7 @@ fn main() -> anyhow::Result<()> {
         &mut scratch_buffer,
         &mut allocator,
         init_command_buffer.buffer(),
+        true,
     )?;
 
     let lain_blas = build_blas(
@@ -452,6 +498,17 @@ fn main() -> anyhow::Result<()> {
         &mut scratch_buffer,
         &mut allocator,
         init_command_buffer.buffer(),
+        true,
+    )?;
+
+    let fence_blas = build_blas(
+        &fence_buffers,
+        "fence blas",
+        &as_loader,
+        &mut scratch_buffer,
+        &mut allocator,
+        init_command_buffer.buffer(),
+        false,
     )?;
 
     // Allocate the instance buffer
@@ -489,6 +546,13 @@ fn main() -> anyhow::Result<()> {
             &device,
             0,
             HitShader::Portal,
+        ),
+        AccelerationStructureInstance::new(
+            Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_x(PI / 2.0),
+            &fence_blas,
+            &device,
+            3,
+            HitShader::Textured,
         ),
     ];
 
@@ -576,6 +640,7 @@ fn main() -> anyhow::Result<()> {
             plane_buffers.model_info(&device),
             tori_buffers.model_info(&device),
             lain_buffers.model_info(&device),
+            fence_buffers.model_info(&device),
         ]),
         "model info",
         vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -718,6 +783,7 @@ fn main() -> anyhow::Result<()> {
             plane_staging_buffer,
             tori_staging_buffer,
             lain_staging_buffer,
+            fence_staging_buffer,
         ])
         .flatten()
         .chain(image_staging_buffers)
@@ -1057,6 +1123,8 @@ fn main() -> anyhow::Result<()> {
                     tori_buffers.cleanup(&mut allocator)?;
                     lain_blas.buffer.cleanup(&mut allocator)?;
                     lain_buffers.cleanup(&mut allocator)?;
+                    fence_buffers.cleanup(&mut allocator)?;
+                    fence_blas.buffer.cleanup(&mut allocator)?;
 
                     model_info_buffer.cleanup(&mut allocator)?;
 
@@ -1104,12 +1172,16 @@ pub fn create_descriptor_set_layouts_and_pool(
                     .binding(0)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                    .stage_flags(
+                        vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::ANY_HIT_KHR,
+                    ),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(1)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(MAX_BOUND_IMAGES)
-                    .stage_flags(vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+                    .stage_flags(
+                        vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::ANY_HIT_KHR,
+                    ),
             ]),
             None,
         )
