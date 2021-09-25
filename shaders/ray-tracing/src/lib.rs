@@ -115,11 +115,12 @@ pub fn ray_generation(
             payload,
         });
 
-        if payload.reflected_direction != Vec3::splat(0.0) {
+        if payload.reflected_direction == Vec3::splat(0.0) {
+            // We've hit a non-reflecting object.
+            break;
+        } else {
             origin = origin + direction * payload.ray_hit_t;
             direction = payload.reflected_direction;
-        } else {
-            break;
         }
     }
 
