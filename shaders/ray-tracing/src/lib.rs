@@ -17,7 +17,7 @@ use spirv_std::glam::{const_vec3, IVec3, Mat4, Vec2, Vec3, Vec4};
 use spirv_std::{
     image::SampledImage,
     ray_tracing::{AccelerationStructure, RayFlags},
-    Image,
+    Image, RuntimeArray,
 };
 
 mod structs;
@@ -33,7 +33,7 @@ const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.2]);
 
 #[spirv(miss)]
 pub fn primary_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload) {
-    payload.hit_value = SKY_COLOUR;
+    payload.colour = SKY_COLOUR;
 }
 
 struct TraceRayExplicitParams<'a, T> {
@@ -94,7 +94,11 @@ pub fn ray_generation(
     // Rotate the location direction vector into a global direction vector.
     let direction = (uniforms.view_inverse * local_direction_vector.extend(0.0)).truncate();
 
-    payload.hit_value = Vec3::splat(0.0);
+    *payload = PrimaryRayPayload {
+        colour: Vec3::splat(0.0),
+        reflected_direction: Vec3::splat(0.0),
+        ray_hit_t: 0.0,
+    };
 
     trace_ray_explicit(TraceRayExplicitParams {
         tlas,
@@ -103,15 +107,32 @@ pub fn ray_generation(
         direction,
         t_min: 0.001,
         t_max: 10_000.0,
-        payload,
         cull_mask: 0xff,
         sbt_offset: 0,
         sbt_stride: 0,
         miss_shader_index: 0,
+        payload,
     });
 
+    if payload.reflected_direction != Vec3::splat(0.0) {
+        trace_ray_explicit(TraceRayExplicitParams {
+            tlas,
+            flags: RayFlags::OPAQUE,
+            origin: origin + direction * payload.ray_hit_t,
+            direction: payload.reflected_direction,
+            // This needs to be a bit higher than before because of precision errors.
+            t_min: 0.1,
+            t_max: 10_000.0,
+            cull_mask: 0xff,
+            sbt_offset: 0,
+            sbt_stride: 0,
+            miss_shader_index: 0,
+            payload,
+        });
+    }
+
     unsafe {
-        image.write(launch_id_xy, payload.hit_value.extend(1.0));
+        image.write(launch_id_xy, payload.colour.extend(1.0));
     }
 }
 
@@ -146,11 +167,6 @@ fn get_shadow_terminator_fix_shadow_origin(
 }
 
 #[spirv(closest_hit)]
-pub fn closest_hit_mirror(#[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload) {
-    payload.hit_value = Vec3::splat(1.0);
-}
-
-#[spirv(closest_hit)]
 pub fn wip_closest_hit(
     #[spirv(instance_custom_index)] model_index: u32,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
@@ -161,8 +177,8 @@ pub fn wip_closest_hit(
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
     #[spirv(ray_tmax)] ray_hit_t: f32,
     #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] model_info: &[ModelInfo],
-    #[spirv(descriptor_set = 0, binding = 1)] texture: &SampledImage<
-        Image!(2D, type=f32, sampled=true),
+    #[spirv(descriptor_set = 0, binding = 1)] textures: &RuntimeArray<
+        SampledImage<Image!(2D, type=f32, sampled=true)>,
     >,
     #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
     #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
@@ -173,8 +189,8 @@ pub fn wip_closest_hit(
     //
     // * casting u64 addresses to pointers (OpConvertUToPtr)
     //   - https://github.com/EmbarkStudios/rust-gpu/issues/383
-    // * `SampledImage`s don't seem to work
-    //   - https://github.com/EmbarkStudios/rust-gpu/issues/754
+    // * NonUniform support:
+    //   - https://github.com/EmbarkStudios/rust-gpu/issues/756
 
     // To check that reading from model_info works.
     let colour_modulator = {
@@ -189,14 +205,10 @@ pub fn wip_closest_hit(
         hit_attributes.y,
     );
 
-    payload.hit_value = barycentric_coords * colour_modulator;
-
-    /*
-    {
-        let uv = Vec2::splat(0.0);
-        let colour: Vec4 = unsafe { texture.sample(uv) };
-    }
-    */
+    let uv = Vec2::splat(0.0);
+    let texture = unsafe { textures.index(info.texture_index as usize) };
+    let colour: Vec4 = unsafe { texture.sample_by_lod(uv, 0.0) };
+    let colour = colour.truncate();
 
     let shadowed = {
         shadow_payload.shadowed = true;
@@ -223,5 +235,5 @@ pub fn wip_closest_hit(
 
     let lighting = !shadowed as u8 as f32;
 
-    payload.hit_value *= (lighting * 0.6) + 0.4;
+    payload.colour = colour * ((lighting * 0.6) + 0.4);
 }

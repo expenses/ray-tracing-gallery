@@ -22,9 +22,12 @@ pub struct ModelInfo {
     pub texture_index: u32,
 }
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct PrimaryRayPayload {
-    pub hit_value: Vec3,
+    pub colour: Vec3,
+    pub ray_hit_t: f32,
+    pub reflected_direction: Vec3,
 }
 
 #[derive(Copy, Clone)]

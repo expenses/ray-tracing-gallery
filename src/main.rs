@@ -225,14 +225,15 @@ fn main() -> anyhow::Result<()> {
             .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
         // Closest hit shaders
         load_shader_module_as_stage(
-            include_bytes!("../shaders/closesthit.spv"),
+            include_bytes!("../shaders/closest_hit_textured.spv"),
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-            .name(CStr::from_bytes_with_nul(b"closest_hit_mirror\0")?),
+        load_shader_module_as_stage(
+            include_bytes!("../shaders/closest_hit_mirror.spv"),
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
         // Miss shaders
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
@@ -249,6 +250,17 @@ fn main() -> anyhow::Result<()> {
     let create_pipeline = vk::RayTracingPipelineCreateInfoKHR::builder()
         .stages(&shader_stages)
         .groups(&shader_groups)
+        // Nvidia GPUs allow for 31 levels of ray recursion, but AMD GPUs only allow for 1 (*),
+        // due to hardware differences. This means that you can have a primary ray that hits
+        // an object, and in that closest-hit shader you can spawn a secondary shadow ray.
+        // But then that shadow ray MUST NOT call a shader that spawns another ray.
+        //
+        // This means that instead we have to do ray bounces in the raygen shader, which is fine
+        // but does mean that we can't encapsulate behaviour - the raygen shader needs to 'know'
+        // that rays can bounce.
+        //
+        // *:
+        // https://vulkan.gpuinfo.org/displayextensionproperty.php?extensionname=VK_KHR_ray_tracing_pipeline&extensionproperty=maxRayRecursionDepth&platform=all
         .max_pipeline_ray_recursion_depth(1)
         .layout(pipeline_layout);
 

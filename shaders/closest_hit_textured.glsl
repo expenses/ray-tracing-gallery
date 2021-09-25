@@ -1,76 +1,13 @@
 #version 460
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-#extension GL_EXT_buffer_reference: enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_buffer_reference: enable
 #extension GL_EXT_scalar_block_layout : enable
 
-layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
-
-layout(set = 1, binding = 2) uniform Uniforms {
-    mat4 view_inverse;
-    mat4 proj_inverse;
-    vec3 sun_dir;
-    float sun_radius;
-} uniforms;
-
-layout(location = 0) rayPayloadInEXT vec3 hitValue;
-layout(location = 1) rayPayloadEXT bool shadowed;
-
-hitAttributeEXT vec2 attribs;
-
-struct Vertex {
-    vec3 pos;
-    vec3 normal;
-    vec2 uv;
-};
-
-struct PackedVertex {
-    vec4 first_half;
-    vec4 second_half;
-};
-
-// Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
-// https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
-
-layout(buffer_reference, scalar) buffer Vertices {
-    PackedVertex buf[];
-};
-
-layout(buffer_reference, scalar) buffer Indices {
-    uint16_t buf[];
-};
-
-struct ModelInfo {
-    uint64_t vertex_buffer_address;
-    uint64_t index_buffer_address;
-    uint texture_index;
-};
-
-layout(set = 0, binding = 0) buffer ModelInformations {
-    ModelInfo model_info[];
-};
-
-layout(set = 0, binding = 1) uniform sampler2D textures[];
-
-Vertex unpack_vertex(PackedVertex packed) {
-    Vertex vertex;
-
-    vertex.pos = packed.first_half.xyz;
-    vertex.normal = vec3(packed.first_half.w, packed.second_half.xy);
-    vertex.uv = packed.second_half.zw;
-
-    return vertex;
-}
-
-vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
-    return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
-}
-
-vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
-    return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
-}
+#include "closest_hit_common.glsl"
 
 vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
     vec3 vector_to_point = point - vert.pos;
@@ -140,20 +77,18 @@ void main() {
     float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 
     // Shadow casting
-	float tmin = 0.001;
-	float tmax = 10000.0;
-	shadowed = true;  
+	float t_min = 0.001;
+	float t_max = 10000.0;
+	shadow_payload.shadowed = uint8_t(1);
     // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
 	traceRayEXT(
         topLevelAS,
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT,
         0xFF, 1, 0, 1,
-        shadow_origin, tmin, uniforms.sun_dir, tmax, 1
+        shadow_origin, t_min, uniforms.sun_dir, t_max, 1
     );
 	
-    lighting *= float(!shadowed);
+    lighting *= float(uint8_t(1) - shadow_payload.shadowed);
 
-    hitValue = colour;
-
-    hitValue *= (lighting * 0.6) + 0.4;
+    primary_payload.colour = colour * ((lighting * 0.6) + 0.4);
 }
