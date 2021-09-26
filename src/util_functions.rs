@@ -1,14 +1,11 @@
 use crate::SurfaceLoader;
-use crate::Vertex;
-use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::vk;
 use gpu_allocator::vulkan::AllocationCreateDesc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
 use crate::util_structs::{
-    AccelerationStructure, Allocator, Buffer, CStrList, Image, ImageManager, ModelBuffers,
-    ScratchBuffer,
+    AccelerationStructure, Allocator, Buffer, CStrList, Image, ScratchBuffer,
 };
 
 pub fn select_physical_device(
@@ -180,7 +177,8 @@ pub fn load_rgba_png_image_from_bytes(
     name: &str,
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
-) -> anyhow::Result<(Image, Buffer)> {
+    buffers_to_cleanup: &mut Vec<Buffer>,
+) -> anyhow::Result<Image> {
     let decoded_image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)?;
 
     let rgba_image = decoded_image.to_rgba8();
@@ -293,111 +291,13 @@ pub fn load_rgba_png_image_from_bytes(
         });
     }
 
-    Ok((
-        Image {
-            image,
-            view,
-            allocation,
-        },
-        staging_buffer,
-    ))
-}
+    buffers_to_cleanup.push(staging_buffer);
 
-pub fn load_gltf(
-    bytes: &[u8],
-    name: &str,
-    fallback_image_index: u32,
-    allocator: &mut Allocator,
-    image_manager: &mut ImageManager,
-    command_buffer: vk::CommandBuffer,
-) -> anyhow::Result<(ModelBuffers, Option<Buffer>)> {
-    let gltf = gltf::Gltf::from_slice(bytes)?;
-
-    let buffer_blob = gltf.blob.as_ref().unwrap();
-
-    let mut indices = Vec::new();
-    let mut vertices = Vec::new();
-
-    for mesh in gltf.meshes() {
-        for primitive in mesh.primitives() {
-            let reader = primitive.reader(|buffer| {
-                debug_assert_eq!(buffer.index(), 0);
-                Some(buffer_blob)
-            });
-
-            let read_indices = match reader.read_indices().unwrap() {
-                gltf::mesh::util::ReadIndices::U16(indices) => indices,
-                gltf::mesh::util::ReadIndices::U32(_) => {
-                    return Err(anyhow::anyhow!("U32 indices not supported"))
-                }
-                _ => unreachable!(),
-            };
-
-            let num_vertices = vertices.len() as u16;
-            indices.extend(read_indices.map(|index| index + num_vertices));
-
-            let positions = reader.read_positions().unwrap();
-            let normals = reader.read_normals().unwrap();
-            let uvs = reader.read_tex_coords(0).unwrap().into_f32();
-
-            positions
-                .zip(normals)
-                .zip(uvs)
-                .for_each(|((position, normal), uv)| {
-                    vertices.push(Vertex {
-                        pos: position.into(),
-                        normal: normal.into(),
-                        uv: uv.into(),
-                    });
-                })
-        }
-    }
-
-    let mut image_index = || -> Option<anyhow::Result<(u32, Option<Buffer>)>> {
-        let material = gltf.materials().next()?;
-
-        let diffuse_texture = material
-            .pbr_metallic_roughness()
-            .base_color_texture()?
-            .texture();
-
-        let linear_filtering =
-            diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
-
-        let image_view = match diffuse_texture.source().source() {
-            gltf::image::Source::View { view, .. } => view,
-            _ => return None,
-        };
-
-        let image_start = image_view.offset();
-        let image_end = image_start + image_view.length();
-        let image_bytes = &buffer_blob[image_start..image_end];
-
-        Some(
-            load_rgba_png_image_from_bytes(
-                image_bytes,
-                &format!("{} image", name),
-                command_buffer,
-                allocator,
-            )
-            .map(|(image, staging_buffer)| {
-                (
-                    image_manager.push_image(image, linear_filtering),
-                    Some(staging_buffer),
-                )
-            }),
-        )
-    };
-
-    let (image_index, staging_buffer) = match image_index() {
-        Some(result) => result?,
-        None => (fallback_image_index, None),
-    };
-
-    Ok((
-        ModelBuffers::new(&vertices, &indices, image_index, name, allocator)?,
-        staging_buffer,
-    ))
+    Ok(Image {
+        image,
+        view,
+        allocation,
+    })
 }
 
 pub enum ShaderGroup {
@@ -471,69 +371,9 @@ pub unsafe fn cmd_pipeline_image_memory_barrier_explicit(
     )
 }
 
-pub fn build_blas(
-    model_buffers: &ModelBuffers,
-    name: &str,
-    as_loader: &AccelerationStructureLoader,
-    scratch_buffer: &mut ScratchBuffer,
-    allocator: &mut Allocator,
-    command_buffer: vk::CommandBuffer,
-    opaque: bool,
-) -> anyhow::Result<AccelerationStructure> {
-    let flags = if opaque {
-        vk::GeometryFlagsKHR::OPAQUE
-    } else {
-        vk::GeometryFlagsKHR::empty()
-    };
-
-    let geometry = vk::AccelerationStructureGeometryKHR::builder()
-        .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-        .geometry(vk::AccelerationStructureGeometryDataKHR {
-            triangles: model_buffers.triangles_data,
-        })
-        .flags(flags);
-
-    let offset = vk::AccelerationStructureBuildRangeInfoKHR::builder()
-        .primitive_count(model_buffers.primitive_count);
-
-    let geometries = &[*geometry];
-
-    let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
-        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-        .geometries(geometries);
-
-    let build_sizes = unsafe {
-        as_loader.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &geometry_info,
-            &[model_buffers.primitive_count],
-        )
-    };
-
-    let scratch_buffer =
-        scratch_buffer.ensure_size_of(build_sizes.build_scratch_size, command_buffer, allocator)?;
-
-    let blas = AccelerationStructure::new(
-        build_sizes.acceleration_structure_size,
-        name,
-        vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-        as_loader,
-        allocator,
-        scratch_buffer,
-        geometry_info,
-        offset,
-        command_buffer,
-    )?;
-
-    Ok(blas)
-}
-
 pub fn build_tlas(
     instances: &Buffer,
     num_instances: u32,
-    as_loader: &AccelerationStructureLoader,
     allocator: &mut Allocator,
     scratch_buffer: &mut ScratchBuffer,
     command_buffer: vk::CommandBuffer,
@@ -565,11 +405,14 @@ pub fn build_tlas(
         .geometries(geometries);
 
     let build_sizes = unsafe {
-        as_loader.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &geometry_info,
-            &[num_instances],
-        )
+        allocator
+            .device
+            .as_loader
+            .get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &geometry_info,
+                &[num_instances],
+            )
     };
 
     let scratch_buffer =
@@ -579,7 +422,6 @@ pub fn build_tlas(
         build_sizes.acceleration_structure_size,
         "tlas",
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-        as_loader,
         allocator,
         scratch_buffer,
         geometry_info,

@@ -22,19 +22,18 @@ mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    Allocator, Buffer, CStrList, CommandBufferAndQueue, Image, ImageManager, ScratchBuffer,
-    ShaderBindingTable, Swapchain,
+    Allocator, Buffer, CStrList, CommandBufferAndQueue, Device as DeviceWithExtensions, Image,
+    ImageManager, Model, ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
 use util_functions::{
-    build_blas, build_tlas, info_from_group, load_gltf, load_rgba_png_image_from_bytes,
-    load_shader_module, load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
+    build_tlas, info_from_group, load_rgba_png_image_from_bytes, load_shader_module,
+    load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
     vulkan_debug_utils_callback, ShaderGroup,
 };
 
 use gpu_structs::{
-    transpose_matrix_for_instance, AccelerationStructureInstance, ModelInfo, RayTracingUniforms,
-    Vertex,
+    transpose_matrix_for_instance, AccelerationStructureInstance, RayTracingUniforms,
 };
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
@@ -137,6 +136,10 @@ fn main() -> anyhow::Result<()> {
             }
         };
 
+    let surface_caps = unsafe {
+        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
+    }?;
+
     // Create the logical device.
 
     let device = {
@@ -187,6 +190,8 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
+    let device = DeviceWithExtensions::wrap_with_extensions(device, &instance, debug_utils_loader);
+
     // Get some properties relating to ray tracing and acceleration structures
 
     let (ray_tracing_props, as_props) = {
@@ -208,8 +213,6 @@ fn main() -> anyhow::Result<()> {
         create_descriptor_set_layouts_and_pool(&device)?;
 
     // Create pipelines
-
-    let pipeline_loader = RayTracingPipelineLoader::new(&instance, &device);
 
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
@@ -297,7 +300,7 @@ fn main() -> anyhow::Result<()> {
         .layout(pipeline_layout);
 
     let pipelines = unsafe {
-        pipeline_loader.create_ray_tracing_pipelines(
+        device.rt_pipeline_loader.create_ray_tracing_pipelines(
             vk::DeferredOperationKHR::null(),
             vk::PipelineCache::null(),
             &[*create_pipeline],
@@ -309,55 +312,51 @@ fn main() -> anyhow::Result<()> {
 
     // Create an allocator
 
-    let mut allocator = Allocator::new(
-        instance.clone(),
-        device.clone(),
-        debug_utils_loader,
-        physical_device,
-        queue_family,
-    )?;
+    let mut allocator = Allocator::new(instance, device.clone(), physical_device, queue_family)?;
 
     // Shader binding tables
 
-    let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
-    let num_groups = shader_groups.len() as u32;
-    let shader_binding_table_size = num_groups * handle_size_aligned;
+    let sbt_group_handles = {
+        let handle_size_aligned = sbt_aligned_size(&ray_tracing_props);
+        let num_groups = shader_groups.len() as u32;
+        let shader_binding_table_size = num_groups * handle_size_aligned;
 
-    // Fetch the SBT handles and upload them to buffers.
+        // Fetch the SBT handles and upload them to buffers.
 
-    let group_handles = unsafe {
-        pipeline_loader.get_ray_tracing_shader_group_handles(
-            pipeline,
-            0,
-            num_groups,
-            shader_binding_table_size as usize,
-        )
-    }?;
+        unsafe {
+            device
+                .rt_pipeline_loader
+                .get_ray_tracing_shader_group_handles(
+                    pipeline,
+                    0,
+                    num_groups,
+                    shader_binding_table_size as usize,
+                )
+        }?
+    };
 
     let shader_binding_tables = ShaderBindingTables {
         raygen: ShaderBindingTable::new(
-            &group_handles,
+            &sbt_group_handles,
             "raygen shader binding table",
             &ray_tracing_props,
             0..1,
-            &device,
             &mut allocator,
         )?,
         // 2 miss shaders
         miss: ShaderBindingTable::new(
-            &group_handles,
+            &sbt_group_handles,
             "miss shader binding table",
             &ray_tracing_props,
             1..3,
-            &device,
             &mut allocator,
         )?,
+        // 3 hit shaders.
         hit: ShaderBindingTable::new(
-            &group_handles,
+            &sbt_group_handles,
             "hit shader binding table",
             &ray_tracing_props,
             3..6,
-            &device,
             &mut allocator,
         )?,
     };
@@ -390,125 +389,107 @@ fn main() -> anyhow::Result<()> {
 
     let init_command_buffer = command_buffer_and_queue.begin_buffer_guard(device.clone())?;
 
-    let image_staging_buffers = {
-        let (green_texture, green_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+    let mut buffers_to_cleanup = Vec::new();
+
+    {
+        let green_texture = load_rgba_png_image_from_bytes(
             include_bytes!("../resources/green.png"),
             "green texture",
             init_command_buffer.buffer(),
             &mut allocator,
+            &mut buffers_to_cleanup,
         )?;
 
         image_manager.push_image(green_texture, false);
 
-        let (pink_texture, pink_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+        let pink_texture = load_rgba_png_image_from_bytes(
             include_bytes!("../resources/pink.png"),
             "pink texture",
             init_command_buffer.buffer(),
             &mut allocator,
+            &mut buffers_to_cleanup,
         )?;
 
         image_manager.push_image(pink_texture, false);
 
-        let (fence_texture, fence_texture_staging_buffer) = load_rgba_png_image_from_bytes(
+        let fence_texture = load_rgba_png_image_from_bytes(
             include_bytes!("../resources/fence.png"),
             "fence texture",
             init_command_buffer.buffer(),
             &mut allocator,
+            &mut buffers_to_cleanup,
         )?;
 
         image_manager.push_image(fence_texture, true);
-
-        [
-            green_texture_staging_buffer,
-            pink_texture_staging_buffer,
-            fence_texture_staging_buffer,
-        ]
     };
 
-    let (plane_buffers, plane_staging_buffer) = load_gltf(
+    // Load model buffers and blases
+
+    let mut scratch_buffer = ScratchBuffer::new("init scratch buffer", &as_props);
+
+    let mut model_info = Vec::new();
+
+    let plane_model = Model::load_gltf(
         include_bytes!("../resources/plane.glb"),
         "plane",
         0,
         &mut allocator,
         &mut image_manager,
         init_command_buffer.buffer(),
+        &mut scratch_buffer,
+        true,
+        &mut model_info,
+        &mut buffers_to_cleanup,
     )?;
 
-    let (tori_buffers, tori_staging_buffer) = load_gltf(
+    let tori_model = Model::load_gltf(
         include_bytes!("../resources/tori.glb"),
         "tori",
         1,
         &mut allocator,
         &mut image_manager,
         init_command_buffer.buffer(),
+        &mut scratch_buffer,
+        true,
+        &mut model_info,
+        &mut buffers_to_cleanup,
     )?;
 
-    let (lain_buffers, lain_staging_buffer) = load_gltf(
+    let lain_model = Model::load_gltf(
         include_bytes!("../resources/lain.glb"),
         "lain",
         1,
         &mut allocator,
         &mut image_manager,
         init_command_buffer.buffer(),
+        &mut scratch_buffer,
+        true,
+        &mut model_info,
+        &mut buffers_to_cleanup,
     )?;
 
-    let (fence_buffers, fence_staging_buffer) = load_gltf(
+    let fence_model = Model::load_gltf(
         include_bytes!("../resources/plane.glb"),
         "fence",
         2,
         &mut allocator,
         &mut image_manager,
         init_command_buffer.buffer(),
+        &mut scratch_buffer,
+        false,
+        &mut model_info,
+        &mut buffers_to_cleanup,
     )?;
 
     // Add dummy image bindings up to the bound limit. This avoids a warning about
     // bidings being using in draws but not having been updated.
     image_manager.fill_with_dummy_images_up_to(MAX_BOUND_IMAGES as usize);
 
-    // Create the BLASes
-
-    let as_loader = AccelerationStructureLoader::new(&instance, &device);
-
-    let mut scratch_buffer = ScratchBuffer::new("init scratch buffer", &as_props);
-
-    let plane_blas = build_blas(
-        &plane_buffers,
-        "plane blas",
-        &as_loader,
-        &mut scratch_buffer,
+    let model_info_buffer = Buffer::new(
+        bytemuck::cast_slice(&model_info),
+        "model info",
+        vk::BufferUsageFlags::STORAGE_BUFFER,
         &mut allocator,
-        init_command_buffer.buffer(),
-        true,
-    )?;
-
-    let tori_blas = build_blas(
-        &tori_buffers,
-        "tori blas",
-        &as_loader,
-        &mut scratch_buffer,
-        &mut allocator,
-        init_command_buffer.buffer(),
-        true,
-    )?;
-
-    let lain_blas = build_blas(
-        &lain_buffers,
-        "lain blas",
-        &as_loader,
-        &mut scratch_buffer,
-        &mut allocator,
-        init_command_buffer.buffer(),
-        true,
-    )?;
-
-    let fence_blas = build_blas(
-        &fence_buffers,
-        "fence blas",
-        &as_loader,
-        &mut scratch_buffer,
-        &mut allocator,
-        init_command_buffer.buffer(),
-        false,
     )?;
 
     // Allocate the instance buffer
@@ -521,37 +502,32 @@ fn main() -> anyhow::Result<()> {
     let mut instances = vec![
         AccelerationStructureInstance::new(
             Mat4::from_scale(10.0),
-            &plane_blas,
+            &plane_model,
             &device,
-            0,
             HitShader::Textured,
         ),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            &tori_blas,
+            &tori_model,
             &device,
-            1,
             HitShader::Textured,
         ),
         AccelerationStructureInstance::new(
             lain_base_transform * Mat4::from_rotation_y(lain_rotation),
-            &lain_blas,
+            &lain_model,
             &device,
-            2,
             HitShader::Textured,
         ),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            &plane_blas,
+            &plane_model,
             &device,
-            0,
             HitShader::Portal,
         ),
         AccelerationStructureInstance::new(
             Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_x(PI / 2.0),
-            &fence_blas,
+            &fence_model,
             &device,
-            3,
             HitShader::Textured,
         ),
     ];
@@ -569,9 +545,8 @@ fn main() -> anyhow::Result<()> {
                     rng.gen_range(-10.0..10.0),
                 )) * Mat4::from_rotation_y(rng.gen_range(0.0..100.0))
                     * Mat4::from_scale(rng.gen_range(0.01..0.1)),
-                &tori_blas,
+                &tori_model,
                 &device,
-                1,
                 if rng.gen() {
                     HitShader::Textured
                 } else {
@@ -612,7 +587,6 @@ fn main() -> anyhow::Result<()> {
     let mut tlas = build_tlas(
         &instances_buffer,
         num_instances,
-        &as_loader,
         &mut allocator,
         &mut scratch_buffer,
         init_command_buffer.buffer(),
@@ -634,18 +608,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Create descriptor sets
-
-    let model_info_buffer = Buffer::new(
-        bytemuck::cast_slice(&[
-            plane_buffers.model_info(&device),
-            tori_buffers.model_info(&device),
-            lain_buffers.model_info(&device),
-            fence_buffers.model_info(&device),
-        ]),
-        "model info",
-        vk::BufferUsageFlags::STORAGE_BUFFER,
-        &mut allocator,
-    )?;
 
     let (descriptor_pool, general_ds) = create_descriptors_sets(
         &device,
@@ -721,12 +683,7 @@ fn main() -> anyhow::Result<()> {
                         vk::BufferUsageFlags::UNIFORM_BUFFER,
                         &mut allocator,
                     )?,
-                    tlas: tlas.clone(
-                        init_command_buffer.buffer(),
-                        "tlas 0",
-                        &as_loader,
-                        &mut allocator,
-                    )?,
+                    tlas: tlas.clone(init_command_buffer.buffer(), "tlas 0", &mut allocator)?,
                     scratch_buffer: ScratchBuffer::new("scratch buffer 0", &as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
                         bytemuck::cast_slice(&instances),
@@ -779,15 +736,7 @@ fn main() -> anyhow::Result<()> {
     {
         drop(instances);
 
-        for staging_buffer in std::array::IntoIter::new([
-            plane_staging_buffer,
-            tori_staging_buffer,
-            lain_staging_buffer,
-            fence_staging_buffer,
-        ])
-        .flatten()
-        .chain(image_staging_buffers)
-        {
+        for staging_buffer in buffers_to_cleanup.into_iter() {
             staging_buffer.cleanup_and_drop(&mut allocator)?;
         }
 
@@ -796,9 +745,6 @@ fn main() -> anyhow::Result<()> {
 
     // Create swapchain
 
-    let surface_caps = unsafe {
-        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
-    }?;
     let mut image_count = (surface_caps.min_image_count + 1).max(3);
     if surface_caps.max_image_count > 0 && image_count > surface_caps.max_image_count {
         image_count = surface_caps.max_image_count;
@@ -821,8 +767,7 @@ fn main() -> anyhow::Result<()> {
         .clipped(true)
         .old_swapchain(vk::SwapchainKHR::null());
 
-    let swapchain_loader = SwapchainLoader::new(&instance, &device);
-    let mut swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
+    let mut swapchain = Swapchain::new(&device, swapchain_info)?;
 
     let mut current_frame = 0;
 
@@ -840,8 +785,6 @@ fn main() -> anyhow::Result<()> {
         pipeline_layout,
         shader_binding_tables,
         general_ds,
-        as_loader,
-        pipeline_loader,
     };
 
     event_loop.run(move |event, _, control_flow| {
@@ -874,7 +817,7 @@ fn main() -> anyhow::Result<()> {
                         swapchain_info.image_extent = extent;
                         swapchain_info.old_swapchain = swapchain.swapchain;
 
-                        swapchain = Swapchain::new(&swapchain_loader, swapchain_info, &allocator)?;
+                        swapchain = Swapchain::new(&device, swapchain_info)?;
 
                         let resize_command_buffer =
                             command_buffer_and_queue.begin_buffer_guard(device.clone())?;
@@ -1042,7 +985,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     match unsafe {
-                        swapchain_loader.acquire_next_image(
+                        device.swapchain_loader.acquire_next_image(
                             swapchain.swapchain,
                             u64::MAX,
                             frame.present_semaphore,
@@ -1098,7 +1041,7 @@ fn main() -> anyhow::Result<()> {
                                     frame.render_fence,
                                 )?;
 
-                                swapchain_loader.queue_present(
+                                device.swapchain_loader.queue_present(
                                     queue,
                                     &vk::PresentInfoKHR::builder()
                                         .wait_semaphores(&[frame.render_semaphore])
@@ -1117,14 +1060,10 @@ fn main() -> anyhow::Result<()> {
                         device.device_wait_idle()?;
                     }
 
-                    plane_buffers.cleanup(&mut allocator)?;
-                    plane_blas.buffer.cleanup(&mut allocator)?;
-                    tori_blas.buffer.cleanup(&mut allocator)?;
-                    tori_buffers.cleanup(&mut allocator)?;
-                    lain_blas.buffer.cleanup(&mut allocator)?;
-                    lain_buffers.cleanup(&mut allocator)?;
-                    fence_buffers.cleanup(&mut allocator)?;
-                    fence_blas.buffer.cleanup(&mut allocator)?;
+                    plane_model.cleanup(&mut allocator)?;
+                    tori_model.cleanup(&mut allocator)?;
+                    lain_model.cleanup(&mut allocator)?;
+                    fence_model.cleanup(&mut allocator)?;
 
                     model_info_buffer.cleanup(&mut allocator)?;
 

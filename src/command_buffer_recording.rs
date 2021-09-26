@@ -2,11 +2,7 @@ use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, PipelineImageMemoryBarrierParams,
 };
 use crate::util_structs::{
-    AccelerationStructure, Allocator, Buffer, Image, ScratchBuffer, ShaderBindingTable,
-};
-use ash::extensions::khr::{
-    AccelerationStructure as AccelerationStructureLoader,
-    RayTracingPipeline as RayTracingPipelineLoader,
+    AccelerationStructure, Allocator, Buffer, Device, Image, ScratchBuffer, ShaderBindingTable,
 };
 use ash::vk;
 
@@ -21,8 +17,6 @@ pub struct GlobalResources {
     pub pipeline_layout: vk::PipelineLayout,
     pub general_ds: vk::DescriptorSet,
     pub shader_binding_tables: ShaderBindingTables,
-    pub as_loader: AccelerationStructureLoader,
-    pub pipeline_loader: RayTracingPipelineLoader,
 }
 
 pub struct PerFrameResources {
@@ -42,7 +36,7 @@ impl PerFrameResources {
         extent: vk::Extent2D,
         format: vk::Format,
         index: usize,
-        device: &ash::Device,
+        device: &Device,
         allocator: &mut Allocator,
     ) -> anyhow::Result<()> {
         self.storage_image.cleanup(allocator)?;
@@ -105,7 +99,7 @@ impl PerFrameResources {
         swapchain_image: vk::Image,
         extent: vk::Extent2D,
         global: &GlobalResources,
-        device: &ash::Device,
+        device: &Device,
         allocator: &mut Allocator,
     ) -> anyhow::Result<()> {
         self.tlas.update_tlas(
@@ -113,7 +107,6 @@ impl PerFrameResources {
             self.num_instances,
             command_buffer,
             allocator,
-            &global.as_loader,
             &mut self.scratch_buffer,
         )?;
 
@@ -145,7 +138,7 @@ impl PerFrameResources {
             &[],
         );
 
-        global.pipeline_loader.cmd_trace_rays(
+        device.rt_pipeline_loader.cmd_trace_rays(
             command_buffer,
             &global.shader_binding_tables.raygen.address_region,
             &global.shader_binding_tables.miss.address_region,

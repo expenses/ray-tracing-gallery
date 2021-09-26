@@ -1,14 +1,17 @@
 use ash::extensions::ext::DebugUtils as DebugUtilsLoader;
 use ash::extensions::khr::{
-    AccelerationStructure as AccelerationStructureLoader, Swapchain as SwapchainLoader,
+    AccelerationStructure as AccelerationStructureLoader,
+    RayTracingPipeline as RayTracingPipelineLoader, Swapchain as SwapchainLoader,
 };
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDesc};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
+use crate::gpu_structs::{ModelInfo, Vertex};
 use crate::util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, sbt_aligned_size, PipelineImageMemoryBarrierParams,
+    cmd_pipeline_image_memory_barrier_explicit, load_rgba_png_image_from_bytes, sbt_aligned_size,
+    PipelineImageMemoryBarrierParams,
 };
 
 // A list of C strings and their associated pointers
@@ -25,25 +28,73 @@ impl<'a> CStrList<'a> {
     }
 }
 
+// Contains a logical device as well as extension loaders.
+#[derive(Clone)]
+pub struct Device {
+    inner: ash::Device,
+    debug_utils_loader: DebugUtilsLoader,
+    pub as_loader: AccelerationStructureLoader,
+    pub swapchain_loader: SwapchainLoader,
+    pub rt_pipeline_loader: RayTracingPipelineLoader,
+}
+
+impl Device {
+    pub fn wrap_with_extensions(
+        device: ash::Device,
+        instance: &ash::Instance,
+        debug_utils_loader: DebugUtilsLoader,
+    ) -> Self {
+        Self {
+            debug_utils_loader,
+            as_loader: AccelerationStructureLoader::new(instance, &device),
+            swapchain_loader: SwapchainLoader::new(instance, &device),
+            rt_pipeline_loader: RayTracingPipelineLoader::new(instance, &device),
+            inner: device,
+        }
+    }
+
+    pub unsafe fn set_object_name<T: vk::Handle>(
+        &self,
+        handle: T,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        self.debug_utils_loader.debug_utils_set_object_name(
+            self.inner.handle(),
+            &*vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(T::TYPE)
+                .object_handle(handle.as_raw())
+                .object_name(&CString::new(name)?),
+        )?;
+
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for Device {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 pub struct Allocator {
     pub inner: gpu_allocator::vulkan::Allocator,
-    pub device: ash::Device,
+    pub device: Device,
     queue_family: u32,
-    debug_utils_loader: DebugUtilsLoader,
 }
 
 impl Allocator {
     pub fn new(
         instance: ash::Instance,
-        device: ash::Device,
-        debug_utils_loader: DebugUtilsLoader,
+        device: Device,
         physical_device: vk::PhysicalDevice,
         queue_family: u32,
     ) -> anyhow::Result<Self> {
         Ok(Allocator {
             inner: gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
                 instance,
-                device: device.clone(),
+                device: device.inner.clone(),
                 physical_device,
                 debug_settings: gpu_allocator::AllocatorDebugSettings {
                     log_memory_information: false,
@@ -58,24 +109,7 @@ impl Allocator {
             })?,
             queue_family,
             device,
-            debug_utils_loader,
         })
-    }
-
-    pub unsafe fn set_object_name<T: vk::Handle>(
-        &self,
-        handle: T,
-        name: &str,
-    ) -> anyhow::Result<()> {
-        self.debug_utils_loader.debug_utils_set_object_name(
-            self.device.handle(),
-            &*vk::DebugUtilsObjectNameInfoEXT::builder()
-                .object_type(T::TYPE)
-                .object_handle(handle.as_raw())
-                .object_name(&CString::new(name)?),
-        )?;
-
-        Ok(())
     }
 }
 
@@ -88,11 +122,74 @@ pub struct AccelerationStructure {
 }
 
 impl AccelerationStructure {
+    fn build_blas(
+        triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
+        num_indices: u32,
+        name: &str,
+        scratch_buffer: &mut ScratchBuffer,
+        allocator: &mut Allocator,
+        command_buffer: vk::CommandBuffer,
+        opaque: bool,
+    ) -> anyhow::Result<Self> {
+        let num_triangles = num_indices / 3;
+
+        let flags = if opaque {
+            vk::GeometryFlagsKHR::OPAQUE
+        } else {
+            vk::GeometryFlagsKHR::empty()
+        };
+
+        let geometry = vk::AccelerationStructureGeometryKHR::builder()
+            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                triangles: triangles_data,
+            })
+            .flags(flags);
+
+        let offset =
+            vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_triangles);
+
+        let geometries = &[*geometry];
+
+        let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .geometries(geometries);
+
+        let build_sizes = unsafe {
+            allocator
+                .device
+                .as_loader
+                .get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &geometry_info,
+                    &[num_triangles],
+                )
+        };
+
+        let scratch_buffer = scratch_buffer.ensure_size_of(
+            build_sizes.build_scratch_size,
+            command_buffer,
+            allocator,
+        )?;
+
+        AccelerationStructure::new(
+            build_sizes.acceleration_structure_size,
+            name,
+            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            allocator,
+            scratch_buffer,
+            geometry_info,
+            offset,
+            command_buffer,
+        )
+    }
+
     pub fn new(
         size: vk::DeviceSize,
         name: &str,
         ty: vk::AccelerationStructureTypeKHR,
-        loader: &AccelerationStructureLoader,
         allocator: &mut Allocator,
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
@@ -110,7 +207,7 @@ impl AccelerationStructure {
         )?;
 
         let acceleration_structure = unsafe {
-            loader.create_acceleration_structure(
+            allocator.device.as_loader.create_acceleration_structure(
                 &vk::AccelerationStructureCreateInfoKHR::builder()
                     .buffer(buffer.buffer)
                     .offset(0)
@@ -121,7 +218,9 @@ impl AccelerationStructure {
         }?;
 
         unsafe {
-            allocator.set_object_name(acceleration_structure, name)?;
+            allocator
+                .device
+                .set_object_name(acceleration_structure, name)?;
         }
 
         geometry_info = geometry_info
@@ -131,11 +230,14 @@ impl AccelerationStructure {
             });
 
         unsafe {
-            loader.cmd_build_acceleration_structures(
-                command_buffer,
-                &[*geometry_info],
-                &[&[*offset]],
-            );
+            allocator
+                .device
+                .as_loader
+                .cmd_build_acceleration_structures(
+                    command_buffer,
+                    &[*geometry_info],
+                    &[&[*offset]],
+                );
         }
 
         Ok(Self {
@@ -153,7 +255,6 @@ impl AccelerationStructure {
         num_instances: u32,
         command_buffer: vk::CommandBuffer,
         allocator: &mut Allocator,
-        loader: &AccelerationStructureLoader,
         scratch_buffer: &mut ScratchBuffer,
     ) -> anyhow::Result<()> {
         let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
@@ -185,11 +286,14 @@ impl AccelerationStructure {
             .dst_acceleration_structure(self.acceleration_structure);
 
         let build_sizes = unsafe {
-            loader.get_acceleration_structure_build_sizes(
-                vk::AccelerationStructureBuildTypeKHR::DEVICE,
-                &geometry_info,
-                &[num_instances],
-            )
+            allocator
+                .device
+                .as_loader
+                .get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &geometry_info,
+                    &[num_instances],
+                )
         };
 
         let scratch_buffer = scratch_buffer.ensure_size_of(
@@ -206,11 +310,14 @@ impl AccelerationStructure {
             vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_instances);
 
         unsafe {
-            loader.cmd_build_acceleration_structures(
-                command_buffer,
-                &[*geometry_info],
-                &[&[*offset]],
-            );
+            allocator
+                .device
+                .as_loader
+                .cmd_build_acceleration_structures(
+                    command_buffer,
+                    &[*geometry_info],
+                    &[&[*offset]],
+                );
         }
 
         Ok(())
@@ -220,7 +327,6 @@ impl AccelerationStructure {
         &self,
         command_buffer: vk::CommandBuffer,
         name: &str,
-        loader: &AccelerationStructureLoader,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
         let new_buffer = Buffer::new_of_size(
@@ -232,7 +338,7 @@ impl AccelerationStructure {
         )?;
 
         let new_acceleration_structure = unsafe {
-            loader.create_acceleration_structure(
+            allocator.device.as_loader.create_acceleration_structure(
                 &vk::AccelerationStructureCreateInfoKHR::builder()
                     .buffer(new_buffer.buffer)
                     .offset(0)
@@ -243,9 +349,11 @@ impl AccelerationStructure {
         }?;
 
         unsafe {
-            allocator.set_object_name(new_acceleration_structure, name)?;
+            allocator
+                .device
+                .set_object_name(new_acceleration_structure, name)?;
 
-            loader.cmd_copy_acceleration_structure(
+            allocator.device.as_loader.cmd_copy_acceleration_structure(
                 command_buffer,
                 &vk::CopyAccelerationStructureInfoKHR::builder()
                     .src(self.acceleration_structure)
@@ -264,7 +372,11 @@ impl AccelerationStructure {
     }
 
     pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
-        unsafe { allocator.set_object_name(self.acceleration_structure, name) }?;
+        unsafe {
+            allocator
+                .device
+                .set_object_name(self.acceleration_structure, name)
+        }?;
 
         self.buffer.rename(&format!("{} buffer", name), allocator)?;
 
@@ -392,7 +504,6 @@ impl ShaderBindingTable {
         name: &str,
         props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
         range: std::ops::Range<u32>,
-        device: &ash::Device,
         allocator: &mut Allocator,
     ) -> anyhow::Result<Self> {
         let offset = range.start;
@@ -415,7 +526,7 @@ impl ShaderBindingTable {
         )?;
 
         let address_region = vk::StridedDeviceAddressRegionKHR::builder()
-            .device_address(buffer.device_address(device))
+            .device_address(buffer.device_address(&allocator.device))
             .stride(handle_size_aligned as u64)
             .size(handle_size_aligned as u64 * num_shaders);
 
@@ -464,7 +575,7 @@ impl Buffer {
                 allocation.offset(),
             )?;
 
-            allocator.set_object_name(buffer, name)?;
+            allocator.device.set_object_name(buffer, name)?;
         };
 
         Ok(Self { buffer, allocation })
@@ -505,7 +616,7 @@ impl Buffer {
                 allocation.offset(),
             )?;
 
-            allocator.set_object_name(buffer, name)?;
+            allocator.device.set_object_name(buffer, name)?;
         };
 
         Ok(Self { buffer, allocation })
@@ -538,7 +649,7 @@ impl Buffer {
             linear: true,
         })?;
 
-        Self::from_parts(allocation, buffer, bytes, name, allocator)
+        Self::from_parts(allocation, buffer, bytes, name, &allocator.device)
     }
 
     pub fn new_with_custom_alignment(
@@ -571,7 +682,7 @@ impl Buffer {
             linear: true,
         })?;
 
-        Self::from_parts(allocation, buffer, bytes, name, allocator)
+        Self::from_parts(allocation, buffer, bytes, name, &allocator.device)
     }
 
     fn from_parts(
@@ -579,26 +690,22 @@ impl Buffer {
         buffer: vk::Buffer,
         bytes: &[u8],
         name: &str,
-        allocator: &Allocator,
+        device: &Device,
     ) -> anyhow::Result<Self> {
         let slice = allocation.mapped_slice_mut().unwrap();
 
         slice[..bytes.len()].copy_from_slice(bytes);
 
         unsafe {
-            allocator.device.bind_buffer_memory(
-                buffer,
-                allocation.memory(),
-                allocation.offset(),
-            )?;
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?;
 
-            allocator.set_object_name(buffer, name)?;
+            device.set_object_name(buffer, name)?;
         };
 
         Ok(Self { buffer, allocation })
     }
 
-    pub fn device_address(&self, device: &ash::Device) -> vk::DeviceAddress {
+    pub fn device_address(&self, device: &Device) -> vk::DeviceAddress {
         unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::builder().buffer(self.buffer),
@@ -623,7 +730,7 @@ impl Buffer {
 
     pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
         unsafe {
-            allocator.set_object_name(self.buffer, name)?;
+            allocator.device.set_object_name(self.buffer, name)?;
         }
 
         allocator
@@ -698,7 +805,7 @@ impl Image {
                 .device
                 .bind_image_memory(image, allocation.memory(), allocation.offset())?;
 
-            allocator.set_object_name(image, name)?;
+            allocator.device.set_object_name(image, name)?;
         };
 
         let view = unsafe {
@@ -765,42 +872,160 @@ impl Image {
     }
 }
 
-pub struct ModelBuffers {
+pub struct Model {
     pub vertices: Buffer,
     pub indices: Buffer,
-    pub triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
-    pub primitive_count: u32,
+    pub blas: AccelerationStructure,
     pub image_index: u32,
+    pub id: u32,
 }
 
-impl ModelBuffers {
-    pub fn new<T: bytemuck::Pod>(
-        vertices: &[T],
+impl Model {
+    pub fn load_gltf(
+        bytes: &[u8],
+        name: &str,
+        fallback_image_index: u32,
+        allocator: &mut Allocator,
+        image_manager: &mut ImageManager,
+        command_buffer: vk::CommandBuffer,
+        scratch_buffer: &mut ScratchBuffer,
+        opaque: bool,
+        model_info: &mut Vec<ModelInfo>,
+        buffers_to_cleanup: &mut Vec<Buffer>,
+    ) -> anyhow::Result<Self> {
+        let gltf = gltf::Gltf::from_slice(bytes)?;
+
+        let buffer_blob = gltf.blob.as_ref().unwrap();
+
+        let mut indices = Vec::new();
+        let mut vertices = Vec::new();
+
+        for mesh in gltf.meshes() {
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|buffer| {
+                    debug_assert_eq!(buffer.index(), 0);
+                    Some(buffer_blob)
+                });
+
+                let read_indices = match reader.read_indices().unwrap() {
+                    gltf::mesh::util::ReadIndices::U16(indices) => indices,
+                    gltf::mesh::util::ReadIndices::U32(_) => {
+                        return Err(anyhow::anyhow!("U32 indices not supported"))
+                    }
+                    _ => unreachable!(),
+                };
+
+                let num_vertices = vertices.len() as u16;
+                indices.extend(read_indices.map(|index| index + num_vertices));
+
+                let positions = reader.read_positions().unwrap();
+                let normals = reader.read_normals().unwrap();
+                let uvs = reader.read_tex_coords(0).unwrap().into_f32();
+
+                positions
+                    .zip(normals)
+                    .zip(uvs)
+                    .for_each(|((position, normal), uv)| {
+                        vertices.push(Vertex {
+                            pos: position.into(),
+                            normal: normal.into(),
+                            uv: uv.into(),
+                        });
+                    })
+            }
+        }
+
+        let mut image_index = || -> Option<anyhow::Result<u32>> {
+            let material = gltf.materials().next()?;
+
+            let diffuse_texture = material
+                .pbr_metallic_roughness()
+                .base_color_texture()?
+                .texture();
+
+            let linear_filtering =
+                diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
+
+            let image_view = match diffuse_texture.source().source() {
+                gltf::image::Source::View { view, .. } => view,
+                _ => return None,
+            };
+
+            let image_start = image_view.offset();
+            let image_end = image_start + image_view.length();
+            let image_bytes = &buffer_blob[image_start..image_end];
+
+            Some(
+                load_rgba_png_image_from_bytes(
+                    image_bytes,
+                    &format!("{} image", name),
+                    command_buffer,
+                    allocator,
+                    buffers_to_cleanup,
+                )
+                .map(|image| image_manager.push_image(image, linear_filtering)),
+            )
+        };
+
+        let image_index = match image_index() {
+            Some(result) => result?,
+            None => fallback_image_index,
+        };
+
+        let model_id = model_info.len() as u32;
+
+        let model = Self::new(
+            &vertices,
+            &indices,
+            image_index,
+            name,
+            allocator,
+            command_buffer,
+            scratch_buffer,
+            opaque,
+            model_id,
+        )?;
+
+        model_info.push(ModelInfo {
+            vertex_buffer_address: model.vertices.device_address(&allocator.device),
+            index_buffer_address: model.indices.device_address(&allocator.device),
+            image_index: model.image_index,
+            _padding: 0,
+        });
+
+        Ok(model)
+    }
+
+    fn new(
+        vertices: &[Vertex],
         indices: &[u16],
         image_index: u32,
         name: &str,
         allocator: &mut Allocator,
+        command_buffer: vk::CommandBuffer,
+        scratch_buffer: &mut ScratchBuffer,
+        opaque: bool,
+        id: u32,
     ) -> anyhow::Result<Self> {
         let num_vertices = vertices.len() as u32;
         let num_indices = indices.len() as u32;
-        let primitive_count = num_indices / 3;
-        let stride = std::mem::size_of::<T>() as u64;
+        let stride = std::mem::size_of::<Vertex>() as u64;
+
+        let buffer_flags = vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 
         let vertices = Buffer::new(
             bytemuck::cast_slice(vertices),
             &format!("{} vertices", name),
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            buffer_flags,
             allocator,
         )?;
 
         let indices = Buffer::new(
             bytemuck::cast_slice(indices),
             &format!("{} indices", name),
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            buffer_flags,
             allocator,
         )?;
 
@@ -819,24 +1044,24 @@ impl ModelBuffers {
         Ok(Self {
             vertices,
             indices,
-            triangles_data: *triangles_data,
-            primitive_count,
             image_index,
+            blas: AccelerationStructure::build_blas(
+                *triangles_data,
+                num_indices,
+                &format!("{} blas", name),
+                scratch_buffer,
+                allocator,
+                command_buffer,
+                opaque,
+            )?,
+            id,
         })
-    }
-
-    pub fn model_info(&self, device: &ash::Device) -> crate::ModelInfo {
-        crate::ModelInfo {
-            vertex_buffer_address: self.vertices.device_address(device),
-            index_buffer_address: self.indices.device_address(device),
-            image_index: self.image_index,
-            _padding: 0,
-        }
     }
 
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
         self.vertices.cleanup(allocator)?;
         self.indices.cleanup(allocator)?;
+        self.blas.buffer.cleanup(allocator)?;
         Ok(())
     }
 }
@@ -848,17 +1073,13 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn new(
-        swapchain_loader: &SwapchainLoader,
-        info: vk::SwapchainCreateInfoKHR,
-        allocator: &Allocator,
-    ) -> anyhow::Result<Self> {
+    pub fn new(device: &Device, info: vk::SwapchainCreateInfoKHR) -> anyhow::Result<Self> {
         unsafe {
-            let swapchain = swapchain_loader.create_swapchain(&info, None)?;
-            let images = swapchain_loader.get_swapchain_images(swapchain)?;
+            let swapchain = device.swapchain_loader.create_swapchain(&info, None)?;
+            let images = device.swapchain_loader.get_swapchain_images(swapchain)?;
 
             for (i, image) in images.iter().enumerate() {
-                allocator.set_object_name(*image, &format!("Swapchain image {}", i))?;
+                device.set_object_name(*image, &format!("Swapchain image {}", i))?;
             }
 
             let image_views: Vec<_> = images
@@ -875,7 +1096,7 @@ impl Swapchain {
                                 .layer_count(1)
                                 .build(),
                         );
-                    allocator.device.create_image_view(&image_view_info, None)
+                    device.create_image_view(&image_view_info, None)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -896,7 +1117,7 @@ pub struct ImageManager {
 }
 
 impl ImageManager {
-    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+    pub fn new(device: &Device) -> anyhow::Result<Self> {
         Ok(Self {
             nearest_sampler: unsafe {
                 device.create_sampler(
@@ -980,7 +1201,7 @@ pub struct CommandBufferAndQueue {
 
 impl CommandBufferAndQueue {
     pub fn new(
-        device: &ash::Device,
+        device: &Device,
         buffer: vk::CommandBuffer,
         queue: vk::Queue,
         pool: vk::CommandPool,
@@ -995,7 +1216,7 @@ impl CommandBufferAndQueue {
         })
     }
 
-    pub fn begin(&self, device: &ash::Device) -> anyhow::Result<()> {
+    pub fn begin(&self, device: &Device) -> anyhow::Result<()> {
         unsafe {
             device.begin_command_buffer(
                 self.buffer,
@@ -1009,7 +1230,7 @@ impl CommandBufferAndQueue {
 
     pub fn begin_buffer_guard(
         &mut self,
-        device: ash::Device,
+        device: Device,
     ) -> anyhow::Result<CommandBufferAndQueueRaii> {
         self.begin(&device)?;
 
@@ -1020,7 +1241,7 @@ impl CommandBufferAndQueue {
         })
     }
 
-    pub fn finish_block_and_reset(&self, device: &ash::Device) -> anyhow::Result<()> {
+    pub fn finish_block_and_reset(&self, device: &Device) -> anyhow::Result<()> {
         unsafe {
             device.end_command_buffer(self.buffer)?;
 
@@ -1042,7 +1263,7 @@ impl CommandBufferAndQueue {
 
 pub struct CommandBufferAndQueueRaii<'a> {
     inner: &'a mut CommandBufferAndQueue,
-    device: ash::Device,
+    device: Device,
     already_finished: bool,
 }
 

@@ -1,4 +1,4 @@
-use crate::util_structs::AccelerationStructure;
+use crate::util_structs::{Device, Model};
 use crate::HitShader;
 use ash::vk;
 use ultraviolet::{Mat4, Vec2, Vec3, Vec4};
@@ -40,13 +40,7 @@ pub struct AccelerationStructureInstance {
 }
 
 impl AccelerationStructureInstance {
-    pub fn new(
-        transform: Mat4,
-        blas: &AccelerationStructure,
-        device: &ash::Device,
-        custom_index: u32,
-        hit_shader: HitShader,
-    ) -> Self {
+    pub fn new(transform: Mat4, model: &Model, device: &Device, hit_shader: HitShader) -> Self {
         fn merge_fields(lower: u32, upper: u8) -> u32 {
             ((upper as u32) << 24) | lower
         }
@@ -55,12 +49,12 @@ impl AccelerationStructureInstance {
 
         Self {
             transform: transpose_matrix_for_instance(transform),
-            instance_custom_index_and_mask: merge_fields(custom_index, 0xFF),
+            instance_custom_index_and_mask: merge_fields(model.id, 0xFF),
             instance_shader_binding_table_record_offset_and_flags: merge_fields(
                 sbt_offset,
                 vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
             ),
-            acceleration_structure_device_address: blas.buffer.device_address(device),
+            acceleration_structure_device_address: model.blas.buffer.device_address(device),
         }
     }
 }
