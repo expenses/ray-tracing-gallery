@@ -19,14 +19,13 @@ vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
 
 // Ray Tracing Gems II, Chapter 4.3
 // https://link.springer.com/content/pdf/10.1007%2F978-1-4842-7185-8.pdf
-vec3 get_shadow_terminator_fix_shadow_origin(Vertex a, Vertex b, Vertex c, vec3 barycentric_coords) {
-    // Get the model-space intersection point
-    vec3 point = interpolate(a.pos, b.pos, c.pos, barycentric_coords);
-
+//
+// `interpolated_point` is the model-space intersection point
+vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_point, vec3 barycentric_coords) {
     // Get the 3 offset for the points
-    vec3 offset_a = compute_vector_and_project_onto_tangent_plane(point, a);
-    vec3 offset_b = compute_vector_and_project_onto_tangent_plane(point, b);
-    vec3 offset_c = compute_vector_and_project_onto_tangent_plane(point, c);
+    vec3 offset_a = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.a);
+    vec3 offset_b = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.b);
+    vec3 offset_c = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.c);
 
     // Interpolate an offset
     vec3 interpolated_offset = interpolate(offset_a, offset_b, offset_c, barycentric_coords);
@@ -39,40 +38,22 @@ void main() {
     uint model_index = gl_InstanceCustomIndexEXT;
     ModelInfo info = model_info[model_index];
 
-    uint index_offset = gl_PrimitiveID * 3;
-
-    Indices indices = Indices(info.index_buffer_address);
-
-    uvec3 index = uvec3(
-        indices.buf[index_offset],
-        indices.buf[index_offset + 1],
-        indices.buf[index_offset + 2]
-    );
-
-    Vertices vertices = Vertices(info.vertex_buffer_address);
-
-    Vertex a = unpack_vertex(vertices.buf[index.x]);
-    Vertex b = unpack_vertex(vertices.buf[index.y]);
-    Vertex c = unpack_vertex(vertices.buf[index.z]);
-
-    const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
-
-    vec3 interpolated_normal = interpolate(a.normal, b.normal, c.normal, barycentric_coords);
+    Triangle triangle = load_triangle(triangle);
+    vec3 barycentric_coords = compute_barycentric_coords();
+    Vertex interpolated = interpolate_triangle(triangle, barycentric_coords);
 
     // Just in-case we do any non-uniform scaling, we use a normal matrix here.
     // This is defined as 'the transpose of the inverse of the upper-left 3x3 part of the model matrix'
     //
     // See: https://learnopengl.com/Lighting/Basic-Lighting
-    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
     vec3 normal = normalize(rotated_normal);
 
-    vec2 uv = interpolate(a.uv, b.uv, c.uv, barycentric_coords);
-
-    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(a, b, c, barycentric_coords);
+    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(tri, interpolated.pos, barycentric_coords);
 
     // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
-    vec3 colour = texture(textures[nonuniformEXT(info.texture_index)], uv).rgb;
+    vec3 colour = texture(textures[nonuniformEXT(info.texture_index)], interpolated.uv).rgb;
 
     float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 

@@ -10,7 +10,7 @@ pub struct Uniforms {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct Vertex {
     pub pos: Vec3,
     pub normal: Vec3,

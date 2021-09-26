@@ -13,26 +13,9 @@ void main() {
     uint model_index = gl_InstanceCustomIndexEXT;
     ModelInfo info = model_info[model_index];
 
-    uint index_offset = gl_PrimitiveID * 3;
+    Vertex interpolated = interpolate_triangle(load_triangle(info), compute_barycentric_coords());
 
-    Indices indices = Indices(info.index_buffer_address);
-
-    uvec3 index = uvec3(
-        indices.buf[index_offset],
-        indices.buf[index_offset + 1],
-        indices.buf[index_offset + 2]
-    );
-
-    Vertices vertices = Vertices(info.vertex_buffer_address);
-
-    Vertex a = unpack_vertex(vertices.buf[index.x]);
-    Vertex b = unpack_vertex(vertices.buf[index.y]);
-    Vertex c = unpack_vertex(vertices.buf[index.z]);
-
-    const vec3 barycentric_coords = vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
-
-    vec3 interpolated_normal = interpolate(a.normal, b.normal, c.normal, barycentric_coords);
-    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
     vec3 normal = normalize(rotated_normal);
 
     primary_payload.new_ray_direction = reflect(gl_WorldRayDirectionEXT, normal);

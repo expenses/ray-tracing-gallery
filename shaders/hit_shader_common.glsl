@@ -67,10 +67,53 @@ Vertex unpack_vertex(PackedVertex packed) {
     return vertex;
 }
 
+vec3 compute_barycentric_coords() {
+    return vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
+}
+
 vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
 vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
+}
+
+struct Triangle {
+    Vertex a;
+    Vertex b;
+    Vertex c;
+};
+
+Triangle load_triangle(ModelInfo info) {
+    uint index_offset = gl_PrimitiveID * 3;
+
+    Indices indices = Indices(info.index_buffer_address);
+
+    uvec3 index = uvec3(
+        indices.buf[index_offset],
+        indices.buf[index_offset + 1],
+        indices.buf[index_offset + 2]
+    );
+
+    Vertices vertices = Vertices(info.vertex_buffer_address);
+
+    Triangle triangle;
+
+    triangle.a = unpack_vertex(vertices.buf[index.x]);
+    triangle.b = unpack_vertex(vertices.buf[index.y]);
+    triangle.c = unpack_vertex(vertices.buf[index.z]);
+
+    return triangle;
+}
+
+
+Vertex interpolate_triangle(Triangle tri, vec3 barycentric_coords) {
+    Vertex interpolated;
+
+    interpolated.pos = interpolate(tri.a.pos, tri.b.pos, tri.c.pos, barycentric_coords);
+    interpolated.normal = interpolate(tri.a.normal, tri.b.normal, tri.c.normal, barycentric_coords);
+    interpolated.uv = interpolate(tri.a.uv, tri.b.uv, tri.c.uv, barycentric_coords);
+
+    return interpolated;
 }

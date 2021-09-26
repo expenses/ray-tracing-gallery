@@ -129,19 +129,24 @@ pub fn ray_generation(
     }
 }
 
-fn interpolate(a: Vec3, b: Vec3, c: Vec3, barycentric_coords: Vec3) -> Vec3 {
+fn compute_barycentric_coords(hit_attributes: Vec2) -> Vec3 {
+    Vec3::new(1.0 - hit_attributes.x - hit_attributes.y, hit_attributes.x, hit_attributes.y)
+}
+
+fn interpolate3(a: Vec3, b: Vec3, c: Vec3, barycentric_coords: Vec3) -> Vec3 {
+    a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
+}
+
+fn interpolate2(a: Vec2, b: Vec2, c: Vec2, barycentric_coords: Vec3) -> Vec2 {
     a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
 }
 
 fn get_shadow_terminator_fix_shadow_origin(
-    a: Vertex,
-    b: Vertex,
-    c: Vertex,
+    tri: Triangle,
+    interpolated_point: Vec3,
     barycentric_coords: Vec3,
     world_to_object: Mat4,
 ) -> Vec3 {
-    let point = interpolate(a.pos, b.pos, c.pos, barycentric_coords);
-
     fn compute_vector_and_project_onto_tangent_plane(point: Vec3, vert: Vertex) -> Vec3 {
         let vector_to_point = point - vert.pos;
 
@@ -150,13 +155,29 @@ fn get_shadow_terminator_fix_shadow_origin(
         vector_to_point - (dot_product * vert.normal)
     }
 
-    let offset_a = compute_vector_and_project_onto_tangent_plane(point, a);
-    let offset_b = compute_vector_and_project_onto_tangent_plane(point, b);
-    let offset_c = compute_vector_and_project_onto_tangent_plane(point, c);
+    let offset_a = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.a);
+    let offset_b = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.b);
+    let offset_c = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.c);
 
-    let intepolated_offset = interpolate(offset_a, offset_b, offset_c, barycentric_coords);
+    let intepolated_offset = interpolate3(offset_a, offset_b, offset_c, barycentric_coords);
 
-    (world_to_object * (point + intepolated_offset).extend(1.0)).truncate()
+    (world_to_object * (interpolated_point + intepolated_offset).extend(1.0)).truncate()
+}
+
+struct Triangle {
+    a: Vertex,
+    b: Vertex,
+    c: Vertex
+}
+
+impl Triangle {
+    fn interpolate(&self, barycentric_coords: Vec3) -> Vertex {
+        Vertex {
+            pos: interpolate3(self.a.pos, self.b.pos, self.c.pos, barycentric_coords),
+            normal: interpolate3(self.a.normal, self.b.normal, self.c.normal, barycentric_coords),
+            uv: interpolate2(self.a.uv, self.b.uv, self.c.uv, barycentric_coords),
+        }
+    }
 }
 
 #[spirv(closest_hit)]
@@ -168,6 +189,7 @@ pub fn wip_closest_hit(
     #[spirv(ray_payload)] shadow_payload: &mut ShadowRayPayload,
     #[spirv(world_ray_origin)] world_ray_origin: Vec3,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
+    #[spirv(world_to_object)] world_to_object: Mat4,
     #[spirv(ray_tmax)] ray_hit_t: f32,
     #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] model_info: &[ModelInfo],
     #[spirv(descriptor_set = 0, binding = 1)] textures: &RuntimeArray<
@@ -185,23 +207,26 @@ pub fn wip_closest_hit(
     // * NonUniform support:
     //   - https://github.com/EmbarkStudios/rust-gpu/issues/756
 
-    // To check that reading from model_info works.
-    let colour_modulator = {
-        let mut components = [1.0, 1.0, 1.0];
-        components[info.texture_index as usize % 3] = 0.0;
-        Vec3::from(components)
+    let triangle = Triangle {
+        a: Vertex::default(),
+        b: Vertex::default(),
+        c: Vertex::default()
     };
 
-    let barycentric_coords = Vec3::new(
-        1.0 - hit_attributes.x - hit_attributes.y,
-        hit_attributes.x,
-        hit_attributes.y,
-    );
+    let barycentric_coords = compute_barycentric_coords(*hit_attributes);
 
-    let uv = Vec2::splat(0.0);
+    let interpolated = triangle.interpolate(barycentric_coords);
+
     let texture = unsafe { textures.index(info.texture_index as usize) };
-    let colour: Vec4 = unsafe { texture.sample_by_lod(uv, 0.0) };
+    let colour: Vec4 = unsafe { texture.sample_by_lod(interpolated.uv, 0.0) };
     let colour = colour.truncate();
+
+    let unused_shadow_origin = get_shadow_terminator_fix_shadow_origin(
+        triangle,
+        interpolated.pos,
+        barycentric_coords,
+        world_to_object,
+    );
 
     let shadowed = {
         shadow_payload.shadowed = true;
@@ -229,4 +254,17 @@ pub fn wip_closest_hit(
     let lighting = !shadowed as u8 as f32;
 
     payload.colour = colour * ((lighting * 0.6) + 0.4);
+}
+
+#[spirv(closest_hit)]
+pub fn closest_hit_portal(
+    #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
+    #[spirv(world_ray_origin)] world_ray_origin: Vec3,
+    #[spirv(world_ray_direction)] world_ray_direction: Vec3,
+    #[spirv(ray_tmax)] ray_hit_t: f32,
+) {
+    let portal_relative_position = Vec3::new(0.0, 5.0, 0.0);
+
+    payload.new_ray_direction = world_ray_direction;
+    payload.new_ray_origin = world_ray_origin + world_ray_direction * ray_hit_t + portal_relative_position;
 }
