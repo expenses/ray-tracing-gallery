@@ -1,3 +1,4 @@
+use crate::gpu_structs::PushConstantBufferAddresses;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, PipelineImageMemoryBarrierParams,
 };
@@ -17,6 +18,7 @@ pub struct GlobalResources {
     pub pipeline_layout: vk::PipelineLayout,
     pub general_ds: vk::DescriptorSet,
     pub shader_binding_tables: ShaderBindingTables,
+    pub model_info_buffer: Buffer,
 }
 
 pub struct PerFrameResources {
@@ -136,6 +138,18 @@ impl PerFrameResources {
             0,
             &[global.general_ds, self.ray_tracing_ds],
             &[],
+        );
+
+        device.cmd_push_constants(
+            command_buffer,
+            global.pipeline_layout,
+            vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            0,
+            bytemuck::bytes_of(&PushConstantBufferAddresses {
+                model_info: global.model_info_buffer.device_address(device),
+                uniforms: self.ray_tracing_uniforms.device_address(device),
+                acceleration_structure: self.tlas.buffer.device_address(device),
+            }),
         );
 
         device.rt_pipeline_loader.cmd_trace_rays(

@@ -1,12 +1,9 @@
-
-layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
-
-layout(set = 1, binding = 2) uniform Uniforms {
+layout(buffer_reference, scalar) buffer Uniforms {
     mat4 view_inverse;
     mat4 proj_inverse;
     vec3 sun_dir;
     float sun_radius;
-} uniforms;
+};
 
 struct PrimaryRayPayload {
     vec3 colour;
@@ -51,11 +48,17 @@ struct ModelInfo {
     uint texture_index;
 };
 
-layout(set = 0, binding = 0) buffer ModelInformations {
-    ModelInfo model_info[];
+layout(buffer_reference, scalar) buffer ModelInformations {
+    ModelInfo buf[];
 };
 
-layout(set = 0, binding = 1) uniform sampler2D textures[];
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+
+layout(push_constant) uniform PushConstantBufferAddresses {
+    uint64_t model_info;
+    uint64_t uniforms;
+    uint64_t acceleration_structure;
+} push_constant_buffer_addresses;
 
 Vertex unpack_vertex(PackedVertex packed) {
     Vertex vertex;

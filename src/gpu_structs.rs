@@ -29,6 +29,14 @@ pub struct ModelInfo {
     pub _padding: u32,
 }
 
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+pub struct PushConstantBufferAddresses {
+    pub model_info: vk::DeviceAddress,
+    pub uniforms: vk::DeviceAddress,
+    pub acceleration_structure: vk::DeviceAddress,
+}
+
 // A `bytemuck`'d `vk::AccelerationStructureInstanceKHR`.
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]

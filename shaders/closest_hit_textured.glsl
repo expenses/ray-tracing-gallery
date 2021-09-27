@@ -12,9 +12,9 @@
 vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
     vec3 vector_to_point = point - vert.pos;
 
-    float dot = min(0.0, dot(vector_to_point, vert.normal));
+    float dot_product = min(0.0, dot(vector_to_point, vert.normal));
 
-    return vector_to_point - (dot * vert.normal);
+    return vector_to_point - (dot_product * vert.normal);
 }
 
 // Ray Tracing Gems II, Chapter 4.3
@@ -30,15 +30,22 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
     // Interpolate an offset
     vec3 interpolated_offset = interpolate(offset_a, offset_b, offset_c, barycentric_coords);
 
-    // Add the offset to the point and project into world space.
-    return gl_ObjectToWorldEXT * vec4(point + interpolated_offset, 1.0);
+    // Add the offset to the point
+    vec3 local_space_fixed_point = interpolated_point + interpolated_offset;
+
+    // project into world space.
+    return gl_ObjectToWorldEXT * vec4(local_space_fixed_point, 1.0);
 }
 
 void main() {
-    uint model_index = gl_InstanceCustomIndexEXT;
-    ModelInfo info = model_info[model_index];
+    ModelInformations infos = ModelInformations(push_constant_buffer_addresses.model_info);
 
-    Triangle triangle = load_triangle(triangle);
+    ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
+
+    Uniforms uniforms = Uniforms(push_constant_buffer_addresses.uniforms);
+
+    Triangle triangle = load_triangle(info);
+
     vec3 barycentric_coords = compute_barycentric_coords();
     Vertex interpolated = interpolate_triangle(triangle, barycentric_coords);
 
@@ -49,7 +56,7 @@ void main() {
     vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
     vec3 normal = normalize(rotated_normal);
 
-    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(tri, interpolated.pos, barycentric_coords);
+    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
 
     // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
@@ -63,7 +70,7 @@ void main() {
 	shadow_payload.shadowed = uint8_t(1);
     // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
 	traceRayEXT(
-        topLevelAS,
+        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
         0xFF, 1, 0, 1,
         shadow_origin, t_min, uniforms.sun_dir, t_max, 1

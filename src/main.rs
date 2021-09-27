@@ -33,7 +33,8 @@ use util_functions::{
 };
 
 use gpu_structs::{
-    transpose_matrix_for_instance, AccelerationStructureInstance, RayTracingUniforms,
+    transpose_matrix_for_instance, AccelerationStructureInstance, PushConstantBufferAddresses,
+    RayTracingUniforms,
 };
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
@@ -218,7 +219,11 @@ fn main() -> anyhow::Result<()> {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
                 .set_layouts(&[general_dsl, per_frame_dsl])
-                .push_constant_ranges(&[]),
+                .push_constant_ranges(&[*vk::PushConstantRange::builder()
+                    .stage_flags(
+                        vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    )
+                    .size(std::mem::size_of::<PushConstantBufferAddresses>() as u32)]),
             None,
         )
     }?;
@@ -487,7 +492,7 @@ fn main() -> anyhow::Result<()> {
     let model_info_buffer = Buffer::new(
         bytemuck::cast_slice(&model_info),
         "model info",
-        vk::BufferUsageFlags::STORAGE_BUFFER,
+        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         &mut allocator,
     )?;
 
@@ -608,13 +613,8 @@ fn main() -> anyhow::Result<()> {
 
     // Create descriptor sets
 
-    let (descriptor_pool, general_ds) = create_descriptors_sets(
-        &device,
-        &image_manager,
-        &model_info_buffer,
-        general_dsl,
-        descriptor_pool,
-    )?;
+    let general_ds =
+        create_general_descriptors_set(&device, &image_manager, general_dsl, descriptor_pool)?;
 
     // Create frames for multibuffering and their resources.
 
@@ -679,7 +679,8 @@ fn main() -> anyhow::Result<()> {
                     ray_tracing_uniforms: Buffer::new(
                         bytemuck::bytes_of(&uniforms),
                         "ray tracing uniforms 0",
-                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        vk::BufferUsageFlags::UNIFORM_BUFFER
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                         &mut allocator,
                     )?,
                     tlas: tlas.clone(init_command_buffer.buffer(), "tlas 0", &mut allocator)?,
@@ -711,7 +712,8 @@ fn main() -> anyhow::Result<()> {
                     ray_tracing_uniforms: Buffer::new(
                         bytemuck::bytes_of(&uniforms),
                         "ray tracing uniforms 1",
-                        vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        vk::BufferUsageFlags::UNIFORM_BUFFER
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                         &mut allocator,
                     )?,
                     tlas: {
@@ -784,6 +786,7 @@ fn main() -> anyhow::Result<()> {
         pipeline_layout,
         shader_binding_tables,
         general_ds,
+        model_info_buffer,
     };
 
     event_loop.run(move |event, _, control_flow| {
@@ -1064,7 +1067,7 @@ fn main() -> anyhow::Result<()> {
                     lain_model.cleanup(&mut allocator)?;
                     fence_model.cleanup(&mut allocator)?;
 
-                    model_info_buffer.cleanup(&mut allocator)?;
+                    global_resources.model_info_buffer.cleanup(&mut allocator)?;
 
                     let sbts = &global_resources.shader_binding_tables;
 
@@ -1108,13 +1111,6 @@ pub fn create_descriptor_set_layouts_and_pool(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(
-                        vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::ANY_HIT_KHR,
-                    ),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(MAX_BOUND_IMAGES)
                     .stage_flags(
@@ -1125,6 +1121,8 @@ pub fn create_descriptor_set_layouts_and_pool(
         )
     }?;
 
+    // TODO: Remove acceleration structure and uniform buffer from these, using
+    // buffer device addresses instead. This requires support in rust-gpu tho.
     let per_frame_dsl = unsafe {
         device.create_descriptor_set_layout(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
@@ -1132,9 +1130,7 @@ pub fn create_descriptor_set_layouts_and_pool(
                     .binding(0)
                     .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                     .descriptor_count(1)
-                    .stage_flags(
-                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-                    ),
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
@@ -1144,9 +1140,7 @@ pub fn create_descriptor_set_layouts_and_pool(
                     .binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(
-                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-                    ),
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             ]),
             None,
         )
@@ -1182,13 +1176,12 @@ pub fn create_descriptor_set_layouts_and_pool(
     Ok((general_dsl, per_frame_dsl, descriptor_pool))
 }
 
-pub fn create_descriptors_sets(
+pub fn create_general_descriptors_set(
     device: &ash::Device,
     image_manager: &ImageManager,
-    model_info_buffer: &Buffer,
     general_dsl: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-) -> anyhow::Result<(vk::DescriptorPool, vk::DescriptorSet)> {
+) -> anyhow::Result<vk::DescriptorSet> {
     let descriptor_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
@@ -1200,20 +1193,10 @@ pub fn create_descriptors_sets(
     let general_ds = descriptor_sets[0];
 
     unsafe {
-        device.update_descriptor_sets(
-            &[
-                *vk::WriteDescriptorSet::builder()
-                    .dst_set(general_ds)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&[model_info_buffer.descriptor_buffer_info()]),
-                *image_manager.write_descriptor_set(general_ds, 1),
-            ],
-            &[],
-        );
+        device.update_descriptor_sets(&[*image_manager.write_descriptor_set(general_ds, 0)], &[]);
     }
 
-    Ok((descriptor_pool, general_ds))
+    Ok(general_ds)
 }
 
 pub struct Frame {

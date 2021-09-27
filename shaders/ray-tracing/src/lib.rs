@@ -166,6 +166,7 @@ impl Triangle {
     }
 }
 
+/*
 #[spirv(closest_hit)]
 pub fn wip_closest_hit(
     #[spirv(instance_custom_index)] model_index: u32,
@@ -232,6 +233,7 @@ pub fn wip_closest_hit(
 
     payload.colour = colour * ((lighting * 0.6) + 0.4);
 }
+*/
 
 #[spirv(closest_hit)]
 pub fn closest_hit_portal(

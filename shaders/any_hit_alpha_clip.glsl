@@ -10,8 +10,9 @@
 #include "hit_shader_common.glsl"
 
 void main() {
-    uint model_index = gl_InstanceCustomIndexEXT;
-    ModelInfo info = model_info[model_index];
+    ModelInformations infos = ModelInformations(push_constant_buffer_addresses.model_info);
+
+    ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
     Vertex interpolated = interpolate_triangle(load_triangle(info), compute_barycentric_coords());
 
