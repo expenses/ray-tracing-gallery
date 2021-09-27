@@ -43,14 +43,20 @@ impl Device {
         device: ash::Device,
         instance: &ash::Instance,
         debug_utils_loader: DebugUtilsLoader,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let device = Self {
             debug_utils_loader,
             as_loader: AccelerationStructureLoader::new(instance, &device),
             swapchain_loader: SwapchainLoader::new(instance, &device),
             rt_pipeline_loader: RayTracingPipelineLoader::new(instance, &device),
             inner: device,
+        };
+
+        unsafe {
+            device.set_object_name(device.inner.handle(), "Device")?;
         }
+
+        Ok(device)
     }
 
     pub unsafe fn set_object_name<T: vk::Handle>(

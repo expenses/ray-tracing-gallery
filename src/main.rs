@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
 
-    let device = DeviceWithExtensions::wrap_with_extensions(device, &instance, debug_utils_loader);
+    let device = DeviceWithExtensions::wrap_with_extensions(device, &instance, debug_utils_loader)?;
 
     // Get some properties relating to ray tracing and acceleration structures
 

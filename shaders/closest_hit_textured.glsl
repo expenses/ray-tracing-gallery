@@ -31,7 +31,7 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
     vec3 interpolated_offset = interpolate(offset_a, offset_b, offset_c, barycentric_coords);
 
     // Add the offset to the point and project into world space.
-    return vec3(gl_ObjectToWorldEXT * vec4(point + interpolated_offset, 1.0));
+    return gl_ObjectToWorldEXT * vec4(point + interpolated_offset, 1.0);
 }
 
 void main() {
