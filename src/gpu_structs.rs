@@ -3,13 +3,20 @@ use crate::HitShader;
 use ash::vk;
 use ultraviolet::{Mat4, Vec2, Vec3, Vec4};
 
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct RayTracingUniforms {
     pub view_inverse: Mat4,
     pub proj_inverse: Mat4,
     pub sun_dir: Vec3,
-    pub sun_radius: f32,
+    pub _padding: u32,
+    pub show_heatmap: bool,
+}
+
+pub fn bytes_of<T>(reference: &T) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(reference as *const T as *const u8, std::mem::size_of::<T>())
+    }
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]

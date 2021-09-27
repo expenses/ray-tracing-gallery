@@ -15,13 +15,16 @@ use spirv_std::macros::spirv;
 use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
+    arch::read_clock_khr,
     image::SampledImage,
     ray_tracing::{AccelerationStructure, RayFlags},
     Image, RuntimeArray,
 };
 
+mod heatmap;
 mod structs;
 
+use heatmap::{clamp, heatmap_temperature};
 use structs::{ModelInfo, PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
 
 #[spirv(miss)]
@@ -76,6 +79,12 @@ pub fn ray_generation(
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
 ) {
+    let start_time = if uniforms.show_heatmap {
+        unsafe { read_clock_khr() }
+    } else {
+        0
+    };
+
     let launch_id_xy = launch_id.truncate();
     let launch_size_xy = launch_size.truncate();
 
@@ -124,8 +133,22 @@ pub fn ray_generation(
         }
     }
 
+    let colour = if uniforms.show_heatmap {
+        let end_time = unsafe { read_clock_khr() };
+
+        let delta_time = end_time - start_time;
+
+        let heatmap_scale = 1_000_000.0;
+
+        let delta_time_scaled = clamp(delta_time as f32 / heatmap_scale, 0.0, 1.0);
+
+        heatmap_temperature(delta_time_scaled) + (payload.colour * 0.000001)
+    } else {
+        payload.colour
+    };
+
     unsafe {
-        image.write(launch_id_xy, payload.colour.extend(1.0));
+        image.write(launch_id_xy, colour.extend(1.0));
     }
 }
 

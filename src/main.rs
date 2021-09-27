@@ -33,8 +33,8 @@ use util_functions::{
 };
 
 use gpu_structs::{
-    transpose_matrix_for_instance, AccelerationStructureInstance, PushConstantBufferAddresses,
-    RayTracingUniforms,
+    bytes_of, transpose_matrix_for_instance, AccelerationStructureInstance,
+    PushConstantBufferAddresses, RayTracingUniforms,
 };
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
@@ -100,6 +100,7 @@ fn main() -> anyhow::Result<()> {
         DeferredHostOperationsLoader::name(),
         AccelerationStructureLoader::name(),
         RayTracingPipelineLoader::name(),
+        vk::KhrShaderClockFn::name(),
     ]);
 
     let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
@@ -176,6 +177,9 @@ fn main() -> anyhow::Result<()> {
         let mut robustness_features =
             vk::PhysicalDeviceRobustness2FeaturesEXT::builder().null_descriptor(true);
 
+        let mut clock_features =
+            vk::PhysicalDeviceShaderClockFeaturesKHR::builder().shader_subgroup_clock(true);
+
         let device_info = vk::DeviceCreateInfo::builder()
             .queue_create_infos(&queue_info)
             .enabled_features(&device_features)
@@ -186,7 +190,8 @@ fn main() -> anyhow::Result<()> {
             .push_next(&mut ray_tracing_features)
             .push_next(&mut acceleration_structure_features)
             .push_next(&mut storage16_features)
-            .push_next(&mut robustness_features);
+            .push_next(&mut robustness_features)
+            .push_next(&mut clock_features);
 
         unsafe { instance.create_device(physical_device, &device_info, None) }?
     };
@@ -651,7 +656,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut uniforms = RayTracingUniforms {
         sun_dir: sun.as_normal(),
-        sun_radius: 0.1,
+        //sun_radius: 0.1,
         view_inverse: Mat4::identity(),
         proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
             59.0_f32.to_radians(),
@@ -659,6 +664,8 @@ fn main() -> anyhow::Result<()> {
             0.1,
         )
         .inversed(),
+        show_heatmap: false,
+        _padding: 0,
     };
 
     let mut multibuffering_frames = unsafe {
@@ -677,7 +684,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[0],
                     ray_tracing_uniforms: Buffer::new(
-                        bytemuck::bytes_of(&uniforms),
+                        bytes_of(&uniforms),
                         "ray tracing uniforms 0",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -710,7 +717,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[1],
                     ray_tracing_uniforms: Buffer::new(
-                        bytemuck::bytes_of(&uniforms),
+                        bytes_of(&uniforms),
                         "ray tracing uniforms 1",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -878,6 +885,9 @@ fn main() -> anyhow::Result<()> {
                             VirtualKeyCode::Right => kbd_state.sun_cw = pressed,
                             VirtualKeyCode::Left => kbd_state.sun_ccw = pressed,
                             VirtualKeyCode::Down => kbd_state.sun_down = pressed,
+                            VirtualKeyCode::H if pressed => {
+                                uniforms.show_heatmap = !uniforms.show_heatmap
+                            }
                             _ => {}
                         }
                     }
@@ -1003,7 +1013,7 @@ fn main() -> anyhow::Result<()> {
 
                             resources
                                 .ray_tracing_uniforms
-                                .write_mapped(bytemuck::bytes_of(&uniforms), 0)?;
+                                .write_mapped(bytes_of(&uniforms), 0)?;
 
                             let lain_instance_transform = transpose_matrix_for_instance(
                                 lain_base_transform * Mat4::from_rotation_y(lain_rotation),

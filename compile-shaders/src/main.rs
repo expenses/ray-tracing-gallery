@@ -5,10 +5,12 @@ fn main() {
         .print_metadata(MetadataPrintout::None)
         .extension("SPV_KHR_ray_tracing")
         .extension("SPV_EXT_descriptor_indexing")
+        .extension("SPV_KHR_shader_clock")
         .capability(spirv_builder::Capability::RayTracingKHR)
         .capability(spirv_builder::Capability::Int8)
         .capability(spirv_builder::Capability::Int64)
         .capability(spirv_builder::Capability::RuntimeDescriptorArray)
+        .capability(spirv_builder::Capability::ShaderClockKHR)
         .multimodule(false)
         .build()
         .unwrap();
