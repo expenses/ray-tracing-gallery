@@ -6,7 +6,6 @@ A work-in-progress
 
 ## Features
 
-* Uses bindless textures and buffers to render multiple models via ray tracing
 * Top-Level Acceleration Structure updates to dynamically alter the scene.
 * Basic lighting and shadows
 * Double-buffering
