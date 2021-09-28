@@ -24,7 +24,7 @@ use spirv_std::{
 mod heatmap;
 mod structs;
 
-use heatmap::{clamp, heatmap_temperature};
+use heatmap::heatmap_temperature;
 use structs::{ModelInfo, PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
 
 #[spirv(miss)]
@@ -140,7 +140,7 @@ pub fn ray_generation(
 
         let heatmap_scale = 1_000_000.0;
 
-        let delta_time_scaled = clamp(delta_time as f32 / heatmap_scale, 0.0, 1.0);
+        let delta_time_scaled = delta_time as f32 / heatmap_scale;
 
         heatmap_temperature(delta_time_scaled) + (payload.colour * 0.000001)
     } else {

@@ -5,7 +5,7 @@ edition = "2018"
 resolver = "2"
 
 [workspace]
-members = [".", "shaders/ray-tracing", "compile-shaders"]
+members = [".", "shaders/ray-tracing", "shaders/test-shader", "compile-shaders"]
 
 [dependencies]
 anyhow = "1.0.43"

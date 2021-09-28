@@ -1,4 +1,5 @@
 use spirv_std::glam::Vec3;
+use spirv_std::num_traits::Float;
 
 pub fn heatmap_temperature(heat: f32) -> Vec3 {
     let colours = [
@@ -14,33 +15,40 @@ pub fn heatmap_temperature(heat: f32) -> Vec3 {
         Vec3::new(145.0 / 255.0, 0.0 / 255.0, 65.0 / 255.0),
     ];
 
-    let heat_index = heat * 10.0;
-    let heat_index_int = heat_index as i32;
+    let heat = clamp(heat, 0.0, 1.0) * 10.0;
+    let heat_index_int = heat as i32;
 
-    let cur = clamp_int(heat_index_int) as usize;
-    let prv = clamp_int(heat_index_int - 1) as usize;
-    let nxt = clamp_int(heat_index_int + 1) as usize;
+    let cur = heat_index_int as usize;
+    let prv = branchless_max(heat_index_int - 1, 0) as usize;
+    let nxt = branchless_min(heat_index_int + 1, 9) as usize;
+
+    let heat_floor = heat.floor();
+    let heat_ceil = heat.ceil();
 
     let blur = 0.8;
 
-    let wc = smoothstep(cur as f32 - blur, cur as f32 + blur, heat_index)
-        * (1.0 - smoothstep((cur + 1) as f32 - blur, (cur + 1) as f32 + blur, heat_index));
-    let wp = 1.0 - smoothstep(cur as f32 - blur, cur as f32 + blur, heat_index);
-    let wn = smoothstep((cur + 1) as f32 - blur, (cur + 1) as f32 + blur, heat_index);
+    let wc = smoothstep(heat_floor - blur, heat_floor + blur, heat)
+        * (1.0 - smoothstep(heat_ceil - blur, heat_ceil + blur, heat));
+    let wp = 1.0 - smoothstep(heat_floor - blur, heat_floor + blur, heat);
+    let wn = smoothstep(heat_ceil - blur, heat_ceil + blur, heat);
 
-    let r = wc * colours[cur] + wp * colours[prv] + wn * colours[nxt];
+    let result = wc * colours[cur] + wp * colours[prv] + wn * colours[nxt];
     Vec3::new(
-        clamp(r.x, 0.0, 1.0),
-        clamp(r.y, 0.0, 1.0),
-        clamp(r.z, 0.0, 1.0),
+        clamp(result.x, 0.0, 1.0),
+        clamp(result.y, 0.0, 1.0),
+        clamp(result.z, 0.0, 1.0),
     )
 }
 
-fn clamp_int(int: i32) -> i32 {
-    int.max(0).min(9)
+fn branchless_max(a: i32, b: i32) -> i32 {
+    a + (a < b) as i32 * (b - a)
 }
 
-pub fn clamp(value: f32, min: f32, max: f32) -> f32 {
+fn branchless_min(a: i32, b: i32) -> i32 {
+    a + (a > b) as i32 * (b - a)
+}
+
+fn clamp(value: f32, min: f32, max: f32) -> f32 {
     value.max(min).min(max)
 }
 

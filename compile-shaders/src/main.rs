@@ -1,19 +1,47 @@
-use spirv_builder::{MetadataPrintout, SpirvBuilder};
+use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder};
 
-fn main() {
-    let result = SpirvBuilder::new("shaders/ray-tracing", "spirv-unknown-spv1.4")
+fn main() -> anyhow::Result<()> {
+    let extensions = &[
+        "SPV_KHR_ray_tracing",
+        "SPV_EXT_descriptor_indexing",
+        "SPV_KHR_shader_clock",
+    ];
+
+    let capabilities = &[
+        Capability::RayTracingKHR,
+        Capability::Int8,
+        Capability::Int64,
+        Capability::RuntimeDescriptorArray,
+        Capability::ShaderClockKHR,
+    ];
+
+    compile_shader("shaders/ray-tracing", extensions, capabilities)?;
+
+    //compile_shader("shaders/test-shader", extensions, capabilities)?;
+
+    Ok(())
+}
+
+fn compile_shader(
+    path: &str,
+    extensions: &[&str],
+    capabilities: &[Capability],
+) -> anyhow::Result<()> {
+    let mut builder = SpirvBuilder::new(path, "spirv-unknown-spv1.4")
         .print_metadata(MetadataPrintout::None)
-        .extension("SPV_KHR_ray_tracing")
-        .extension("SPV_EXT_descriptor_indexing")
-        .extension("SPV_KHR_shader_clock")
-        .capability(spirv_builder::Capability::RayTracingKHR)
-        .capability(spirv_builder::Capability::Int8)
-        .capability(spirv_builder::Capability::Int64)
-        .capability(spirv_builder::Capability::RuntimeDescriptorArray)
-        .capability(spirv_builder::Capability::ShaderClockKHR)
-        .multimodule(false)
-        .build()
-        .unwrap();
+        .multimodule(false);
 
-    std::fs::copy(result.module.unwrap_single(), "shaders/ray-tracing.spv").unwrap();
+    for extension in extensions {
+        builder = builder.extension(*extension);
+    }
+
+    for capability in capabilities {
+        builder = builder.capability(*capability);
+    }
+
+    let result = builder.build()?;
+
+    std::fs::copy(result.module.unwrap_single(), &format!("{}.spv", path))?;
+
+    Ok(())
 }

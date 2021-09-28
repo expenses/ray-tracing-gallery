@@ -1,0 +1,10 @@
+[package]
+name = "test-shader"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+crate-type = ["dylib", "lib"]
+
+[dependencies]
+spirv-std = { git = "https://github.com/expenses/rust-gpu", branch = "all-changes", features = ["glam"] }
