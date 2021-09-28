@@ -25,7 +25,8 @@ mod heatmap;
 mod structs;
 
 use heatmap::heatmap_temperature;
-use structs::{ModelInfo, PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
+use structs::{PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
+use core::ops::{Add, Mul};
 
 #[spirv(miss)]
 pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
@@ -160,11 +161,7 @@ fn compute_barycentric_coords(hit_attributes: Vec2) -> Vec3 {
     )
 }
 
-fn interpolate3(a: Vec3, b: Vec3, c: Vec3, barycentric_coords: Vec3) -> Vec3 {
-    a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
-}
-
-fn interpolate2(a: Vec2, b: Vec2, c: Vec2, barycentric_coords: Vec3) -> Vec2 {
+fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(a: T, b: T, c: T, barycentric_coords: Vec3) -> T {
     a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
 }
 
@@ -177,14 +174,14 @@ struct Triangle {
 impl Triangle {
     fn interpolate(&self, barycentric_coords: Vec3) -> Vertex {
         Vertex {
-            pos: interpolate3(self.a.pos, self.b.pos, self.c.pos, barycentric_coords),
-            normal: interpolate3(
+            pos: interpolate(self.a.pos, self.b.pos, self.c.pos, barycentric_coords),
+            normal: interpolate(
                 self.a.normal,
                 self.b.normal,
                 self.c.normal,
                 barycentric_coords,
             ),
-            uv: interpolate2(self.a.uv, self.b.uv, self.c.uv, barycentric_coords),
+            uv: interpolate(self.a.uv, self.b.uv, self.c.uv, barycentric_coords),
         }
     }
 }

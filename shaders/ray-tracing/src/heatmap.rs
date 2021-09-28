@@ -15,7 +15,7 @@ pub fn heatmap_temperature(heat: f32) -> Vec3 {
         Vec3::new(145.0 / 255.0, 0.0 / 255.0, 65.0 / 255.0),
     ];
 
-    let heat = clamp(heat, 0.0, 1.0) * 10.0;
+    let heat = saturate(heat) * 10.0;
     let heat_index_int = heat as i32;
 
     let cur = heat_index_int as usize;
@@ -33,11 +33,7 @@ pub fn heatmap_temperature(heat: f32) -> Vec3 {
     let wn = smoothstep(heat_ceil - blur, heat_ceil + blur, heat);
 
     let result = wc * colours[cur] + wp * colours[prv] + wn * colours[nxt];
-    Vec3::new(
-        clamp(result.x, 0.0, 1.0),
-        clamp(result.y, 0.0, 1.0),
-        clamp(result.z, 0.0, 1.0),
-    )
+    result.clamp(Vec3::splat(0.0), Vec3::splat(1.0))
 }
 
 fn branchless_max(a: i32, b: i32) -> i32 {
@@ -48,11 +44,11 @@ fn branchless_min(a: i32, b: i32) -> i32 {
     a + (a > b) as i32 * (b - a)
 }
 
-fn clamp(value: f32, min: f32, max: f32) -> f32 {
-    value.max(min).min(max)
+fn saturate(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
 }
 
 fn smoothstep(edge_0: f32, edge_1: f32, x: f32) -> f32 {
-    let t = clamp((x - edge_0) / (edge_1 - edge_0), 0.0, 1.0);
+    let t = saturate((x - edge_0) / (edge_1 - edge_0));
     t * t * (3.0 - 2.0 * t)
 }
