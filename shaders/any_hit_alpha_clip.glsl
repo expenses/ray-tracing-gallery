@@ -10,13 +10,19 @@
 #include "hit_shader_common.glsl"
 
 void main() {
-    ModelInformations infos = ModelInformations(push_constant_buffer_addresses.model_info);
+    ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
-    Vertex interpolated = interpolate_triangle(load_triangle(info), compute_barycentric_coords());
+    uvec3 indices = read_indices(info);
 
-    float alpha = texture(textures[nonuniformEXT(info.texture_index)], interpolated.uv).a;
+    vec2 a_uv = read_vec2(info.uv_buffer_address, indices.x);
+    vec2 b_uv = read_vec2(info.uv_buffer_address, indices.y);
+    vec2 c_uv = read_vec2(info.uv_buffer_address, indices.z);
+
+    vec2 interpolated_uv = interpolate(a_uv, b_uv, c_uv, compute_barycentric_coords());
+
+    float alpha = texture(textures[nonuniformEXT(info.texture_index)], interpolated_uv).a;
 
     if (alpha < 0.5) {
         ignoreIntersectionEXT;

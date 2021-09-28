@@ -8,11 +8,12 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::gpu_structs::{ModelInfo, Vertex};
+use crate::gpu_structs::ModelInfo;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, load_rgba_png_image_from_bytes, sbt_aligned_size,
     PipelineImageMemoryBarrierParams,
 };
+use ultraviolet::{Vec2, Vec3};
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -878,9 +879,19 @@ impl Image {
     }
 }
 
+#[derive(Default)]
+struct ModelArrays {
+    positions: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    uvs: Vec<Vec2>,
+    indices: Vec<u16>,
+}
+
 pub struct Model {
-    pub vertices: Buffer,
-    pub indices: Buffer,
+    position_buffer: Buffer,
+    normal_buffer: Buffer,
+    uv_buffer: Buffer,
+    index_buffer: Buffer,
     pub blas: AccelerationStructure,
     pub image_index: u32,
     pub id: u32,
@@ -903,8 +914,7 @@ impl Model {
 
         let buffer_blob = gltf.blob.as_ref().unwrap();
 
-        let mut indices = Vec::new();
-        let mut vertices = Vec::new();
+        let mut arrays = ModelArrays::default();
 
         for mesh in gltf.meshes() {
             for primitive in mesh.primitives() {
@@ -921,8 +931,10 @@ impl Model {
                     _ => unreachable!(),
                 };
 
-                let num_vertices = vertices.len() as u16;
-                indices.extend(read_indices.map(|index| index + num_vertices));
+                let num_vertices = arrays.positions.len() as u16;
+                arrays
+                    .indices
+                    .extend(read_indices.map(|index| index + num_vertices));
 
                 let positions = reader.read_positions().unwrap();
                 let normals = reader.read_normals().unwrap();
@@ -932,11 +944,9 @@ impl Model {
                     .zip(normals)
                     .zip(uvs)
                     .for_each(|((position, normal), uv)| {
-                        vertices.push(Vertex {
-                            pos: position.into(),
-                            normal: normal.into(),
-                            uv: uv.into(),
-                        });
+                        arrays.positions.push(position.into());
+                        arrays.normals.push(normal.into());
+                        arrays.uvs.push(uv.into());
                     })
             }
         }
@@ -981,8 +991,7 @@ impl Model {
         let model_id = model_info.len() as u32;
 
         let model = Self::new(
-            &vertices,
-            &indices,
+            &arrays,
             image_index,
             name,
             allocator,
@@ -993,8 +1002,10 @@ impl Model {
         )?;
 
         model_info.push(ModelInfo {
-            vertex_buffer_address: model.vertices.device_address(&allocator.device),
-            index_buffer_address: model.indices.device_address(&allocator.device),
+            position_buffer_address: model.position_buffer.device_address(&allocator.device),
+            normal_buffer_address: model.normal_buffer.device_address(&allocator.device),
+            uv_buffer_address: model.uv_buffer.device_address(&allocator.device),
+            index_buffer_address: model.index_buffer.device_address(&allocator.device),
             image_index: model.image_index,
             _padding: 0,
         });
@@ -1003,8 +1014,7 @@ impl Model {
     }
 
     fn new(
-        vertices: &[Vertex],
-        indices: &[u16],
+        arrays: &ModelArrays,
         image_index: u32,
         name: &str,
         allocator: &mut Allocator,
@@ -1013,43 +1023,57 @@ impl Model {
         opaque: bool,
         id: u32,
     ) -> anyhow::Result<Self> {
-        let num_vertices = vertices.len() as u32;
-        let num_indices = indices.len() as u32;
-        let stride = std::mem::size_of::<Vertex>() as u64;
+        let num_vertices = arrays.positions.len() as u32;
+        let num_indices = arrays.indices.len() as u32;
+        let stride = std::mem::size_of::<Vec3>() as u64;
 
-        let buffer_flags = vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-            | vk::BufferUsageFlags::STORAGE_BUFFER
+        let other_buffers_flags =
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER;
+
+        let main_buffer_flags = other_buffers_flags
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 
-        let vertices = Buffer::new(
-            bytemuck::cast_slice(vertices),
-            &format!("{} vertices", name),
-            buffer_flags,
+        let position_buffer = Buffer::new(
+            bytemuck::cast_slice(&arrays.positions),
+            &format!("{} position buffer", name),
+            main_buffer_flags,
             allocator,
         )?;
 
-        let indices = Buffer::new(
-            bytemuck::cast_slice(indices),
-            &format!("{} indices", name),
-            buffer_flags,
+        let index_buffer = Buffer::new(
+            bytemuck::cast_slice(&arrays.indices),
+            &format!("{} index buffer", name),
+            main_buffer_flags,
             allocator,
         )?;
 
         let triangles_data = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
             .vertex_format(vk::Format::R32G32B32_SFLOAT)
             .vertex_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: vertices.device_address(&allocator.device),
+                device_address: position_buffer.device_address(&allocator.device),
             })
             .vertex_stride(stride)
             .max_vertex(num_vertices)
             .index_type(vk::IndexType::UINT16)
             .index_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: indices.device_address(&allocator.device),
+                device_address: index_buffer.device_address(&allocator.device),
             });
 
         Ok(Self {
-            vertices,
-            indices,
+            position_buffer,
+            index_buffer,
+            normal_buffer: Buffer::new(
+                bytemuck::cast_slice(&arrays.normals),
+                &format!("{} normal buffer", name),
+                other_buffers_flags,
+                allocator,
+            )?,
+            uv_buffer: Buffer::new(
+                bytemuck::cast_slice(&arrays.uvs),
+                &format!("{} uv buffer", name),
+                other_buffers_flags,
+                allocator,
+            )?,
             image_index,
             blas: AccelerationStructure::build_blas(
                 *triangles_data,
@@ -1065,8 +1089,10 @@ impl Model {
     }
 
     pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        self.vertices.cleanup(allocator)?;
-        self.indices.cleanup(allocator)?;
+        self.position_buffer.cleanup(allocator)?;
+        self.normal_buffer.cleanup(allocator)?;
+        self.uv_buffer.cleanup(allocator)?;
+        self.index_buffer.cleanup(allocator)?;
         self.blas.buffer.cleanup(allocator)?;
         Ok(())
     }

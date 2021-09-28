@@ -38,7 +38,7 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
 }
 
 void main() {
-    ModelInformations infos = ModelInformations(push_constant_buffer_addresses.model_info);
+    ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 

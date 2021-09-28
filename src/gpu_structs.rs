@@ -1,7 +1,7 @@
 use crate::util_structs::{Device, Model};
 use crate::HitShader;
 use ash::vk;
-use ultraviolet::{Mat4, Vec2, Vec3, Vec4};
+use ultraviolet::{Mat4, Vec3, Vec4};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -21,16 +21,10 @@ pub fn bytes_of<T>(reference: &T) -> &[u8] {
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
 #[repr(C)]
-pub struct Vertex {
-    pub pos: Vec3,
-    pub normal: Vec3,
-    pub uv: Vec2,
-}
-
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
-#[repr(C)]
 pub struct ModelInfo {
-    pub vertex_buffer_address: vk::DeviceAddress,
+    pub position_buffer_address: vk::DeviceAddress,
+    pub normal_buffer_address: vk::DeviceAddress,
+    pub uv_buffer_address: vk::DeviceAddress,
     pub index_buffer_address: vk::DeviceAddress,
     pub image_index: u32,
     pub _padding: u32,

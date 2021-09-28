@@ -24,9 +24,9 @@ use spirv_std::{
 mod heatmap;
 mod structs;
 
+use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
 use structs::{PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
-use core::ops::{Add, Mul};
 
 #[spirv(miss)]
 pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
@@ -161,7 +161,12 @@ fn compute_barycentric_coords(hit_attributes: Vec2) -> Vec3 {
     )
 }
 
-fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(a: T, b: T, c: T, barycentric_coords: Vec3) -> T {
+fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(
+    a: T,
+    b: T,
+    c: T,
+    barycentric_coords: Vec3,
+) -> T {
     a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
 }
 

@@ -20,9 +20,11 @@ pub struct Vertex {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ModelInfo {
-    pub vertex_buffer_address: u64,
+    pub position_buffer_address: u64,
+    pub normal_buffer_address: u64,
+    pub uv_buffer_address: u64,
     pub index_buffer_address: u64,
-    pub texture_index: u32,
+    pub image_index: u32,
 }
 
 #[repr(C)]

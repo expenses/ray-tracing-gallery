@@ -15,17 +15,6 @@ struct ShadowRayPayload {
     uint8_t shadowed;
 };
 
-struct Vertex {
-    vec3 pos;
-    vec3 normal;
-    vec2 uv;
-};
-
-struct PackedVertex {
-    vec4 first_half;
-    vec4 second_half;
-};
-
 layout(location = 0) rayPayloadInEXT PrimaryRayPayload primary_payload;
 layout(location = 1) rayPayloadEXT ShadowRayPayload shadow_payload;
 
@@ -34,8 +23,12 @@ hitAttributeEXT vec2 attribs;
 // Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
 // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
 
-layout(buffer_reference, scalar) buffer Vertices {
-    PackedVertex buf[];
+layout(buffer_reference, scalar) buffer FloatBuffer {
+    float buf[];
+};
+
+layout(buffer_reference, scalar) buffer Vec2Buffer {
+    vec2 buf[];
 };
 
 layout(buffer_reference, scalar) buffer Indices {
@@ -43,12 +36,14 @@ layout(buffer_reference, scalar) buffer Indices {
 };
 
 struct ModelInfo {
-    uint64_t vertex_buffer_address;
+    uint64_t position_buffer_address;
+    uint64_t normal_buffer_address;
+    uint64_t uv_buffer_address;
     uint64_t index_buffer_address;
     uint texture_index;
 };
 
-layout(buffer_reference, scalar) buffer ModelInformations {
+layout(buffer_reference, scalar) buffer ModelInfos {
     ModelInfo buf[];
 };
 
@@ -59,16 +54,6 @@ layout(push_constant) uniform PushConstantBufferAddresses {
     uint64_t uniforms;
     uint64_t acceleration_structure;
 } push_constant_buffer_addresses;
-
-Vertex unpack_vertex(PackedVertex packed) {
-    Vertex vertex;
-
-    vertex.pos = packed.first_half.xyz;
-    vertex.normal = vec3(packed.first_half.w, packed.second_half.xy);
-    vertex.uv = packed.second_half.zw;
-
-    return vertex;
-}
 
 vec3 compute_barycentric_coords() {
     return vec3(1.0f - attribs.x - attribs.y, attribs.x, attribs.y);
@@ -82,41 +67,77 @@ vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
+uvec3 read_indices(ModelInfo info) {
+    uint index_offset = gl_PrimitiveID * 3;
+
+    Indices indices = Indices(info.index_buffer_address);
+
+    return uvec3(
+        indices.buf[index_offset],
+        indices.buf[index_offset + 1],
+        indices.buf[index_offset + 2]
+    );
+}
+
+vec2 read_vec2(uint64_t buffer_address, uint index) {
+    Vec2Buffer vec2s = Vec2Buffer(buffer_address);
+    return vec2s.buf[index];
+}
+
+vec3 read_vec3(uint64_t buffer_address, uint index) {
+    FloatBuffer floats = FloatBuffer(buffer_address);
+
+    uint offset = index * 3;
+
+    return vec3(
+        floats.buf[offset],
+        floats.buf[offset + 1],
+        floats.buf[offset + 2]
+    );
+}
+
+struct Vertex {
+    vec3 pos;
+    vec3 normal;
+    vec2 uv;
+};
+
+Vertex load_vertex(ModelInfo info, uint index) {
+    Vertex vertex;
+
+    vertex.pos = read_vec3(info.position_buffer_address, index);
+    vertex.normal = read_vec3(info.normal_buffer_address, index);
+    vertex.uv = read_vec2(info.uv_buffer_address, index);
+
+    return vertex;
+}
+
 struct Triangle {
     Vertex a;
     Vertex b;
     Vertex c;
 };
 
+// Only use this if you need to interpolate the pos, normal and uv.
 Triangle load_triangle(ModelInfo info) {
-    uint index_offset = gl_PrimitiveID * 3;
-
-    Indices indices = Indices(info.index_buffer_address);
-
-    uvec3 index = uvec3(
-        indices.buf[index_offset],
-        indices.buf[index_offset + 1],
-        indices.buf[index_offset + 2]
-    );
-
-    Vertices vertices = Vertices(info.vertex_buffer_address);
+    uvec3 indices = read_indices(info);
 
     Triangle triangle;
 
-    triangle.a = unpack_vertex(vertices.buf[index.x]);
-    triangle.b = unpack_vertex(vertices.buf[index.y]);
-    triangle.c = unpack_vertex(vertices.buf[index.z]);
+    triangle.a = load_vertex(info, indices.x);
+    triangle.b = load_vertex(info, indices.y);
+    triangle.c = load_vertex(info, indices.z);
 
     return triangle;
 }
 
+Vertex interpolate_triangle(Triangle triangle, vec3 barycentric_coords) {
+    Vertex vertex;
 
-Vertex interpolate_triangle(Triangle tri, vec3 barycentric_coords) {
-    Vertex interpolated;
+    vertex.pos = interpolate(triangle.a.pos, triangle.b.pos, triangle.c.pos, barycentric_coords);
+    vertex.normal = interpolate(triangle.a.normal, triangle.b.normal, triangle.c.normal, barycentric_coords);
+    vertex.uv = interpolate(triangle.a.uv, triangle.b.uv, triangle.c.uv, barycentric_coords);
 
-    interpolated.pos = interpolate(tri.a.pos, tri.b.pos, tri.c.pos, barycentric_coords);
-    interpolated.normal = interpolate(tri.a.normal, tri.b.normal, tri.c.normal, barycentric_coords);
-    interpolated.uv = interpolate(tri.a.uv, tri.b.uv, tri.c.uv, barycentric_coords);
+    return vertex;
 
-    return interpolated;
 }

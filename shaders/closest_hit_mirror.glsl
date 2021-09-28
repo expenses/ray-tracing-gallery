@@ -10,13 +10,19 @@
 #include "hit_shader_common.glsl"
 
 void main() {
-    ModelInformations infos = ModelInformations(push_constant_buffer_addresses.model_info);
+    ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
-    Vertex interpolated = interpolate_triangle(load_triangle(info), compute_barycentric_coords());
+    uvec3 indices = read_indices(info);
 
-    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
+    vec3 a_normal = read_vec3(info.normal_buffer_address, indices.x);
+    vec3 b_normal = read_vec3(info.normal_buffer_address, indices.y);
+    vec3 c_normal = read_vec3(info.normal_buffer_address, indices.z);
+
+    vec3 interpolated_normal = interpolate(a_normal, b_normal, c_normal, compute_barycentric_coords());
+
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
     vec3 normal = normalize(rotated_normal);
 
     primary_payload.new_ray_direction = reflect(gl_WorldRayDirectionEXT, normal);
