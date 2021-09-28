@@ -425,7 +425,7 @@ pub fn build_tlas(
         allocator,
         scratch_buffer,
         geometry_info,
-        offset,
+        &[*offset],
         command_buffer,
     )
 }

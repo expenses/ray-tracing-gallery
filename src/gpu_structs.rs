@@ -25,6 +25,12 @@ pub struct ModelInfo {
     pub position_buffer_address: vk::DeviceAddress,
     pub normal_buffer_address: vk::DeviceAddress,
     pub uv_buffer_address: vk::DeviceAddress,
+    pub geometry_info_address: vk::DeviceAddress,
+}
+
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+pub struct GeometryInfo {
     pub index_buffer_address: vk::DeviceAddress,
     pub image_index: u32,
     pub _padding: u32,

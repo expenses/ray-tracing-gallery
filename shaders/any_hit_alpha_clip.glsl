@@ -14,7 +14,11 @@ void main() {
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
-    uvec3 indices = read_indices(info);
+    GeometryInfos geo_infos = GeometryInfos(info.geometry_info_address);
+
+    GeometryInfo geo_info = geo_infos.buf[gl_GeometryIndexEXT];
+
+    uvec3 indices = read_indices(geo_info);
 
     vec2 a_uv = read_vec2(info.uv_buffer_address, indices.x);
     vec2 b_uv = read_vec2(info.uv_buffer_address, indices.y);
@@ -22,7 +26,7 @@ void main() {
 
     vec2 interpolated_uv = interpolate(a_uv, b_uv, c_uv, compute_barycentric_coords());
 
-    float alpha = texture(textures[nonuniformEXT(info.texture_index)], interpolated_uv).a;
+    float alpha = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated_uv).a;
 
     if (alpha < 0.5) {
         ignoreIntersectionEXT;

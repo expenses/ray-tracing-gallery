@@ -1,5 +1,7 @@
 use spirv_std::glam::{Mat4, Vec2, Vec3};
 
+type DeviceAddress = u64;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Uniforms {
@@ -20,10 +22,16 @@ pub struct Vertex {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ModelInfo {
-    pub position_buffer_address: u64,
-    pub normal_buffer_address: u64,
-    pub uv_buffer_address: u64,
-    pub index_buffer_address: u64,
+    pub position_buffer_address: DeviceAddress,
+    pub normal_buffer_address: DeviceAddress,
+    pub uv_buffer_address: DeviceAddress,
+    pub geometry_info_address: DeviceAddress,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct GeometryInfo {
+    pub index_buffer_address: DeviceAddress,
     pub image_index: u32,
 }
 

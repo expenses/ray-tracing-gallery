@@ -42,9 +42,13 @@ void main() {
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
+    GeometryInfos geo_infos = GeometryInfos(info.geometry_info_address);
+
+    GeometryInfo geo_info = geo_infos.buf[gl_GeometryIndexEXT];
+
     Uniforms uniforms = Uniforms(push_constant_buffer_addresses.uniforms);
 
-    Triangle triangle = load_triangle(info);
+    Triangle triangle = load_triangle(info, geo_info);
 
     vec3 barycentric_coords = compute_barycentric_coords();
     Vertex interpolated = interpolate_triangle(triangle, barycentric_coords);
@@ -60,7 +64,7 @@ void main() {
 
     // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
-    vec3 colour = texture(textures[nonuniformEXT(info.texture_index)], interpolated.uv).rgb;
+    vec3 colour = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated.uv).rgb;
 
     float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 

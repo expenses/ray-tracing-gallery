@@ -31,7 +31,7 @@ layout(buffer_reference, scalar) buffer Vec2Buffer {
     vec2 buf[];
 };
 
-layout(buffer_reference, scalar) buffer Indices {
+layout(buffer_reference, scalar) buffer IndexBuffer {
     uint16_t buf[];
 };
 
@@ -39,12 +39,20 @@ struct ModelInfo {
     uint64_t position_buffer_address;
     uint64_t normal_buffer_address;
     uint64_t uv_buffer_address;
-    uint64_t index_buffer_address;
-    uint texture_index;
+    uint64_t geometry_info_address;
 };
 
 layout(buffer_reference, scalar) buffer ModelInfos {
     ModelInfo buf[];
+};
+
+struct GeometryInfo {
+    uint64_t index_buffer_address;
+    uint texture_index;
+};
+
+layout(buffer_reference, scalar) buffer GeometryInfos {
+    GeometryInfo buf[];
 };
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -67,10 +75,10 @@ vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
-uvec3 read_indices(ModelInfo info) {
+uvec3 read_indices(GeometryInfo info) {
     uint index_offset = gl_PrimitiveID * 3;
 
-    Indices indices = Indices(info.index_buffer_address);
+    IndexBuffer indices = IndexBuffer(info.index_buffer_address);
 
     return uvec3(
         indices.buf[index_offset],
@@ -119,8 +127,8 @@ struct Triangle {
 };
 
 // Only use this if you need to interpolate the pos, normal and uv.
-Triangle load_triangle(ModelInfo info) {
-    uvec3 indices = read_indices(info);
+Triangle load_triangle(ModelInfo info, GeometryInfo geo_info) {
+    uvec3 indices = read_indices(geo_info);
 
     Triangle triangle;
 

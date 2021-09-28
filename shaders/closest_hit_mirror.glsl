@@ -14,7 +14,11 @@ void main() {
 
     ModelInfo info = infos.buf[gl_InstanceCustomIndexEXT];
 
-    uvec3 indices = read_indices(info);
+    GeometryInfos geo_infos = GeometryInfos(info.geometry_info_address);
+
+    GeometryInfo geo_info = geo_infos.buf[gl_GeometryIndexEXT];
+
+    uvec3 indices = read_indices(geo_info);
 
     vec3 a_normal = read_vec3(info.normal_buffer_address, indices.x);
     vec3 b_normal = read_vec3(info.normal_buffer_address, indices.y);

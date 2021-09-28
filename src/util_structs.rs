@@ -8,7 +8,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::gpu_structs::ModelInfo;
+use crate::gpu_structs::{GeometryInfo, ModelInfo};
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, load_rgba_png_image_from_bytes, sbt_aligned_size,
     PipelineImageMemoryBarrierParams,
@@ -120,6 +120,14 @@ impl Allocator {
     }
 }
 
+struct Geometry {
+    position_buffer_address: vk::DeviceAddress,
+    index_buffer_address: vk::DeviceAddress,
+    num_indices: u32,
+    num_vertices: u32,
+    opaque: bool,
+}
+
 pub struct AccelerationStructure {
     pub buffer: Buffer,
     pub acceleration_structure: vk::AccelerationStructureKHR,
@@ -130,39 +138,61 @@ pub struct AccelerationStructure {
 
 impl AccelerationStructure {
     fn build_blas(
-        triangles_data: vk::AccelerationStructureGeometryTrianglesDataKHR,
-        num_indices: u32,
         name: &str,
         scratch_buffer: &mut ScratchBuffer,
         allocator: &mut Allocator,
         command_buffer: vk::CommandBuffer,
-        opaque: bool,
+        geometries: &[Geometry],
     ) -> anyhow::Result<Self> {
-        let num_triangles = num_indices / 3;
+        let mut vk_geometries = Vec::new();
+        let mut vk_offsets = Vec::new();
+        let mut num_triangles_array = Vec::new();
 
-        let flags = if opaque {
-            vk::GeometryFlagsKHR::OPAQUE
-        } else {
-            vk::GeometryFlagsKHR::empty()
-        };
+        for geometry in geometries {
+            let num_triangles = geometry.num_indices / 3;
 
-        let geometry = vk::AccelerationStructureGeometryKHR::builder()
-            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-            .geometry(vk::AccelerationStructureGeometryDataKHR {
-                triangles: triangles_data,
-            })
-            .flags(flags);
+            let flags = if geometry.opaque {
+                vk::GeometryFlagsKHR::OPAQUE
+            } else {
+                vk::GeometryFlagsKHR::empty()
+            };
 
-        let offset =
-            vk::AccelerationStructureBuildRangeInfoKHR::builder().primitive_count(num_triangles);
+            let stride = std::mem::size_of::<Vec3>() as u64;
 
-        let geometries = &[*geometry];
+            let triangles_data = *vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: geometry.position_buffer_address,
+                })
+                .vertex_stride(stride)
+                .max_vertex(geometry.num_vertices)
+                .index_type(vk::IndexType::UINT16)
+                .index_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: geometry.index_buffer_address,
+                });
+
+            vk_geometries.push(
+                *vk::AccelerationStructureGeometryKHR::builder()
+                    .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                    .geometry(vk::AccelerationStructureGeometryDataKHR {
+                        triangles: triangles_data,
+                    })
+                    .flags(flags),
+            );
+
+            vk_offsets.push(
+                *vk::AccelerationStructureBuildRangeInfoKHR::builder()
+                    .primitive_count(num_triangles),
+            );
+
+            num_triangles_array.push(num_triangles);
+        }
 
         let geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-            .geometries(geometries);
+            .geometries(&vk_geometries);
 
         let build_sizes = unsafe {
             allocator
@@ -171,7 +201,7 @@ impl AccelerationStructure {
                 .get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
                     &geometry_info,
-                    &[num_triangles],
+                    &num_triangles_array,
                 )
         };
 
@@ -188,7 +218,7 @@ impl AccelerationStructure {
             allocator,
             scratch_buffer,
             geometry_info,
-            offset,
+            &vk_offsets,
             command_buffer,
         )
     }
@@ -200,7 +230,7 @@ impl AccelerationStructure {
         allocator: &mut Allocator,
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
-        offset: vk::AccelerationStructureBuildRangeInfoKHRBuilder,
+        offsets: &[vk::AccelerationStructureBuildRangeInfoKHR],
         command_buffer: vk::CommandBuffer,
     ) -> anyhow::Result<Self> {
         log::info!("Creating a {} of {} bytes", name, size);
@@ -240,11 +270,7 @@ impl AccelerationStructure {
             allocator
                 .device
                 .as_loader
-                .cmd_build_acceleration_structures(
-                    command_buffer,
-                    &[*geometry_info],
-                    &[&[*offset]],
-                );
+                .cmd_build_acceleration_structures(command_buffer, &[*geometry_info], &[offsets]);
         }
 
         Ok(Self {
@@ -884,16 +910,22 @@ struct ModelArrays {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
     uvs: Vec<Vec2>,
+    geometries: Vec<GeometryArrays>,
+}
+
+struct GeometryArrays {
     indices: Vec<u16>,
+    opaque: bool,
+    image_index: u32,
 }
 
 pub struct Model {
     position_buffer: Buffer,
     normal_buffer: Buffer,
     uv_buffer: Buffer,
-    index_buffer: Buffer,
+    geometry_info_buffer: Buffer,
+    index_buffers: Vec<Buffer>,
     pub blas: AccelerationStructure,
-    pub image_index: u32,
     pub id: u32,
 }
 
@@ -915,6 +947,11 @@ impl Model {
         let buffer_blob = gltf.blob.as_ref().unwrap();
 
         let mut arrays = ModelArrays::default();
+        arrays.geometries.push(GeometryArrays {
+            indices: Vec::new(),
+            opaque,
+            image_index: fallback_image_index,
+        });
 
         for mesh in gltf.meshes() {
             for primitive in mesh.primitives() {
@@ -932,7 +969,7 @@ impl Model {
                 };
 
                 let num_vertices = arrays.positions.len() as u16;
-                arrays
+                arrays.geometries[0]
                     .indices
                     .extend(read_indices.map(|index| index + num_vertices));
 
@@ -940,14 +977,9 @@ impl Model {
                 let normals = reader.read_normals().unwrap();
                 let uvs = reader.read_tex_coords(0).unwrap().into_f32();
 
-                positions
-                    .zip(normals)
-                    .zip(uvs)
-                    .for_each(|((position, normal), uv)| {
-                        arrays.positions.push(position.into());
-                        arrays.normals.push(normal.into());
-                        arrays.uvs.push(uv.into());
-                    })
+                arrays.positions.extend(positions.map(Vec3::from));
+                arrays.normals.extend(normals.map(Vec3::from));
+                arrays.uvs.extend(uvs.map(Vec2::from));
             }
         }
 
@@ -983,21 +1015,18 @@ impl Model {
             )
         };
 
-        let image_index = match image_index() {
-            Some(result) => result?,
-            None => fallback_image_index,
-        };
+        if let Some(result) = image_index() {
+            arrays.geometries[0].image_index = result?;
+        }
 
         let model_id = model_info.len() as u32;
 
         let model = Self::new(
             &arrays,
-            image_index,
             name,
             allocator,
             command_buffer,
             scratch_buffer,
-            opaque,
             model_id,
         )?;
 
@@ -1005,9 +1034,7 @@ impl Model {
             position_buffer_address: model.position_buffer.device_address(&allocator.device),
             normal_buffer_address: model.normal_buffer.device_address(&allocator.device),
             uv_buffer_address: model.uv_buffer.device_address(&allocator.device),
-            index_buffer_address: model.index_buffer.device_address(&allocator.device),
-            image_index: model.image_index,
-            _padding: 0,
+            geometry_info_address: model.geometry_info_buffer.device_address(&allocator.device),
         });
 
         Ok(model)
@@ -1015,18 +1042,12 @@ impl Model {
 
     fn new(
         arrays: &ModelArrays,
-        image_index: u32,
         name: &str,
         allocator: &mut Allocator,
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
-        opaque: bool,
         id: u32,
     ) -> anyhow::Result<Self> {
-        let num_vertices = arrays.positions.len() as u32;
-        let num_indices = arrays.indices.len() as u32;
-        let stride = std::mem::size_of::<Vec3>() as u64;
-
         let other_buffers_flags =
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER;
 
@@ -1040,28 +1061,44 @@ impl Model {
             allocator,
         )?;
 
-        let index_buffer = Buffer::new(
-            bytemuck::cast_slice(&arrays.indices),
-            &format!("{} index buffer", name),
-            main_buffer_flags,
-            allocator,
-        )?;
+        let mut geometries = Vec::new();
+        let mut index_buffers = Vec::new();
+        let mut geometry_info = Vec::new();
 
-        let triangles_data = vk::AccelerationStructureGeometryTrianglesDataKHR::builder()
-            .vertex_format(vk::Format::R32G32B32_SFLOAT)
-            .vertex_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: position_buffer.device_address(&allocator.device),
-            })
-            .vertex_stride(stride)
-            .max_vertex(num_vertices)
-            .index_type(vk::IndexType::UINT16)
-            .index_data(vk::DeviceOrHostAddressConstKHR {
-                device_address: index_buffer.device_address(&allocator.device),
+        for (i, geometry_arrays) in arrays.geometries.iter().enumerate() {
+            let index_buffer = Buffer::new(
+                bytemuck::cast_slice(&geometry_arrays.indices),
+                &format!("{} index buffer {}", name, i),
+                main_buffer_flags,
+                allocator,
+            )?;
+
+            geometries.push(Geometry {
+                position_buffer_address: position_buffer.device_address(&allocator.device),
+                index_buffer_address: index_buffer.device_address(&allocator.device),
+                num_indices: geometry_arrays.indices.len() as u32,
+                num_vertices: arrays.positions.len() as u32,
+                opaque: geometry_arrays.opaque,
             });
 
+            geometry_info.push(GeometryInfo {
+                index_buffer_address: index_buffer.device_address(&allocator.device),
+                image_index: geometry_arrays.image_index,
+                _padding: 0,
+            });
+            index_buffers.push(index_buffer);
+        }
+
         Ok(Self {
+            blas: AccelerationStructure::build_blas(
+                &format!("{} blas", name),
+                scratch_buffer,
+                allocator,
+                command_buffer,
+                &geometries,
+            )?,
             position_buffer,
-            index_buffer,
+            index_buffers,
             normal_buffer: Buffer::new(
                 bytemuck::cast_slice(&arrays.normals),
                 &format!("{} normal buffer", name),
@@ -1074,15 +1111,11 @@ impl Model {
                 other_buffers_flags,
                 allocator,
             )?,
-            image_index,
-            blas: AccelerationStructure::build_blas(
-                *triangles_data,
-                num_indices,
-                &format!("{} blas", name),
-                scratch_buffer,
+            geometry_info_buffer: Buffer::new(
+                bytemuck::cast_slice(&geometry_info),
+                &format!("{} geometry info buffer", name),
+                other_buffers_flags,
                 allocator,
-                command_buffer,
-                opaque,
             )?,
             id,
         })
@@ -1092,8 +1125,13 @@ impl Model {
         self.position_buffer.cleanup(allocator)?;
         self.normal_buffer.cleanup(allocator)?;
         self.uv_buffer.cleanup(allocator)?;
-        self.index_buffer.cleanup(allocator)?;
         self.blas.buffer.cleanup(allocator)?;
+        self.geometry_info_buffer.cleanup(allocator)?;
+
+        for index_buffer in &self.index_buffers {
+            index_buffer.cleanup(allocator)?;
+        }
+
         Ok(())
     }
 }
