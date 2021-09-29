@@ -987,6 +987,12 @@ impl Model {
 
         let mut arrays = ModelArrays::default();
 
+        // If multiple materials exist that use the same image, then the image will be loaded into memory twice.
+        // This isn't great, but it's tricky to work out a solution because there are some odd cases. For example:
+        //
+        // If two different materials use the same image but a different sampling method,
+        // then we need to have two different images in the descriptor set, with the same image view but different samplers.
+        // This requires `ImageManager` to be written slightly differently.
         for (i, material) in gltf.materials().enumerate() {
             let (image_index, opaque) = match load_image_from_material(
                 &material,

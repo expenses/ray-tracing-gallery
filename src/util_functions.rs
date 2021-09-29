@@ -222,8 +222,10 @@ pub fn load_rgba_png_image_from_bytes(
     unsafe {
         allocator
             .device
-            .bind_image_memory(image, allocation.memory(), allocation.offset())
-    }?;
+            .bind_image_memory(image, allocation.memory(), allocation.offset())?;
+
+        allocator.device.set_object_name(image, name)?;
+    }
 
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
