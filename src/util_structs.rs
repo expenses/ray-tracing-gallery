@@ -919,6 +919,46 @@ struct GeometryArrays {
     image_index: u32,
 }
 
+fn load_image_from_material(
+    material: &gltf::Material,
+    image_manager: &mut ImageManager,
+    buffer_blob: &[u8],
+    name: &str,
+    command_buffer: vk::CommandBuffer,
+    allocator: &mut Allocator,
+    buffers_to_cleanup: &mut Vec<Buffer>,
+) -> Option<anyhow::Result<(u32, bool)>> {
+    let diffuse_texture = material
+        .pbr_metallic_roughness()
+        .base_color_texture()?
+        .texture();
+
+    let linear_filtering =
+        diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
+
+    let image_view = match diffuse_texture.source().source() {
+        gltf::image::Source::View { view, .. } => view,
+        _ => return None,
+    };
+
+    let image_start = image_view.offset();
+    let image_end = image_start + image_view.length();
+    let image_bytes = &buffer_blob[image_start..image_end];
+
+    let opaque = material.alpha_mode() == gltf::material::AlphaMode::Opaque;
+
+    Some(
+        load_rgba_png_image_from_bytes(
+            image_bytes,
+            name,
+            command_buffer,
+            allocator,
+            buffers_to_cleanup,
+        )
+        .map(|image| (image_manager.push_image(image, linear_filtering), opaque)),
+    )
+}
+
 pub struct Model {
     position_buffer: Buffer,
     normal_buffer: Buffer,
@@ -938,7 +978,6 @@ impl Model {
         image_manager: &mut ImageManager,
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
-        opaque: bool,
         model_info: &mut Vec<ModelInfo>,
         buffers_to_cleanup: &mut Vec<Buffer>,
     ) -> anyhow::Result<Self> {
@@ -947,11 +986,35 @@ impl Model {
         let buffer_blob = gltf.blob.as_ref().unwrap();
 
         let mut arrays = ModelArrays::default();
-        arrays.geometries.push(GeometryArrays {
-            indices: Vec::new(),
-            opaque,
-            image_index: fallback_image_index,
-        });
+
+        for (i, material) in gltf.materials().enumerate() {
+            let (image_index, opaque) = match load_image_from_material(
+                &material,
+                image_manager,
+                &buffer_blob,
+                &format!("{} image {}", name, i),
+                command_buffer,
+                allocator,
+                buffers_to_cleanup,
+            ) {
+                Some(result) => result?,
+                None => (fallback_image_index, true),
+            };
+
+            arrays.geometries.push(GeometryArrays {
+                indices: Vec::new(),
+                opaque,
+                image_index,
+            })
+        }
+
+        if arrays.geometries.is_empty() {
+            arrays.geometries.push(GeometryArrays {
+                indices: Vec::new(),
+                opaque: true,
+                image_index: fallback_image_index,
+            })
+        }
 
         for mesh in gltf.meshes() {
             for primitive in mesh.primitives() {
@@ -959,6 +1022,8 @@ impl Model {
                     debug_assert_eq!(buffer.index(), 0);
                     Some(buffer_blob)
                 });
+
+                let geometry_index = primitive.material().index().unwrap_or(0);
 
                 let read_indices = match reader.read_indices().unwrap() {
                     gltf::mesh::util::ReadIndices::U16(indices) => indices,
@@ -969,7 +1034,7 @@ impl Model {
                 };
 
                 let num_vertices = arrays.positions.len() as u16;
-                arrays.geometries[0]
+                arrays.geometries[geometry_index]
                     .indices
                     .extend(read_indices.map(|index| index + num_vertices));
 
@@ -982,43 +1047,6 @@ impl Model {
                 arrays.uvs.extend(uvs.map(Vec2::from));
             }
         }
-
-        let mut image_index = || -> Option<anyhow::Result<u32>> {
-            let material = gltf.materials().next()?;
-
-            let diffuse_texture = material
-                .pbr_metallic_roughness()
-                .base_color_texture()?
-                .texture();
-
-            let linear_filtering =
-                diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
-
-            let image_view = match diffuse_texture.source().source() {
-                gltf::image::Source::View { view, .. } => view,
-                _ => return None,
-            };
-
-            let image_start = image_view.offset();
-            let image_end = image_start + image_view.length();
-            let image_bytes = &buffer_blob[image_start..image_end];
-
-            Some(
-                load_rgba_png_image_from_bytes(
-                    image_bytes,
-                    &format!("{} image", name),
-                    command_buffer,
-                    allocator,
-                    buffers_to_cleanup,
-                )
-                .map(|image| image_manager.push_image(image, linear_filtering)),
-            )
-        };
-
-        if let Some(result) = image_index() {
-            arrays.geometries[0].image_index = result?;
-        }
-
         let model_id = model_info.len() as u32;
 
         let model = Self::new(

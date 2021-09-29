@@ -420,16 +420,6 @@ fn main() -> anyhow::Result<()> {
         )?;
 
         image_manager.push_image(pink_texture, false);
-
-        let fence_texture = load_rgba_png_image_from_bytes(
-            include_bytes!("../resources/fence.png"),
-            "fence texture",
-            init_command_buffer.buffer(),
-            &mut allocator,
-            &mut buffers_to_cleanup,
-        )?;
-
-        image_manager.push_image(fence_texture, true);
     };
 
     // Load model buffers and blases
@@ -446,7 +436,6 @@ fn main() -> anyhow::Result<()> {
         &mut image_manager,
         init_command_buffer.buffer(),
         &mut scratch_buffer,
-        true,
         &mut model_info,
         &mut buffers_to_cleanup,
     )?;
@@ -459,7 +448,6 @@ fn main() -> anyhow::Result<()> {
         &mut image_manager,
         init_command_buffer.buffer(),
         &mut scratch_buffer,
-        true,
         &mut model_info,
         &mut buffers_to_cleanup,
     )?;
@@ -472,20 +460,18 @@ fn main() -> anyhow::Result<()> {
         &mut image_manager,
         init_command_buffer.buffer(),
         &mut scratch_buffer,
-        true,
         &mut model_info,
         &mut buffers_to_cleanup,
     )?;
 
     let fence_model = Model::load_gltf(
-        include_bytes!("../resources/plane.glb"),
+        include_bytes!("../resources/fence.glb"),
         "fence",
-        2,
+        0,
         &mut allocator,
         &mut image_manager,
         init_command_buffer.buffer(),
         &mut scratch_buffer,
-        false,
         &mut model_info,
         &mut buffers_to_cleanup,
     )?;
@@ -534,7 +520,7 @@ fn main() -> anyhow::Result<()> {
             HitShader::Portal,
         ),
         AccelerationStructureInstance::new(
-            Mat4::from_translation(Vec3::new(3.0, 1.0, 3.0)) * Mat4::from_rotation_x(PI / 2.0),
+            Mat4::from_translation(Vec3::new(3.0, 0.0, 3.0)),
             &fence_model,
             &device,
             HitShader::Textured,
