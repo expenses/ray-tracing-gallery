@@ -166,7 +166,7 @@ impl AccelerationStructure {
                 })
                 .vertex_stride(stride)
                 .max_vertex(geometry.num_vertices)
-                .index_type(vk::IndexType::UINT16)
+                .index_type(vk::IndexType::UINT32)
                 .index_data(vk::DeviceOrHostAddressConstKHR {
                     device_address: geometry.index_buffer_address,
                 });
@@ -905,7 +905,7 @@ impl Image {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ModelArrays {
     positions: Vec<Vec3>,
     normals: Vec<Vec3>,
@@ -913,8 +913,9 @@ struct ModelArrays {
     geometries: Vec<GeometryArrays>,
 }
 
+#[derive(Debug)]
 struct GeometryArrays {
-    indices: Vec<u16>,
+    indices: Vec<u32>,
     opaque: bool,
     image_index: u32,
 }
@@ -1035,22 +1036,16 @@ impl Model {
 
         for mesh in gltf.meshes() {
             for primitive in mesh.primitives() {
+                let geometry_index = primitive.material().index().unwrap_or(0);
+
                 let reader = primitive.reader(|buffer| {
                     debug_assert_eq!(buffer.index(), 0);
                     Some(buffer_blob)
                 });
 
-                let geometry_index = primitive.material().index().unwrap_or(0);
+                let read_indices = reader.read_indices().unwrap().into_u32();
 
-                let read_indices = match reader.read_indices().unwrap() {
-                    gltf::mesh::util::ReadIndices::U16(indices) => indices,
-                    gltf::mesh::util::ReadIndices::U32(_) => {
-                        return Err(anyhow::anyhow!("U32 indices not supported"))
-                    }
-                    _ => unreachable!(),
-                };
-
-                let num_vertices = arrays.positions.len() as u16;
+                let num_vertices = arrays.positions.len() as u32;
                 arrays.geometries[geometry_index]
                     .indices
                     .extend(read_indices.map(|index| index + num_vertices));

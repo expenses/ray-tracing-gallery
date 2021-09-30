@@ -157,12 +157,7 @@ fn main() -> anyhow::Result<()> {
             .queue_family_index(queue_family)
             .queue_priorities(&[1.0])];
 
-        let device_features = vk::PhysicalDeviceFeatures::builder()
-            .shader_int16(true)
-            .shader_int64(true);
-
-        let mut storage16_features =
-            vk::PhysicalDevice16BitStorageFeatures::builder().storage_buffer16_bit_access(true);
+        let device_features = vk::PhysicalDeviceFeatures::builder().shader_int64(true);
 
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
             .shader_int8(true)
@@ -197,7 +192,6 @@ fn main() -> anyhow::Result<()> {
             .push_next(&mut amd_device_coherent_memory)
             .push_next(&mut ray_tracing_features)
             .push_next(&mut acceleration_structure_features)
-            .push_next(&mut storage16_features)
             .push_next(&mut robustness_features)
             .push_next(&mut clock_features);
 

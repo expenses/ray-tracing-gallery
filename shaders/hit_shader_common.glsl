@@ -24,7 +24,7 @@ hitAttributeEXT vec2 attribs;
 // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
 
 layout(buffer_reference, scalar) buffer FloatBuffer {
-    float buf[];
+    vec3 buf[];
 };
 
 layout(buffer_reference, scalar) buffer Vec2Buffer {
@@ -32,7 +32,7 @@ layout(buffer_reference, scalar) buffer Vec2Buffer {
 };
 
 layout(buffer_reference, scalar) buffer IndexBuffer {
-    uint16_t buf[];
+    uvec3 buf[];
 };
 
 struct ModelInfo {
@@ -76,15 +76,9 @@ vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
 }
 
 uvec3 read_indices(GeometryInfo info) {
-    uint index_offset = gl_PrimitiveID * 3;
-
     IndexBuffer indices = IndexBuffer(info.index_buffer_address);
 
-    return uvec3(
-        indices.buf[index_offset],
-        indices.buf[index_offset + 1],
-        indices.buf[index_offset + 2]
-    );
+    return indices.buf[gl_PrimitiveID];
 }
 
 vec2 read_vec2(uint64_t buffer_address, uint index) {
@@ -95,13 +89,7 @@ vec2 read_vec2(uint64_t buffer_address, uint index) {
 vec3 read_vec3(uint64_t buffer_address, uint index) {
     FloatBuffer floats = FloatBuffer(buffer_address);
 
-    uint offset = index * 3;
-
-    return vec3(
-        floats.buf[offset],
-        floats.buf[offset + 1],
-        floats.buf[offset + 2]
-    );
+    return floats.buf[index];
 }
 
 struct Vertex {
