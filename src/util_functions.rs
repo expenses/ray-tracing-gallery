@@ -172,6 +172,39 @@ pub fn load_shader_module_as_stage(
         .name(CStr::from_bytes_with_nul(b"main\0")?))
 }
 
+pub fn create_single_colour_image(
+    colour: [f32; 4],
+    name: &str,
+    command_buffer: vk::CommandBuffer,
+    allocator: &mut Allocator,
+    buffers_to_cleanup: &mut Vec<Buffer>,
+) -> anyhow::Result<Image> {
+    let staging_buffer = Buffer::new(
+        bytemuck::bytes_of(&colour),
+        &format!("{} staging buffer", name),
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        allocator,
+    )?;
+
+    let image = create_image_from_staging_buffer(
+        &staging_buffer,
+        vk::Extent3D {
+            width: 1,
+            height: 1,
+            depth: 1,
+        },
+        vk::ImageViewType::TYPE_2D,
+        vk::Format::R32G32B32A32_SFLOAT,
+        name,
+        command_buffer,
+        allocator,
+    )?;
+
+    buffers_to_cleanup.push(staging_buffer);
+
+    Ok(image)
+}
+
 pub fn load_rgba_png_image_from_bytes(
     bytes: &[u8],
     name: &str,
@@ -190,17 +223,51 @@ pub fn load_rgba_png_image_from_bytes(
         allocator,
     )?;
 
-    let extent = vk::Extent3D {
-        width: rgba_image.width(),
-        height: rgba_image.height(),
-        depth: 1,
-    };
+    let image = create_image_from_staging_buffer(
+        &staging_buffer,
+        vk::Extent3D {
+            width: rgba_image.width(),
+            height: rgba_image.height(),
+            depth: 1,
+        },
+        vk::ImageViewType::TYPE_2D,
+        vk::Format::R8G8B8A8_UNORM,
+        name,
+        command_buffer,
+        allocator,
+    )?;
+
+    buffers_to_cleanup.push(staging_buffer);
+
+    Ok(image)
+}
+
+pub fn create_image_from_staging_buffer(
+    staging_buffer: &Buffer,
+    extent: vk::Extent3D,
+    view_ty: vk::ImageViewType,
+    format: vk::Format,
+    name: &str,
+    command_buffer: vk::CommandBuffer,
+    allocator: &mut Allocator,
+) -> anyhow::Result<Image> {
+    fn ty_from_view_ty(ty: vk::ImageViewType) -> vk::ImageType {
+        match ty {
+            vk::ImageViewType::TYPE_1D | vk::ImageViewType::TYPE_1D_ARRAY => vk::ImageType::TYPE_1D,
+            vk::ImageViewType::TYPE_2D
+            | vk::ImageViewType::TYPE_2D_ARRAY
+            | vk::ImageViewType::CUBE
+            | vk::ImageViewType::CUBE_ARRAY => vk::ImageType::TYPE_2D,
+            vk::ImageViewType::TYPE_3D => vk::ImageType::TYPE_3D,
+            _ => vk::ImageType::default(),
+        }
+    }
 
     let image = unsafe {
         allocator.device.create_image(
             &vk::ImageCreateInfo::builder()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
+                .image_type(ty_from_view_ty(view_ty))
+                .format(format)
                 .extent(extent)
                 .mip_levels(1)
                 .array_layers(1)
@@ -236,8 +303,8 @@ pub fn load_rgba_png_image_from_bytes(
         allocator.device.create_image_view(
             &vk::ImageViewCreateInfo::builder()
                 .image(image)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_UNORM)
+                .view_type(view_ty)
+                .format(format)
                 .subresource_range(*subresource_range),
             None,
         )
@@ -292,8 +359,6 @@ pub fn load_rgba_png_image_from_bytes(
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)],
         });
     }
-
-    buffers_to_cleanup.push(staging_buffer);
 
     Ok(Image {
         image,

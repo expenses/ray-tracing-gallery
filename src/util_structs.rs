@@ -10,8 +10,8 @@ use std::os::raw::c_char;
 
 use crate::gpu_structs::{GeometryInfo, ModelInfo};
 use crate::util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, load_rgba_png_image_from_bytes, sbt_aligned_size,
-    PipelineImageMemoryBarrierParams,
+    cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
+    load_rgba_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
 use ultraviolet::{Vec2, Vec3};
 
@@ -927,36 +927,50 @@ fn load_image_from_material(
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
-) -> Option<anyhow::Result<(u32, bool)>> {
-    let diffuse_texture = material
-        .pbr_metallic_roughness()
-        .base_color_texture()?
-        .texture();
+) -> anyhow::Result<(u32, bool)> {
+    let pbr = material.pbr_metallic_roughness();
+    let opaque = material.alpha_mode() == gltf::material::AlphaMode::Opaque;
+
+    let diffuse_texture = match pbr.base_color_texture() {
+        None => {
+            let image = create_single_colour_image(
+                pbr.base_color_factor(),
+                name,
+                command_buffer,
+                allocator,
+                buffers_to_cleanup,
+            )?;
+
+            return Ok((image_manager.push_image(image, false), opaque));
+        }
+        Some(texture) => texture.texture(),
+    };
 
     let linear_filtering =
         diffuse_texture.sampler().mag_filter() == Some(gltf::texture::MagFilter::Linear);
 
     let image_view = match diffuse_texture.source().source() {
         gltf::image::Source::View { view, .. } => view,
-        _ => return None,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Image source is a uri which we don't support"
+            ))
+        }
     };
 
     let image_start = image_view.offset();
     let image_end = image_start + image_view.length();
     let image_bytes = &buffer_blob[image_start..image_end];
 
-    let opaque = material.alpha_mode() == gltf::material::AlphaMode::Opaque;
+    let image = load_rgba_png_image_from_bytes(
+        image_bytes,
+        name,
+        command_buffer,
+        allocator,
+        buffers_to_cleanup,
+    )?;
 
-    Some(
-        load_rgba_png_image_from_bytes(
-            image_bytes,
-            name,
-            command_buffer,
-            allocator,
-            buffers_to_cleanup,
-        )
-        .map(|image| (image_manager.push_image(image, linear_filtering), opaque)),
-    )
+    Ok((image_manager.push_image(image, linear_filtering), opaque))
 }
 
 pub struct Model {
@@ -994,18 +1008,15 @@ impl Model {
         // then we need to have two different images in the descriptor set, with the same image view but different samplers.
         // This requires `ImageManager` to be written slightly differently.
         for (i, material) in gltf.materials().enumerate() {
-            let (image_index, opaque) = match load_image_from_material(
+            let (image_index, opaque) = load_image_from_material(
                 &material,
                 image_manager,
-                &buffer_blob,
+                buffer_blob,
                 &format!("{} image {}", name, i),
                 command_buffer,
                 allocator,
                 buffers_to_cleanup,
-            ) {
-                Some(result) => result?,
-                None => (fallback_image_index, true),
-            };
+            )?;
 
             arrays.geometries.push(GeometryArrays {
                 indices: Vec::new(),

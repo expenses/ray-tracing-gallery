@@ -98,33 +98,11 @@ impl PerFrameResources {
     pub unsafe fn record(
         &mut self,
         command_buffer: vk::CommandBuffer,
+        device: &Device,
         swapchain_image: vk::Image,
         extent: vk::Extent2D,
         global: &GlobalResources,
-        device: &Device,
-        allocator: &mut Allocator,
     ) -> anyhow::Result<()> {
-        self.tlas.update_tlas(
-            &self.instances_buffer,
-            self.num_instances,
-            command_buffer,
-            allocator,
-            &mut self.scratch_buffer,
-        )?;
-
-        // wait for tlas update to finish
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            vk::DependencyFlags::empty(),
-            &[*vk::MemoryBarrier::builder()
-                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
-            &[],
-            &[],
-        );
-
         device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::RAY_TRACING_KHR,

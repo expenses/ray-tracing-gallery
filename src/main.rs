@@ -8,6 +8,7 @@ use ash::extensions::khr::{
 use ash::vk;
 use std::f32::consts::PI;
 use std::ffi::CStr;
+use structopt::StructOpt;
 use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::{
@@ -18,12 +19,13 @@ use winit::{
 
 mod command_buffer_recording;
 mod gpu_structs;
+mod scene;
 mod util_functions;
 mod util_structs;
 
 use util_structs::{
     Allocator, Buffer, CStrList, CommandBufferAndQueue, Device as DeviceWithExtensions, Image,
-    ImageManager, Model, ScratchBuffer, ShaderBindingTable, Swapchain,
+    ImageManager, ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
 use util_functions::{
@@ -32,12 +34,11 @@ use util_functions::{
     vulkan_debug_utils_callback, ShaderGroup,
 };
 
-use gpu_structs::{
-    bytes_of, transpose_matrix_for_instance, AccelerationStructureInstance,
-    PushConstantBufferAddresses, RayTracingUniforms,
-};
+use gpu_structs::{bytes_of, PushConstantBufferAddresses, RayTracingUniforms};
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
+
+use crate::scene::{DefaultScene, EitherScene, LoadedModelScene, Scene};
 
 const MAX_BOUND_IMAGES: u32 = 128;
 
@@ -45,6 +46,11 @@ pub enum HitShader {
     Textured = 0,
     Mirror = 1,
     Portal = 2,
+}
+
+#[derive(Debug, StructOpt)]
+struct Opt {
+    model_to_load: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,6 +71,8 @@ fn main() -> anyhow::Result<()> {
             ),
         ])?;
     }
+
+    let opt = Opt::from_args();
 
     let event_loop = EventLoop::new();
 
@@ -426,55 +434,27 @@ fn main() -> anyhow::Result<()> {
 
     let mut scratch_buffer = ScratchBuffer::new("init scratch buffer", &as_props);
 
-    let mut model_info = Vec::new();
+    let (mut scene, instances, model_info) = if let Some(model_to_load) = opt.model_to_load {
+        let (scene, instances, model_info) = LoadedModelScene::new(
+            &model_to_load,
+            init_command_buffer.buffer(),
+            &mut scratch_buffer,
+            &mut allocator,
+            &mut image_manager,
+            &mut buffers_to_cleanup,
+        )?;
+        (EitherScene::SceneA(scene), instances, model_info)
+    } else {
+        let (scene, instances, model_info) = DefaultScene::new(
+            init_command_buffer.buffer(),
+            &mut scratch_buffer,
+            &mut allocator,
+            &mut image_manager,
+            &mut buffers_to_cleanup,
+        )?;
 
-    let plane_model = Model::load_gltf(
-        include_bytes!("../resources/plane.glb"),
-        "plane",
-        0,
-        &mut allocator,
-        &mut image_manager,
-        init_command_buffer.buffer(),
-        &mut scratch_buffer,
-        &mut model_info,
-        &mut buffers_to_cleanup,
-    )?;
-
-    let tori_model = Model::load_gltf(
-        include_bytes!("../resources/tori.glb"),
-        "tori",
-        1,
-        &mut allocator,
-        &mut image_manager,
-        init_command_buffer.buffer(),
-        &mut scratch_buffer,
-        &mut model_info,
-        &mut buffers_to_cleanup,
-    )?;
-
-    let lain_model = Model::load_gltf(
-        include_bytes!("../resources/lain.glb"),
-        "lain",
-        1,
-        &mut allocator,
-        &mut image_manager,
-        init_command_buffer.buffer(),
-        &mut scratch_buffer,
-        &mut model_info,
-        &mut buffers_to_cleanup,
-    )?;
-
-    let fence_model = Model::load_gltf(
-        include_bytes!("../resources/fence.glb"),
-        "fence",
-        0,
-        &mut allocator,
-        &mut image_manager,
-        init_command_buffer.buffer(),
-        &mut scratch_buffer,
-        &mut model_info,
-        &mut buffers_to_cleanup,
-    )?;
+        (EitherScene::SceneB(scene), instances, model_info)
+    };
 
     // Add dummy image bindings up to the bound limit. This avoids a warning about
     // bidings being using in draws but not having been updated.
@@ -486,70 +466,6 @@ fn main() -> anyhow::Result<()> {
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         &mut allocator,
     )?;
-
-    // Allocate the instance buffer
-
-    let lain_base_transform =
-        Mat4::from_translation(Vec3::new(-2.0, 0.0, -1.0)) * Mat4::from_scale(0.5);
-    let mut lain_rotation = 150.0_f32.to_radians();
-    let lain_instance_offset = std::mem::size_of::<AccelerationStructureInstance>() * 2;
-
-    let mut instances = vec![
-        AccelerationStructureInstance::new(
-            Mat4::from_scale(10.0),
-            &plane_model,
-            &device,
-            HitShader::Textured,
-        ),
-        AccelerationStructureInstance::new(
-            Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            &tori_model,
-            &device,
-            HitShader::Textured,
-        ),
-        AccelerationStructureInstance::new(
-            lain_base_transform * Mat4::from_rotation_y(lain_rotation),
-            &lain_model,
-            &device,
-            HitShader::Textured,
-        ),
-        AccelerationStructureInstance::new(
-            Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            &plane_model,
-            &device,
-            HitShader::Portal,
-        ),
-        AccelerationStructureInstance::new(
-            Mat4::from_translation(Vec3::new(3.0, 0.0, 3.0)),
-            &fence_model,
-            &device,
-            HitShader::Textured,
-        ),
-    ];
-
-    {
-        use rand::Rng;
-
-        let mut rng = rand::thread_rng();
-
-        for _ in 0..100 {
-            instances.push(AccelerationStructureInstance::new(
-                Mat4::from_translation(Vec3::new(
-                    rng.gen_range(-10.0..10.0),
-                    rng.gen_range(0.5..2.5),
-                    rng.gen_range(-10.0..10.0),
-                )) * Mat4::from_rotation_y(rng.gen_range(0.0..100.0))
-                    * Mat4::from_scale(rng.gen_range(0.01..0.1)),
-                &tori_model,
-                &device,
-                if rng.gen() {
-                    HitShader::Textured
-                } else {
-                    HitShader::Mirror
-                },
-            ))
-        }
-    }
 
     let mut instances_buffer = Buffer::new_with_custom_alignment(
         bytemuck::cast_slice(&instances),
@@ -964,7 +880,7 @@ fn main() -> anyhow::Result<()> {
                         sun_velocity *= 0.95;
                     }
 
-                    lain_rotation += 0.05;
+                    scene.update();
 
                     window.request_redraw();
                 }
@@ -1001,16 +917,6 @@ fn main() -> anyhow::Result<()> {
                                 .ray_tracing_uniforms
                                 .write_mapped(bytes_of(&uniforms), 0)?;
 
-                            let lain_instance_transform = transpose_matrix_for_instance(
-                                lain_base_transform * Mat4::from_rotation_y(lain_rotation),
-                            );
-
-                            resources.instances_buffer.write_mapped(
-                                // The transform is the first 48 bytes of the instance.
-                                bytemuck::bytes_of(&lain_instance_transform),
-                                lain_instance_offset,
-                            )?;
-
                             unsafe {
                                 device.begin_command_buffer(
                                     frame.command_buffer,
@@ -1018,13 +924,18 @@ fn main() -> anyhow::Result<()> {
                                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                                 )?;
 
+                                scene.write_resources(
+                                    resources,
+                                    frame.command_buffer,
+                                    &mut allocator,
+                                )?;
+
                                 resources.record(
                                     frame.command_buffer,
+                                    &device,
                                     swapchain_image,
                                     extent,
                                     &global_resources,
-                                    &device,
-                                    &mut allocator,
                                 )?;
 
                                 device.end_command_buffer(frame.command_buffer)?;
@@ -1058,10 +969,7 @@ fn main() -> anyhow::Result<()> {
                         device.device_wait_idle()?;
                     }
 
-                    plane_model.cleanup(&mut allocator)?;
-                    tori_model.cleanup(&mut allocator)?;
-                    lain_model.cleanup(&mut allocator)?;
-                    fence_model.cleanup(&mut allocator)?;
+                    scene.cleanup(&mut allocator)?;
 
                     global_resources.model_info_buffer.cleanup(&mut allocator)?;
 
