@@ -943,7 +943,8 @@ fn load_image_from_gltf_texture<P: ImagePixelFormat>(
         }
     };
 
-    let linear_filtering = texture.sampler().mag_filter() != Some(gltf::texture::MagFilter::Nearest);
+    let linear_filtering =
+        texture.sampler().mag_filter() != Some(gltf::texture::MagFilter::Nearest);
 
     let image_view = match texture.source().source() {
         gltf::image::Source::View { view, .. } => view,

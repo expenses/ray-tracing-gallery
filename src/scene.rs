@@ -97,25 +97,30 @@ impl DefaultScene {
                 &scene.plane_model,
                 &allocator.device,
                 HitShader::Textured,
+                false,
             ),
             AccelerationStructureInstance::new(
                 Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
                 &scene.tori_model,
                 &allocator.device,
                 HitShader::Textured,
+                false,
             ),
             AccelerationStructureInstance::new(
                 scene.lain_base_transform * Mat4::from_rotation_y(scene.lain_rotation),
                 &scene.lain_model,
                 &allocator.device,
                 HitShader::Textured,
+                false,
             ),
             AccelerationStructureInstance::new(
                 Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
                 &scene.plane_model,
                 &allocator.device,
                 HitShader::Portal,
+                true,
             ),
+            // fence model??
         ];
 
         {
@@ -138,6 +143,7 @@ impl DefaultScene {
                     } else {
                         HitShader::Mirror
                     },
+                    false,
                 ))
             }
         }
@@ -236,6 +242,7 @@ impl LoadedModelScene {
             &scene.model,
             &allocator.device,
             HitShader::Textured,
+            false,
         )];
 
         Ok((scene, instances, model_info))

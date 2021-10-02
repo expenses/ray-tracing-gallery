@@ -96,5 +96,6 @@ void main() {
 
     vec3 brdf_colour = brdf(params);
 
+    // float ambient_lighting = 0.1;
     primary_payload.colour = brdf_colour;
 }
