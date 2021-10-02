@@ -105,7 +105,7 @@ float Fd_Burley(DotParams params) {
 
 struct BrdfInputParams {
 	vec3 normal;
-	vec3 view;
+	vec3 object_to_view;
 	vec3 light;
 	float perceptual_roughness;
 	vec3 base_colour;
@@ -117,9 +117,9 @@ struct BrdfInputParams {
 vec3 brdf(BrdfInputParams input_params) {
 	BaseParams params;
 	params.normal = input_params.normal;
-	params.view = input_params.view;
+	params.view = input_params.object_to_view;
 	params.light = input_params.light;
-	params.halfway = normalize(input_params.view + input_params.light);
+	params.halfway = normalize(input_params.object_to_view + input_params.light);
 	params.roughness = input_params.perceptual_roughness * input_params.perceptual_roughness;
 
 	DotParams dot_params = calculate_dot_params(params);
@@ -134,13 +134,13 @@ vec3 brdf(BrdfInputParams input_params) {
 	vec3 F = F_Schlick(dot_params.light_dot_halfway, f0, f90);
 	float V = V_SmithGGXCorrelated(dot_params);
 
-    // specular BRDF factor
-    // something here is wrong uthghgghhg
-	vec3 Fr = (D * V) * F;
+    // Specular BRDF factor.
+	vec3 specular_brdf_factor = (D * V) * F;
 
-	vec3 Fd = input_params.base_colour * Fd_Burley(dot_params);
+	// Diffuse BRDF factor.
+	vec3 diffuse_brdf_factor = input_params.base_colour * Fd_Burley(dot_params);
 
-	vec3 colour = input_params.light_intensity * dot_params.normal_dot_light * (Fr + Fd);
+	vec3 combined_factor = diffuse_brdf_factor + specular_brdf_factor;
 
-	return colour;
+	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor;
 }

@@ -86,7 +86,9 @@ void main() {
 
     BrdfInputParams params;
     params.normal = normal;
-    params.view = gl_WorldRayDirectionEXT;
+    // Important!! This is the negative of the ray direction as it's the
+    // direction of output light.
+    params.object_to_view = -gl_WorldRayDirectionEXT;
     params.light = uniforms.sun_dir;
     params.perceptual_roughness = 0.5;
     params.base_colour = colour;
