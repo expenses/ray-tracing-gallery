@@ -1038,7 +1038,7 @@ pub fn create_descriptor_set_layouts_and_pool(
                     .binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR),
             ]),
             None,
         )

@@ -81,5 +81,6 @@ void main() {
 	
     lighting *= float(uint8_t(1) - shadow_payload.shadowed);
 
-    primary_payload.colour = colour * ((lighting * 0.6) + 0.4);
+    float ambient_lighting = 0.1;
+    primary_payload.colour = colour * ((lighting * (1.0 - ambient_lighting)) + ambient_lighting);
 }
