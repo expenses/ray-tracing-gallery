@@ -17,6 +17,7 @@ use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 use spirv_std::{
     arch::read_clock_khr,
     image::SampledImage,
+    memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
     Image, RuntimeArray,
 };
@@ -89,7 +90,7 @@ pub fn ray_generation(
     #[spirv(launch_size)] launch_size: IVec3,
 ) {
     let start_time = if uniforms.show_heatmap {
-        unsafe { read_clock_khr() }
+        unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
     } else {
         0
     };
@@ -143,7 +144,7 @@ pub fn ray_generation(
     }
 
     let colour = if uniforms.show_heatmap {
-        let end_time = unsafe { read_clock_khr() };
+        let end_time = unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() };
 
         let delta_time = end_time - start_time;
 
