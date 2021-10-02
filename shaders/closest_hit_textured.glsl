@@ -7,6 +7,7 @@
 #extension GL_EXT_scalar_block_layout : enable
 
 #include "hit_shader_common.glsl"
+#include "pbr.glsl"
 
 vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
     vec3 vector_to_point = point - vert.pos;
@@ -59,13 +60,13 @@ void main() {
     vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
     vec3 normal = normalize(rotated_normal);
 
-    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
+    //vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
 
     // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
     // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
     vec3 colour = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated.uv).rgb;
 
-    float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
+    /*float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 
     // Shadow casting
 	float t_min = 0.001;
@@ -81,5 +82,19 @@ void main() {
 	
     lighting *= float(uint8_t(1) - shadow_payload.shadowed);
 
-    primary_payload.colour = colour * ((lighting * 0.6) + 0.4);
+    primary_payload.colour = colour * ((lighting * 0.6) + 0.4);*/
+
+    BrdfInputParams params;
+    params.normal = normal;
+    params.view = gl_WorldRayDirectionEXT;
+    params.light = uniforms.sun_dir;
+    params.perceptual_roughness = 0.5;
+    params.base_colour = colour;
+    params.metallic = 0.0;
+    params.reflectance = 0.5;
+    params.light_intensity = vec3(1.0);
+
+    vec3 brdf_colour = brdf(params);
+
+    primary_payload.colour = brdf_colour;
 }

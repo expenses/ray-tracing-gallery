@@ -255,17 +255,17 @@ fn main() -> anyhow::Result<()> {
             .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
         // Hit shaders
         load_shader_module_as_stage(
-            include_bytes!("../shaders/any_hit_alpha_clip.spv"),
+            &std::fs::read("shaders/any_hit_alpha_clip.spv")?,
             vk::ShaderStageFlags::ANY_HIT_KHR,
             &device,
         )?,
         load_shader_module_as_stage(
-            include_bytes!("../shaders/closest_hit_textured.spv"),
+            &std::fs::read("shaders/closest_hit_textured.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
         load_shader_module_as_stage(
-            include_bytes!("../shaders/closest_hit_mirror.spv"),
+            &std::fs::read("shaders/closest_hit_mirror.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
