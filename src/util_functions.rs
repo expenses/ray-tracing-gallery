@@ -1,6 +1,7 @@
 use crate::SurfaceLoader;
 use ash::vk;
 use gpu_allocator::vulkan::AllocationCreateDesc;
+use image::GenericImageView;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -66,7 +67,6 @@ pub fn select_physical_device(
             let surface_format = surface_formats
                 .iter()
                 .find(|surface_format| {
-                    // todo: srgb?
                     surface_format.format == vk::Format::B8G8R8A8_UNORM
                         && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
                 })
@@ -172,40 +172,42 @@ pub fn load_shader_module_as_stage(
         .name(CStr::from_bytes_with_nul(b"main\0")?))
 }
 
-pub fn create_single_colour_image(
-    colour: [f32; 4],
+pub trait ImagePixelFormat: bytemuck::Pod {
+    const FORMAT: vk::Format;
+}
+
+impl ImagePixelFormat for f32 {
+    const FORMAT: vk::Format = vk::Format::R32_SFLOAT;
+}
+
+impl ImagePixelFormat for [f32; 4] {
+    const FORMAT: vk::Format = vk::Format::R32G32B32A32_SFLOAT;
+}
+
+pub fn create_single_colour_image<P: ImagePixelFormat>(
+    pixel: P,
     name: &str,
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
 ) -> anyhow::Result<Image> {
-    let staging_buffer = Buffer::new(
-        bytemuck::bytes_of(&colour),
-        &format!("{} staging buffer", name),
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        allocator,
-    )?;
-
-    let image = create_image_from_staging_buffer(
-        &staging_buffer,
+    create_image_from_bytes(
+        bytemuck::bytes_of(&pixel),
         vk::Extent3D {
             width: 1,
             height: 1,
             depth: 1,
         },
         vk::ImageViewType::TYPE_2D,
-        vk::Format::R32G32B32A32_SFLOAT,
+        P::FORMAT,
         name,
         command_buffer,
         allocator,
-    )?;
-
-    buffers_to_cleanup.push(staging_buffer);
-
-    Ok(image)
+        buffers_to_cleanup,
+    )
 }
 
-pub fn load_rgba_png_image_from_bytes(
+pub fn load_png_image_from_bytes(
     bytes: &[u8],
     name: &str,
     command_buffer: vk::CommandBuffer,
@@ -216,40 +218,31 @@ pub fn load_rgba_png_image_from_bytes(
 
     let rgba_image = decoded_image.to_rgba8();
 
-    let staging_buffer = Buffer::new(
-        &rgba_image,
-        &format!("{} staging buffer", name),
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        allocator,
-    )?;
-
-    let image = create_image_from_staging_buffer(
-        &staging_buffer,
+    create_image_from_bytes(
+        &*rgba_image,
         vk::Extent3D {
-            width: rgba_image.width(),
-            height: rgba_image.height(),
+            width: decoded_image.width(),
+            height: decoded_image.height(),
             depth: 1,
         },
         vk::ImageViewType::TYPE_2D,
-        vk::Format::R8G8B8A8_UNORM,
+        vk::Format::R8G8B8A8_SRGB,
         name,
         command_buffer,
         allocator,
-    )?;
-
-    buffers_to_cleanup.push(staging_buffer);
-
-    Ok(image)
+        buffers_to_cleanup,
+    )
 }
 
-pub fn create_image_from_staging_buffer(
-    staging_buffer: &Buffer,
+pub fn create_image_from_bytes(
+    bytes: &[u8],
     extent: vk::Extent3D,
     view_ty: vk::ImageViewType,
     format: vk::Format,
     name: &str,
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
+    buffers_to_cleanup: &mut Vec<Buffer>,
 ) -> anyhow::Result<Image> {
     fn ty_from_view_ty(ty: vk::ImageViewType) -> vk::ImageType {
         match ty {
@@ -262,6 +255,13 @@ pub fn create_image_from_staging_buffer(
             _ => vk::ImageType::default(),
         }
     }
+
+    let staging_buffer = Buffer::new(
+        bytes,
+        &format!("{} staging buffer", name),
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        allocator,
+    )?;
 
     let image = unsafe {
         allocator.device.create_image(
@@ -359,6 +359,8 @@ pub fn create_image_from_staging_buffer(
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)],
         });
     }
+
+    buffers_to_cleanup.push(staging_buffer);
 
     Ok(Image {
         image,

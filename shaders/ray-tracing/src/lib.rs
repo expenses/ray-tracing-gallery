@@ -33,11 +33,19 @@ pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPay
     payload.shadowed = false;
 }
 
-const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.2]);
+const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.05]);
 
 #[spirv(miss)]
-pub fn primary_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload) {
-    payload.colour = SKY_COLOUR;
+pub fn primary_ray_miss(
+    #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
+    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
+    #[spirv(world_ray_direction)] world_ray_direction: Vec3,
+) {
+    if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
+        payload.colour = Vec3::splat(1.0);
+    } else {
+        payload.colour = SKY_COLOUR;
+    }
 }
 
 struct TraceRayExplicitParams<'a, T> {
@@ -148,8 +156,12 @@ pub fn ray_generation(
         payload.colour
     };
 
+    let gamma = 2.2;
+
+    let gamma_corrected_colour = colour.powf(1.0 / gamma);
+
     unsafe {
-        image.write(launch_id_xy, colour.extend(1.0));
+        image.write(launch_id_xy, gamma_corrected_colour.extend(1.0));
     }
 }
 

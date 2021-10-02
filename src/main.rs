@@ -29,7 +29,7 @@ use util_structs::{
 };
 
 use util_functions::{
-    build_tlas, info_from_group, load_rgba_png_image_from_bytes, load_shader_module,
+    build_tlas, info_from_group, load_png_image_from_bytes, load_shader_module,
     load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
     vulkan_debug_utils_callback, ShaderGroup,
 };
@@ -403,7 +403,7 @@ fn main() -> anyhow::Result<()> {
     let mut buffers_to_cleanup = Vec::new();
 
     {
-        let green_texture = load_rgba_png_image_from_bytes(
+        let green_texture = load_png_image_from_bytes(
             include_bytes!("../resources/green.png"),
             "green texture",
             init_command_buffer.buffer(),
@@ -413,7 +413,7 @@ fn main() -> anyhow::Result<()> {
 
         image_manager.push_image(green_texture, false);
 
-        let pink_texture = load_rgba_png_image_from_bytes(
+        let pink_texture = load_png_image_from_bytes(
             include_bytes!("../resources/pink.png"),
             "pink texture",
             init_command_buffer.buffer(),
