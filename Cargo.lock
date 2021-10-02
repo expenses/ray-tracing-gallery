@@ -77,17 +77,12 @@ checksum = "d67af77d68a931ecd5cbd8a3b5987d63a1d1d1278f7f6a60ae33db485cdebb69"
 [[package]]
 name = "ash"
 version = "0.33.3+1.2.191"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc4f1d82f164f838ae413296d1131aa6fa79b917d25bebaa7033d25620c09219"
-dependencies = [
- "libloading 0.7.0",
-]
+source = "git+https://github.com/MaikKlein/ash?rev=e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4#e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4"
 
 [[package]]
 name = "ash-window"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12f91ce4c6be1a2ba99d3d6cd57d5bae9ac6d6f903b5ae53d6b1dee2edf872af"
+source = "git+https://github.com/MaikKlein/ash?rev=e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4#e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4"
 dependencies = [
  "ash",
  "raw-window-handle",

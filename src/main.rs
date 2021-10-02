@@ -34,7 +34,7 @@ use util_functions::{
     vulkan_debug_utils_callback, ShaderGroup,
 };
 
-use gpu_structs::{bytes_of, PushConstantBufferAddresses, RayTracingUniforms};
+use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice, PushConstantBufferAddresses, RayTracingUniforms};
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 
@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
         .build(&event_loop)?;
 
-    let entry = unsafe { ash::Entry::new() }?;
+    let entry = ash::Entry::new();
 
     // Vulkan 1.2, hell yea
     let api_version = vk::API_VERSION_1_2;
@@ -462,7 +462,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     let mut instances_buffer = Buffer::new_with_custom_alignment(
-        bytemuck::cast_slice(&instances),
+        unsafe { unsafe_cast_slice(&instances) },
         "instances buffer",
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -580,7 +580,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[0],
                     ray_tracing_uniforms: Buffer::new(
-                        bytes_of(&uniforms),
+                        unsafe_bytes_of(&uniforms),
                         "ray tracing uniforms 0",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -589,7 +589,7 @@ fn main() -> anyhow::Result<()> {
                     tlas: tlas.clone(init_command_buffer.buffer(), "tlas 0", &mut allocator)?,
                     scratch_buffer: ScratchBuffer::new("scratch buffer 0", &as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
-                        bytemuck::cast_slice(&instances),
+                        unsafe_cast_slice(&instances),
                         "instances buffer 0",
                         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -613,7 +613,7 @@ fn main() -> anyhow::Result<()> {
                     )?,
                     ray_tracing_ds: ray_tracing_sets[1],
                     ray_tracing_uniforms: Buffer::new(
-                        bytes_of(&uniforms),
+                        unsafe_bytes_of(&uniforms),
                         "ray tracing uniforms 1",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
@@ -909,7 +909,7 @@ fn main() -> anyhow::Result<()> {
 
                             resources
                                 .ray_tracing_uniforms
-                                .write_mapped(bytes_of(&uniforms), 0)?;
+                                .write_mapped(unsafe { unsafe_bytes_of(&uniforms) }, 0)?;
 
                             unsafe {
                                 device.begin_command_buffer(
