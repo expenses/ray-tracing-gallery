@@ -23,7 +23,7 @@ hitAttributeEXT vec2 attribs;
 // Buffer references are defined in a wierd way, I probably wouldn't have worked them out without:
 // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L37-L59
 
-layout(buffer_reference, scalar) buffer FloatBuffer {
+layout(buffer_reference, scalar) buffer Vec3Buffer {
     vec3 buf[];
 };
 
@@ -71,25 +71,52 @@ vec3 interpolate(vec3 a, vec3 b, vec3 c, vec3 barycentric_coords) {
     return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
 }
 
-vec2 interpolate(vec2 a, vec2 b, vec2 c, vec3 barycentric_coords) {
-    return a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z;
-}
-
 uvec3 read_indices(GeometryInfo info) {
     IndexBuffer indices = IndexBuffer(info.index_buffer_address);
 
     return indices.buf[gl_PrimitiveID];
 }
 
-vec2 read_vec2(uint64_t buffer_address, uint index) {
-    Vec2Buffer vec2s = Vec2Buffer(buffer_address);
-    return vec2s.buf[index];
+struct Vec3Triangle {
+    vec3 a;
+    vec3 b;
+    vec3 c;
+};
+
+vec3 interpolate(Vec3Triangle triangle, vec3 barycentric_coords) {
+    return interpolate(triangle.a, triangle.b, triangle.c, barycentric_coords);
 }
 
-vec3 read_vec3(uint64_t buffer_address, uint index) {
-    FloatBuffer floats = FloatBuffer(buffer_address);
+Vec3Triangle read_vec3_triangle(uint64_t buffer_address, uvec3 indices) {
+    Vec3Triangle triangle;
 
-    return floats.buf[index];
+    Vec3Buffer vec3s = Vec3Buffer(buffer_address);
+
+    triangle.a = vec3s.buf[indices.x];
+    triangle.b = vec3s.buf[indices.y];
+    triangle.c = vec3s.buf[indices.z];
+    return triangle;
+}
+
+struct Vec2Triangle {
+    vec2 a;
+    vec2 b;
+    vec2 c;
+};
+
+vec2 interpolate(Vec2Triangle triangle, vec3 barycentric_coords) {
+    return triangle.a * barycentric_coords.x + triangle.b * barycentric_coords.y + triangle.c * barycentric_coords.z;
+}
+
+Vec2Triangle read_vec2_triangle(uint64_t buffer_address, uvec3 indices) {
+    Vec2Triangle triangle;
+
+    Vec2Buffer vec2s = Vec2Buffer(buffer_address);
+
+    triangle.a = vec2s.buf[indices.x];
+    triangle.b = vec2s.buf[indices.y];
+    triangle.c = vec2s.buf[indices.z];
+    return triangle;
 }
 
 struct Vertex {
@@ -98,20 +125,10 @@ struct Vertex {
     vec2 uv;
 };
 
-Vertex load_vertex(ModelInfo info, uint index) {
-    Vertex vertex;
-
-    vertex.pos = read_vec3(info.position_buffer_address, index);
-    vertex.normal = read_vec3(info.normal_buffer_address, index);
-    vertex.uv = read_vec2(info.uv_buffer_address, index);
-
-    return vertex;
-}
-
 struct Triangle {
-    Vertex a;
-    Vertex b;
-    Vertex c;
+    Vec3Triangle positions;
+    Vec3Triangle normals;
+    Vec2Triangle uvs;
 };
 
 // Only use this if you need to interpolate the pos, normal and uv.
@@ -120,19 +137,20 @@ Triangle load_triangle(ModelInfo info, GeometryInfo geo_info) {
 
     Triangle triangle;
 
-    triangle.a = load_vertex(info, indices.x);
-    triangle.b = load_vertex(info, indices.y);
-    triangle.c = load_vertex(info, indices.z);
+    triangle.positions = read_vec3_triangle(info.position_buffer_address, indices);
+    triangle.normals = read_vec3_triangle(info.normal_buffer_address, indices);
+    triangle.uvs = read_vec2_triangle(info.uv_buffer_address, indices);
 
     return triangle;
 }
 
+
 Vertex interpolate_triangle(Triangle triangle, vec3 barycentric_coords) {
     Vertex vertex;
 
-    vertex.pos = interpolate(triangle.a.pos, triangle.b.pos, triangle.c.pos, barycentric_coords);
-    vertex.normal = interpolate(triangle.a.normal, triangle.b.normal, triangle.c.normal, barycentric_coords);
-    vertex.uv = interpolate(triangle.a.uv, triangle.b.uv, triangle.c.uv, barycentric_coords);
+    vertex.pos = interpolate(triangle.positions, barycentric_coords);
+    vertex.normal = interpolate(triangle.normals, barycentric_coords);
+    vertex.uv = interpolate(triangle.uvs, barycentric_coords);
 
     return vertex;
 

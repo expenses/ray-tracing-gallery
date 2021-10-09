@@ -19,11 +19,7 @@ void main() {
 
     uvec3 indices = read_indices(geo_info);
 
-    vec2 a_uv = read_vec2(info.uv_buffer_address, indices.x);
-    vec2 b_uv = read_vec2(info.uv_buffer_address, indices.y);
-    vec2 c_uv = read_vec2(info.uv_buffer_address, indices.z);
-
-    vec2 interpolated_uv = interpolate(a_uv, b_uv, c_uv, compute_barycentric_coords());
+    vec2 interpolated_uv = interpolate(read_vec2_triangle(info.uv_buffer_address, indices), compute_barycentric_coords());
 
     float alpha = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated_uv).a;
 
