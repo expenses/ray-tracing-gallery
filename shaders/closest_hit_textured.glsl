@@ -10,12 +10,12 @@
 #include "pbr.glsl"
 
 // For `get_shadow_terminator_fix_shadow_origin`.
-vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
-    vec3 vector_to_point = point - vert.pos;
+vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, vec3 vertex_pos, vec3 vertex_normal) {
+    vec3 vector_to_point = point - vertex_pos;
 
-    float dot_product = min(0.0, dot(vector_to_point, vert.normal));
+    float dot_product = min(0.0, dot(vector_to_point, vertex_normal));
 
-    return vector_to_point - (dot_product * vert.normal);
+    return vector_to_point - (dot_product * vertex_normal);
 }
 
 // Ray Tracing Gems II, Chapter 4.3
@@ -24,9 +24,9 @@ vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
 // `interpolated_point` is the model-space intersection point
 vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_point, vec3 barycentric_coords) {
     // Get the 3 offset for the points
-    vec3 offset_a = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.a);
-    vec3 offset_b = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.b);
-    vec3 offset_c = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.c);
+    vec3 offset_a = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.positions.a, tri.normals.a);
+    vec3 offset_b = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.positions.b, tri.normals.b);
+    vec3 offset_c = compute_vector_and_project_onto_tangent_plane(interpolated_point, tri.positions.c, tri.normals.c);
 
     // Interpolate an offset
     vec3 interpolated_offset = interpolate(offset_a, offset_b, offset_c, barycentric_coords);

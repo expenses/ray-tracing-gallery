@@ -19,11 +19,7 @@ void main() {
 
     uvec3 indices = read_indices(geo_info);
 
-    vec3 a_normal = read_vec3(info.normal_buffer_address, indices.x);
-    vec3 b_normal = read_vec3(info.normal_buffer_address, indices.y);
-    vec3 c_normal = read_vec3(info.normal_buffer_address, indices.z);
-
-    vec3 interpolated_normal = interpolate(a_normal, b_normal, c_normal, compute_barycentric_coords());
+    vec3 interpolated_normal = interpolate(read_vec3_triangle(info.normal_buffer_address, indices), compute_barycentric_coords());
 
     vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated_normal;
     vec3 normal = normalize(rotated_normal);
