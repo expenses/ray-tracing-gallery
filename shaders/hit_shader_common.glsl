@@ -35,11 +35,17 @@ layout(buffer_reference, scalar) buffer IndexBuffer {
     uvec3 buf[];
 };
 
+layout(buffer_reference, scalar) buffer Vec4Buffer {
+    vec4 buf[];
+};
+
 struct ModelInfo {
     uint64_t position_buffer_address;
     uint64_t normal_buffer_address;
     uint64_t uv_buffer_address;
     uint64_t geometry_info_address;
+    uint64_t tangent_buffer_address;
+    uint64_t has_tangents;
 };
 
 layout(buffer_reference, scalar) buffer ModelInfos {
@@ -155,5 +161,12 @@ Vertex interpolate_triangle(Triangle triangle, vec3 barycentric_coords) {
     vertex.uv = interpolate(triangle.uvs, barycentric_coords);
 
     return vertex;
+}
 
+vec4 read_and_interpolate_tangents(ModelInfo info, uvec3 indices, vec3 barycentric_coords) {
+    Vec4Buffer vec4s = Vec4Buffer(info.tangent_buffer_address);
+
+    return  vec4s.buf[indices.x] * barycentric_coords.x +
+            vec4s.buf[indices.y] * barycentric_coords.y +
+            vec4s.buf[indices.z] * barycentric_coords.z;
 }

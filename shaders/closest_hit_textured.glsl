@@ -71,6 +71,32 @@ vec3 rotate_normal_into_world_space(vec3 local_space_normal) {
     return normalize(rotated_normal);
 }
 
+vec3 calculate_normal(Vertex interpolated, Triangle triangle, ModelInfo info, GeometryInfo geo_info) {
+    // Just rotate the vertex normal into world space if there is no normal map or tangents.
+    if (geo_info.normal_map_texture_index < 0 || info.has_tangents == 0) {
+        return rotate_normal_into_world_space(interpolated.normal);
+    }
+
+    vec3 map_normal = texture(textures[nonuniformEXT(geo_info.normal_map_texture_index)], interpolated.uv).rgb;
+
+    // Convert the map normal into a unit vector
+    map_normal = map_normal * 2.0 - vec3(1.0);
+
+    vec3 normal = normalize(interpolated.normal);
+
+    vec4 tangent_and_handedness = read_and_interpolate_tangents(info, read_indices(geo_info), compute_barycentric_coords());
+    vec3 tangent = normalize(tangent_and_handedness.xyz);
+    float handedness = tangent_and_handedness.w;
+
+    vec3 bitangent = cross(normal, tangent) * handedness;
+
+    mat3 local_space_tbn_matrix = mat3(tangent, bitangent, normal);
+
+    vec3 local_space_normal = local_space_tbn_matrix * normalize(map_normal);
+
+    return rotate_normal_into_world_space(local_space_normal);
+}
+
 float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
     float t_min = 0.001;
     float t_max = 10000.0;
@@ -103,14 +129,17 @@ void main() {
 
     // Shadow casting
     vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
-	// Important! If we have this function take the uniforms struct as input, it SEGFAULTs
+    // shadow origin without the fix:
+    //shadow_origin = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+
+    // Important! If we have this function take the uniforms struct as input, it SEGFAULTs
     // `device.create_shader_module`. Fantastic.
     float sun_factor = sun_factor(shadow_origin, uniforms.sun_dir);
 
     MaterialData material_data = read_material_from_textures(geo_info, interpolated.uv);
 
     BrdfInputParams params;
-    params.normal = rotate_normal_into_world_space(interpolated.normal);
+    params.normal = calculate_normal(interpolated, triangle, info, geo_info);
     // Important!! This is the negative of the ray direction as it's the
     // direction of output light.
     params.object_to_view = -gl_WorldRayDirectionEXT;

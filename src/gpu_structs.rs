@@ -31,6 +31,8 @@ pub struct ModelInfo {
     pub normal_buffer_address: vk::DeviceAddress,
     pub uv_buffer_address: vk::DeviceAddress,
     pub geometry_info_address: vk::DeviceAddress,
+    pub tangent_info_address: vk::DeviceAddress,
+    pub has_tangents: u64,
 }
 
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
