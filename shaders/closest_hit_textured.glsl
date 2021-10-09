@@ -9,6 +9,7 @@
 #include "hit_shader_common.glsl"
 #include "pbr.glsl"
 
+// For `get_shadow_terminator_fix_shadow_origin`.
 vec3 compute_vector_and_project_onto_tangent_plane(vec3 point, Vertex vert) {
     vec3 vector_to_point = point - vert.pos;
 
@@ -37,6 +38,53 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
     return gl_ObjectToWorldEXT * vec4(local_space_fixed_point, 1.0);
 }
 
+struct MaterialData {
+    vec3 colour;
+    float metallic;
+    float roughness;
+};
+
+MaterialData read_material_from_textures(GeometryInfo info, vec2 uv) {
+    MaterialData data;
+
+    // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
+    // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
+    data.colour = texture(textures[nonuniformEXT(info.diffuse_texture_index)], uv).rgb;
+
+    vec2 metallic_roughness = texture(textures[nonuniformEXT(info.metallic_roughness_texture_index)], uv)
+        // This swizzle is the wrong way around for a reason:
+        // https://docs.rs/gltf/0.15.2/gltf/material/struct.PbrMetallicRoughness.html#method.metallic_roughness_texture
+        .bg;
+
+    data.metallic = metallic_roughness.x;
+    data.roughness = metallic_roughness.y;
+
+    return data;
+}
+
+// Just in-case we do any non-uniform scaling, we use a normal matrix here.
+// This is defined as 'the transpose of the inverse of the upper-left 3x3 part of the model matrix'
+//
+// See: https://learnopengl.com/Lighting/Basic-Lighting
+vec3 rotate_normal_into_world_space(vec3 local_space_normal) {
+    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * local_space_normal;
+    return normalize(rotated_normal);
+}
+
+float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
+    float t_min = 0.001;
+    float t_max = 10000.0;
+    shadow_payload.shadowed = uint8_t(1);
+    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
+    traceRayEXT(
+        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        0xFF, 1, 0, 1,
+        shadow_origin, t_min, sun_dir, t_max, 1
+    );
+    return float(1 - shadow_payload.shadowed);
+}
+
 void main() {
     ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
@@ -53,51 +101,27 @@ void main() {
     vec3 barycentric_coords = compute_barycentric_coords();
     Vertex interpolated = interpolate_triangle(triangle, barycentric_coords);
 
-    // Just in-case we do any non-uniform scaling, we use a normal matrix here.
-    // This is defined as 'the transpose of the inverse of the upper-left 3x3 part of the model matrix'
-    //
-    // See: https://learnopengl.com/Lighting/Basic-Lighting
-    vec3 rotated_normal = mat3(gl_WorldToObject3x4EXT) * interpolated.normal;
-    vec3 normal = normalize(rotated_normal);
-
-    //vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
-
-    // Textures get blocky without the `nonuniformEXT` here. Thanks again to:
-    // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/596b641a5687307ee9f58193472e8b620ce84189/ray_tracing__advance/shaders/raytrace.rchit#L125
-    vec3 colour = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated.uv).rgb;
-
-    /*float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
-
     // Shadow casting
-	float t_min = 0.001;
-	float t_max = 10000.0;
-	shadow_payload.shadowed = uint8_t(1);
-    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
-	traceRayEXT(
-        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-        0xFF, 1, 0, 1,
-        shadow_origin, t_min, uniforms.sun_dir, t_max, 1
-    );
-	
-    lighting *= float(uint8_t(1) - shadow_payload.shadowed);
+    vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
+	// Important! If we have this function take the uniforms struct as input, it SEGFAULTs
+    // `device.create_shader_module`. Fantastic.
+    float sun_factor = sun_factor(shadow_origin, uniforms.sun_dir);
 
-    primary_payload.colour = colour * ((lighting * 0.6) + 0.4);*/
+    MaterialData material_data = read_material_from_textures(geo_info, interpolated.uv);
 
     BrdfInputParams params;
-    params.normal = normal;
+    params.normal = rotate_normal_into_world_space(interpolated.normal);
     // Important!! This is the negative of the ray direction as it's the
     // direction of output light.
     params.object_to_view = -gl_WorldRayDirectionEXT;
     params.light = uniforms.sun_dir;
-    params.perceptual_roughness = 0.5;
-    params.base_colour = colour;
-    params.metallic = 0.0;
-    params.reflectance = 0.5;
-    params.light_intensity = vec3(1.0);
-
-    vec3 brdf_colour = brdf(params);
+    params.base_colour = material_data.colour;
+    params.metallic = material_data.metallic;
+    params.perceptual_roughness = material_data.roughness;
+    // Corresponds to 4% reflectance on non-metallic (dielectric) materials (0.16 * 0.5 * 0.5).
+    params.perceptual_dielectric_reflectance = 0.5;
+    params.light_intensity = vec3(1.0) * sun_factor;
 
     // float ambient_lighting = 0.1;
-    primary_payload.colour = brdf_colour;
+    primary_payload.colour = brdf(params);
 }

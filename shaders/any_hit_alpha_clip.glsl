@@ -25,7 +25,7 @@ void main() {
 
     vec2 interpolated_uv = interpolate(a_uv, b_uv, c_uv, compute_barycentric_coords());
 
-    float alpha = texture(textures[nonuniformEXT(geo_info.texture_index)], interpolated_uv).a;
+    float alpha = texture(textures[nonuniformEXT(geo_info.diffuse_texture_index)], interpolated_uv).a;
 
     if (alpha < 0.5) {
         ignoreIntersectionEXT;

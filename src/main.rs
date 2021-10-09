@@ -34,7 +34,9 @@ use util_functions::{
     vulkan_debug_utils_callback, ShaderGroup,
 };
 
-use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice, PushConstantBufferAddresses, RayTracingUniforms};
+use gpu_structs::{
+    unsafe_bytes_of, unsafe_cast_slice, PushConstantBufferAddresses, RayTracingUniforms,
+};
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 

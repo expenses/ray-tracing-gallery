@@ -30,13 +30,6 @@ pub struct ModelInfo {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct GeometryInfo {
-    pub index_buffer_address: DeviceAddress,
-    pub image_index: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
 pub struct PrimaryRayPayload {
     pub colour: Vec3,
     pub new_ray_origin: Vec3,

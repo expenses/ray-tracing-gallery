@@ -110,7 +110,7 @@ struct BrdfInputParams {
 	float perceptual_roughness;
 	vec3 base_colour;
 	float metallic;
-	float reflectance;
+	float perceptual_dielectric_reflectance;
 	vec3 light_intensity;
 };
 
@@ -124,23 +124,29 @@ vec3 brdf(BrdfInputParams input_params) {
 
 	DotParams dot_params = calculate_dot_params(params);
 
-	float D = D_GGX(dot_params);
+	float Distribution_function = D_GGX(dot_params);
 
 	// from:
 	// https://google.github.io/filament/Filament.md.html#materialsystem/parameterization/remapping
-	vec3 f0 = 0.16 * input_params.reflectance * input_params.reflectance * (1.0 - input_params.metallic) + input_params.base_colour * input_params.metallic;
+	float dielectric_f0 = 0.16 * input_params.perceptual_dielectric_reflectance * input_params.perceptual_dielectric_reflectance;
+	vec3 metallic_f0 = input_params.base_colour;
+
+	vec3 f0 = dielectric_f0 * (1.0 - input_params.metallic) + metallic_f0 * input_params.metallic;
 	float f90 = compute_f90(dot_params);
 
-	vec3 F = F_Schlick(dot_params.light_dot_halfway, f0, f90);
-	float V = V_SmithGGXCorrelated(dot_params);
+	vec3 Fresnel = F_Schlick(dot_params.light_dot_halfway, f0, f90);
+	float Geometric_shadowing = V_SmithGGXCorrelated(dot_params);
 
     // Specular BRDF factor.
-	vec3 specular_brdf_factor = (D * V) * F;
+	vec3 specular_brdf_factor = (Distribution_function * Geometric_shadowing) * Fresnel;
 
 	// Diffuse BRDF factor.
 	vec3 diffuse_brdf_factor = input_params.base_colour * Fd_Burley(dot_params);
 
 	vec3 combined_factor = diffuse_brdf_factor + specular_brdf_factor;
+
+	// For normal map debugging.
+	//return input_params.normal * 0.5 + 0.5;
 
 	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor;
 }

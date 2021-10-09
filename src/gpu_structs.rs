@@ -37,7 +37,15 @@ pub struct ModelInfo {
 #[repr(C)]
 pub struct GeometryInfo {
     pub index_buffer_address: vk::DeviceAddress,
-    pub image_index: u32,
+    pub images: GeometryImages,
+}
+
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod, Debug)]
+#[repr(C)]
+pub struct GeometryImages {
+    pub diffuse_image_index: u32,
+    pub metallic_roughness_image_index: u32,
+    pub normal_map_image_index: i32,
     pub _padding: u32,
 }
 

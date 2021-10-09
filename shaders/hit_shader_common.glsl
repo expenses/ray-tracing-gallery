@@ -48,7 +48,9 @@ layout(buffer_reference, scalar) buffer ModelInfos {
 
 struct GeometryInfo {
     uint64_t index_buffer_address;
-    uint texture_index;
+    uint diffuse_texture_index;
+    uint metallic_roughness_texture_index;
+    int normal_map_texture_index;
 };
 
 layout(buffer_reference, scalar) buffer GeometryInfos {
@@ -88,7 +90,6 @@ vec2 read_vec2(uint64_t buffer_address, uint index) {
 
 vec3 read_vec3(uint64_t buffer_address, uint index) {
     FloatBuffer floats = FloatBuffer(buffer_address);
-
     return floats.buf[index];
 }
 
