@@ -21,7 +21,7 @@ impl BaseParams {
     fn as_dot_params(&self) -> DotParams {
         DotParams {
             // It's important that we use an epsilon here,
-            normal_dot_view: clamp(self.normal.dot(self.view), 1.0e-5, 1.0),
+            normal_dot_view: clamp(self.normal.dot(self.view), 1.0e-10, 1.0),
             normal_dot_halfway: clamp_dot(self.normal, self.halfway),
             normal_dot_light: clamp_dot(self.normal, self.light),
             light_dot_halfway: clamp_dot(self.light, self.halfway),
@@ -66,5 +66,4 @@ fn test_ggx_division_by_zero() {
     let result = V_SmithGGXCorrelated(params);
 
     assert!(result.is_finite(), "{}", result);
-    panic!("{}", result);
 }

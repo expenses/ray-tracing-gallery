@@ -15,7 +15,6 @@ use spirv_std::macros::spirv;
 use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
-    arch::read_clock_khr,
     image::SampledImage,
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
@@ -24,6 +23,7 @@ use spirv_std::{
 
 mod heatmap;
 mod structs;
+mod pbr;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
@@ -80,6 +80,7 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
     }
 }
 
+#[cfg(target_arch = "spirv")]
 #[spirv(ray_generation)]
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
@@ -89,6 +90,8 @@ pub fn ray_generation(
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
 ) {
+    use spirv_std::arch::read_clock_khr;
+
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
     } else {
