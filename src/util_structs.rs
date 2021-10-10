@@ -982,7 +982,7 @@ fn load_image_from_gltf_texture(
     Ok(params.image_manager.push_image(image, linear_filtering))
 }
 
-fn load_image_from_material(
+fn load_images_from_material(
     material: &gltf::Material,
     buffer_blob: &[u8],
     name: &str,
@@ -1077,7 +1077,7 @@ impl Model {
         // then we need to have two different images in the descriptor set, with the same image view but different samplers.
         // This requires `ImageManager` to be written slightly differently.
         for (i, material) in gltf.materials().enumerate() {
-            let model_geometry = load_image_from_material(
+            let model_geometry = load_images_from_material(
                 &material,
                 buffer_blob,
                 &format!("{} image {}", name, i),
