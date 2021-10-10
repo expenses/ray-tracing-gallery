@@ -112,6 +112,8 @@ struct BrdfInputParams {
 	float metallic;
 	float perceptual_dielectric_reflectance;
 	vec3 light_intensity;
+	// Also called the irradience.
+	vec3 ambient_light;
 };
 
 vec3 brdf(BrdfInputParams input_params) {
