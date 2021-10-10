@@ -1336,7 +1336,7 @@ checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 dependencies = [
  "ar",
  "bimap",
@@ -1518,7 +1518,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 dependencies = [
  "memchr",
  "raw-string",
@@ -1530,7 +1530,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 dependencies = [
  "bitflags",
  "glam",
@@ -1542,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1574,7 +1574,7 @@ dependencies = [
 [[package]]
 name = "spirv-types"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 
 [[package]]
 name = "strsim"
