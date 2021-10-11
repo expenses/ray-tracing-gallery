@@ -1279,7 +1279,7 @@ dependencies = [
 name = "ray-tracing-shaders"
 version = "0.1.0"
 dependencies = [
- "spirv-std",
+ "spirv-std 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
 ]
 
 [[package]]
@@ -1336,7 +1336,7 @@ checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
+source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
 dependencies = [
  "ar",
  "bimap",
@@ -1518,7 +1518,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
+source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
 dependencies = [
  "memchr",
  "raw-string",
@@ -1530,13 +1530,37 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.4.0-alpha.12"
+source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
+dependencies = [
+ "bitflags",
+ "glam",
+ "num-traits",
+ "spirv-std-macros 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
+ "spirv-types 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
+]
+
+[[package]]
+name = "spirv-std"
+version = "0.4.0-alpha.12"
 source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 dependencies = [
  "bitflags",
  "glam",
  "num-traits",
- "spirv-std-macros",
- "spirv-types",
+ "spirv-std-macros 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
+ "spirv-types 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
+]
+
+[[package]]
+name = "spirv-std-macros"
+version = "0.4.0-alpha.12"
+source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "spirv-types 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
+ "syn",
 ]
 
 [[package]]
@@ -1547,7 +1571,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "spirv-types",
+ "spirv-types 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
  "syn",
 ]
 
@@ -1570,6 +1594,11 @@ checksum = "b967db819666ccf7a0373876321bfe852922edcc7f3e30e3a7668b02e1961119"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "spirv-types"
+version = "0.4.0-alpha.12"
+source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
 
 [[package]]
 name = "spirv-types"
@@ -1650,7 +1679,7 @@ dependencies = [
 name = "test-shader"
 version = "0.1.0"
 dependencies = [
- "spirv-std",
+ "spirv-std 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
 ]
 
 [[package]]
