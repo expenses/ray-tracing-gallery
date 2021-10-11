@@ -582,9 +582,9 @@ checksum = "f0a01e0497841a3b2db4f8afa483cce65f7e96a3498bd6c541734792aeac8fe7"
 
 [[package]]
 name = "glam"
-version = "0.17.3"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
+checksum = "525a3e490ba77b8e326fb67d4b44b4bd2f920f44d4cc73ccec50adc68e3bee34"
 dependencies = [
  "num-traits",
 ]
@@ -1264,11 +1264,13 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "glam",
  "gltf",
  "gpu-allocator",
  "image",
  "log",
  "rand",
+ "shared-structs",
  "simplelog",
  "structopt",
  "ultraviolet",
@@ -1279,6 +1281,7 @@ dependencies = [
 name = "ray-tracing-shaders"
 version = "0.1.0"
 dependencies = [
+ "shared-structs",
  "spirv-std 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
 ]
 
@@ -1467,6 +1470,13 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "shared-structs"
+version = "0.1.0"
+dependencies = [
+ "glam",
 ]
 
 [[package]]

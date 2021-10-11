@@ -8,3 +8,4 @@ crate-type = ["dylib", "lib"]
 
 [dependencies]
 spirv-std = { git = "https://github.com/expenses/rust-gpu", branch = "add-unsigned-glsl-functions", features = ["glam"] }
+shared-structs = { path = "../../shared-structs" }

@@ -1,4 +1,4 @@
-use crate::gpu_structs::PushConstantBufferAddresses;
+use crate::gpu_structs::unsafe_bytes_of;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, PipelineImageMemoryBarrierParams,
 };
@@ -6,6 +6,7 @@ use crate::util_structs::{
     AccelerationStructure, Allocator, Buffer, Device, Image, ScratchBuffer, ShaderBindingTable,
 };
 use ash::vk;
+use shared_structs::PushConstantBufferAddresses;
 
 pub struct ShaderBindingTables {
     pub raygen: ShaderBindingTable,
@@ -123,7 +124,7 @@ impl PerFrameResources {
             global.pipeline_layout,
             vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             0,
-            bytemuck::bytes_of(&PushConstantBufferAddresses {
+            unsafe_bytes_of(&PushConstantBufferAddresses {
                 model_info: global.model_info_buffer.device_address(device),
                 uniforms: self.ray_tracing_uniforms.device_address(device),
                 acceleration_structure: self.tlas.buffer.device_address(device),
