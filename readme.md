@@ -26,6 +26,7 @@ A work-in-progress
 * [evopen](https://github.com/evopen)/[silly-cat-engine](https://github.com/evopen/silly-cat-engine) for some help with understanding the `vk::AccelerationStructureInstanceKHR` struct and various other rust-specific details.
 * [Lain model by woopoodle on Sketchfab](https://sketchfab.com/3d-models/lain-bf255be16da34df08d48abb5443a6706)
 * Blue noise texture from https://momentsingraphics.de/BlueNoise.html.
+* GGX LUT texture taken https://github.com/KhronosGroup/glTF-Sample-Viewer/blob/master/assets/images/lut_ggx.png and flipped on the V axis for Vulkan.
 * [Yet another blog explaining Vulkan synchronization](https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/) - helped me a lot to fully understand pipeline barriers.
 * [Vulkan Guide - Double Buffering](https://vkguide.dev/docs/chapter-4/double_buffering/)
 * [Ray Tracing Gems II], Chapter 16, Page 239. for clarifying how in-place Acceleration Structures work.

@@ -6,6 +6,7 @@ layout(buffer_reference, scalar) buffer Uniforms {
     vec3 sun_dir;
     float sun_radius;
     uint blue_noise_texture_index;
+    uint ggx_lut_texture_index;
     uint frame_index;
     uint8_t show_heatmap;
 };

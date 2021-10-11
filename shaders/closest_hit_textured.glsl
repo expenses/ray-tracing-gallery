@@ -179,7 +179,8 @@ void main() {
     // Corresponds to 4% reflectance on non-metallic (dielectric) materials (0.16 * 0.5 * 0.5).
     params.perceptual_dielectric_reflectance = 0.5;
     params.light_intensity = vec3(1.0) * sun_factor;
-    params.ambient_light = vec3(0.1);
+    params.ambient_light = vec3(0.075);
+    params.ggx_lut_texture_index = uniforms.ggx_lut_texture_index;
 
     primary_payload.colour = brdf(params);
 }
