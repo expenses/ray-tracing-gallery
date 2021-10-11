@@ -38,6 +38,8 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
 }
 
 // Maps 2 randomly generated numbers from 0 to 1 onto a circle with a radius of 1.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381.
 vec2 rng_to_circle(vec2 rng) {
     float radius = sqrt(rng.x);
     float angle = rng.y * 2.0 * PI;
@@ -45,35 +47,21 @@ vec2 rng_to_circle(vec2 rng) {
     return radius * vec2(cos(angle), sin(angle));
 }
 
-vec3 sun_dir_equation(vec2 rng, vec3 uniform_sun_dir, float uniform_sun_radius) {
-    vec2 point = rng_to_circle(rng) * uniform_sun_radius;
+// Randomly pick a direction vector that points towards a directional light of a given radius.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381.
+vec3 sample_directional_light(vec2 rng, vec3 center_direction, float light_radius) {
+    vec2 point = rng_to_circle(rng) * light_radius;
 
-    vec3 tangent = normalize(cross(uniform_sun_dir, vec3(0.0, 1.0, 0.0)));
-    vec3 bitangent = normalize(cross(tangent, uniform_sun_dir));
+    vec3 tangent = normalize(cross(center_direction, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = normalize(cross(tangent, center_direction));
 
-    return normalize(uniform_sun_dir + point.x * tangent + point.y * bitangent);
+    return normalize(center_direction + point.x * tangent + point.y * bitangent);
 }
 
-vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
-    // The fractional part of the golden ratio
-    float golden_ratio_fract = 0.618033988749;
-    return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
-}
-
-float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
-    float t_min = 0.001;
-    float t_max = 10000.0;
-    shadow_payload.shadowed = uint8_t(1);
-    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
-    traceRayEXT(
-        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-        0xFF, 1, 0, 1,
-        shadow_origin, t_min, sun_dir, t_max, 1
-    );
-    return float(1 - shadow_payload.shadowed);
-}
-
+// Sample a random vec2 from a blue noise texture.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381 & 382.
 vec2 sample_blue_noise(uint blue_noise_texture_index, uint iteration) {
     uvec2 coord = gl_LaunchIDEXT.xy;
     uvec2 offset = uvec2(13, 41);
@@ -88,6 +76,30 @@ vec2 sample_blue_noise(uint blue_noise_texture_index, uint iteration) {
     );
 }
 
+// Animate blue noise over time using the golden ratio.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 383 & 384.
+vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
+    // The fractional part of the golden ratio
+    float golden_ratio_fract = 0.618033988749;
+    return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
+}
+
+float cast_shadow_ray(vec3 origin, vec3 direction) {
+    float t_min = 0.001;
+    float t_max = 10000.0;
+    shadow_payload.shadowed = uint8_t(1);
+    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
+    traceRayEXT(
+        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        0xFF, 1, 0, 1,
+        origin, t_min, direction, t_max, 1
+    );
+
+    return float(uint8_t(1) - shadow_payload.shadowed);
+}
+
 void main() {
     ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
@@ -98,8 +110,6 @@ void main() {
     GeometryInfo geo_info = geo_infos.buf[gl_GeometryIndexEXT];
 
     Uniforms uniforms = Uniforms(push_constant_buffer_addresses.uniforms);
-
-    vec2 blue_noise = animated_blue_noise(sample_blue_noise(uniforms.blue_noise_texture_index, 0), uniforms.frame_index);
 
     Triangle triangle = load_triangle(info, geo_info);
 
@@ -121,19 +131,17 @@ void main() {
 
     float lighting = max(dot(normal, uniforms.sun_dir), 0.0);
 
-    // Shadow casting
-	float t_min = 0.001;
-	float t_max = 10000.0;
-	shadow_payload.shadowed = uint8_t(1);
-    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
-	traceRayEXT(
-        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-        0xFF, 1, 0, 1,
-        shadow_origin, t_min, uniforms.sun_dir, t_max, 1
-    );
+    // Cast 4 random shadow rays
 
-    lighting *= float(uint8_t(1) - shadow_payload.shadowed);
+    float shadow_lighting_sum = 0.0;
+
+    for (uint i = 0; i < 4; i++) {
+        vec2 blue_noise = animated_blue_noise(sample_blue_noise(uniforms.blue_noise_texture_index, i), uniforms.frame_index);
+        vec3 sun_dir = sample_directional_light(blue_noise, uniforms.sun_dir, uniforms.sun_radius);
+        shadow_lighting_sum += cast_shadow_ray(shadow_origin, sun_dir);
+    }
+
+    lighting *= shadow_lighting_sum / 4.0;
 
     float ambient_lighting = 0.1;
     primary_payload.colour = colour * ((lighting * (1.0 - ambient_lighting)) + ambient_lighting);

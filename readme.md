@@ -11,12 +11,13 @@ A work-in-progress
 * Double-buffering
 * A controllable camera and directional light source
 * Implements a fix for shadow terminator problems from [Ray Tracing Gems II], Chapter 4.
-* Most shaders([*](https://github.com/EmbarkStudios/rust-gpu/issues/754)) are written using [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)!
+* Most shaders([\*](https://github.com/EmbarkStudios/rust-gpu/issues/754)) are written using [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)!
+* Blue noise soft shadows from [Ray Tracing Gems II], Chapter 24.
 
 ## Todo
 
-* Soft shadows ([Ray Tracing Gems II], Chapter 24) and a shadow denoiser pass
 * Ray traced ambient occlusion
+* Shadow denoising
 
 ## Acknowledgements and sources
 
