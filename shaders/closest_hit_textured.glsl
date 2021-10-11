@@ -37,6 +37,57 @@ vec3 get_shadow_terminator_fix_shadow_origin(Triangle tri, vec3 interpolated_poi
     return gl_ObjectToWorldEXT * vec4(local_space_fixed_point, 1.0);
 }
 
+// Maps 2 randomly generated numbers from 0 to 1 onto a circle with a radius of 1.
+vec2 rng_to_circle(vec2 rng) {
+    float radius = sqrt(rng.x);
+    float angle = rng.y * 2.0 * PI;
+
+    return radius * vec2(cos(angle), sin(angle));
+}
+
+vec3 sun_dir_equation(vec2 rng, vec3 uniform_sun_dir, float uniform_sun_radius) {
+    vec2 point = rng_to_circle(rng) * uniform_sun_radius;
+
+    vec3 tangent = normalize(cross(uniform_sun_dir, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = normalize(cross(tangent, uniform_sun_dir));
+
+    return normalize(uniform_sun_dir + point.x * tangent + point.y * bitangent);
+}
+
+vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
+    // The fractional part of the golden ratio
+    float golden_ratio_fract = 0.618033988749;
+    return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
+}
+
+float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
+    float t_min = 0.001;
+    float t_max = 10000.0;
+    shadow_payload.shadowed = uint8_t(1);
+    // Trace shadow ray and offset indices to match shadow hit/miss shader group indices
+    traceRayEXT(
+        accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        0xFF, 1, 0, 1,
+        shadow_origin, t_min, sun_dir, t_max, 1
+    );
+    return float(1 - shadow_payload.shadowed);
+}
+
+vec2 sample_blue_noise(uint blue_noise_texture_index, uint iteration) {
+    uvec2 coord = gl_LaunchIDEXT.xy;
+    uvec2 offset = uvec2(13, 41);
+    vec2 texture_size = vec2(64.0);
+
+    uvec2 first_offset = iteration * 2 * offset;
+    uvec2 second_offset = (iteration * 2 + 1) * offset;
+
+    return vec2(
+        texture(textures[blue_noise_texture_index], (coord + first_offset) / texture_size).r,
+        texture(textures[blue_noise_texture_index], (coord + second_offset) / texture_size).r
+    );
+}
+
 void main() {
     ModelInfos infos = ModelInfos(push_constant_buffer_addresses.model_info);
 
@@ -47,6 +98,8 @@ void main() {
     GeometryInfo geo_info = geo_infos.buf[gl_GeometryIndexEXT];
 
     Uniforms uniforms = Uniforms(push_constant_buffer_addresses.uniforms);
+
+    vec2 blue_noise = animated_blue_noise(sample_blue_noise(uniforms.blue_noise_texture_index, 0), uniforms.frame_index);
 
     Triangle triangle = load_triangle(info, geo_info);
 

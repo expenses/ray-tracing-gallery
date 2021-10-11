@@ -162,6 +162,7 @@ fn main() -> anyhow::Result<()> {
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
             .shader_int8(true)
             .buffer_device_address(true)
+            .storage_buffer8_bit_access(true)
             .runtime_descriptor_array(true)
             .shader_sampled_image_array_non_uniform_indexing(true);
 
@@ -406,6 +407,7 @@ fn main() -> anyhow::Result<()> {
         let green_texture = load_png_image_from_bytes(
             include_bytes!("../resources/green.png"),
             "green texture",
+            vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
             &mut allocator,
             &mut buffers_to_cleanup,
@@ -416,12 +418,24 @@ fn main() -> anyhow::Result<()> {
         let pink_texture = load_png_image_from_bytes(
             include_bytes!("../resources/pink.png"),
             "pink texture",
+            vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
             &mut allocator,
             &mut buffers_to_cleanup,
         )?;
 
         image_manager.push_image(pink_texture, false);
+
+        let blue_noise_texture = load_png_image_from_bytes(
+            include_bytes!("../resources/blue_noise_64x64.png"),
+            "blue noise texture",
+            vk::Format::R8G8B8A8_UNORM,
+            init_command_buffer.buffer(),
+            &mut allocator,
+            &mut buffers_to_cleanup,
+        )?;
+
+        image_manager.push_image(blue_noise_texture, false);
     };
 
     // Load model buffers and blases
@@ -552,7 +566,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut uniforms = RayTracingUniforms {
         sun_dir: sun.as_normal(),
-        //sun_radius: 0.1,
+        sun_radius: 0.1,
         view_inverse: Mat4::identity(),
         proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
             59.0_f32.to_radians(),
@@ -561,6 +575,8 @@ fn main() -> anyhow::Result<()> {
         )
         .inversed(),
         show_heatmap: false,
+        blue_noise_texture_index: 2,
+        frame_index: 0,
         _padding: 0,
     };
 
@@ -906,6 +922,7 @@ fn main() -> anyhow::Result<()> {
 
                             uniforms.view_inverse = camera.as_view_matrix().inversed();
                             uniforms.sun_dir = sun.as_normal();
+                            uniforms.frame_index += 1;
 
                             resources
                                 .ray_tracing_uniforms

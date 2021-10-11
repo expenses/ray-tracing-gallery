@@ -962,6 +962,7 @@ fn load_image_from_gltf_texture<P: ImagePixelFormat>(
     let image = load_png_image_from_bytes(
         image_bytes,
         name,
+        vk::Format::R8G8B8A8_SRGB,
         params.command_buffer,
         params.allocator,
         params.buffers_to_cleanup,
@@ -1083,7 +1084,6 @@ impl Model {
                 arrays.uvs.extend(uvs.map(Vec2::from));
             }
         }
-        let model_id = model_info.len() as u32;
 
         let model = Self::new(
             &arrays,
@@ -1091,7 +1091,7 @@ impl Model {
             params.allocator,
             params.command_buffer,
             scratch_buffer,
-            model_id,
+            model_info.len() as u32,
         )?;
 
         model_info.push(ModelInfo {

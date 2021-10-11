@@ -1,8 +1,13 @@
+const float PI = 3.141592653589793;
+
 layout(buffer_reference, scalar) buffer Uniforms {
     mat4 view_inverse;
     mat4 proj_inverse;
     vec3 sun_dir;
     float sun_radius;
+    uint blue_noise_texture_index;
+    uint frame_index;
+    uint8_t show_heatmap;
 };
 
 struct PrimaryRayPayload {

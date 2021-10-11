@@ -8,6 +8,9 @@ pub struct Uniforms {
     pub view_inverse: Mat4,
     pub proj_inverse: Mat4,
     pub sun_dir: Vec3,
+    pub sun_radius: f32,
+    pub blue_noise_texture_index: u32,
+    pub frame_index: u32,
     pub show_heatmap: bool,
 }
 

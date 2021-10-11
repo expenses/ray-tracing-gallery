@@ -210,6 +210,7 @@ pub fn create_single_colour_image<P: ImagePixelFormat>(
 pub fn load_png_image_from_bytes(
     bytes: &[u8],
     name: &str,
+    format: vk::Format,
     command_buffer: vk::CommandBuffer,
     allocator: &mut Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
@@ -226,7 +227,7 @@ pub fn load_png_image_from_bytes(
             depth: 1,
         },
         vk::ImageViewType::TYPE_2D,
-        vk::Format::R8G8B8A8_SRGB,
+        format,
         name,
         command_buffer,
         allocator,
