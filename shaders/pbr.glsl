@@ -12,7 +12,7 @@ struct BaseParams {
 	float roughness;
 	uint ggx_lut_texture_index;
 	vec3 ambient_light;
-	vec3 base_colour;
+	float perceptual_roughness;
 };
 
 struct DotParams {
@@ -103,21 +103,20 @@ float Fd_Burley(DotParams params) {
     return lightScatter * viewScatter * (1.0 / PI);
 }
 
-// IBL
+// IBL (wip)
 
-// Hackily uses a constant vec3 ambient colour variable. Looks alright though.
-
+/*
 // https://github.com/KhronosGroup/glTF-Sample-Viewer/blob/ec9851c716b1ae5f2e639223dd5c2218a929a4da/source/Renderer/shaders/ibl.glsl#L19
 vec3 getIBLRadianceGGX(DotParams params, BaseParams base_params, vec3 f0, float specularWeight) {
 	float NdotV = params.normal_dot_view;
-	float roughness = params.roughness;
+	float roughness = base_params.perceptual_roughness;
 	vec3 v = base_params.view;
 	vec3 n = base_params.normal;
 
     //float lod = roughness * float(u_MipCount - 1);
     vec3 reflection = normalize(reflect(-v, n));
 
-    vec2 brdfSamplePoint = clamp(vec2(NdotV, roughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
+    vec2 brdfSamplePoint = clamp(vec2(NdotV, 1.0 - roughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
     vec2 f_ab = texture(textures[base_params.ggx_lut_texture_index], brdfSamplePoint).rg;
     vec4 specularSample = vec4(base_params.ambient_light, 1.0);//getSpecularSample(reflection, lod);
 
@@ -133,9 +132,9 @@ vec3 getIBLRadianceGGX(DotParams params, BaseParams base_params, vec3 f0, float 
 }
 
 // https://github.com/KhronosGroup/glTF-Sample-Viewer/blob/ec9851c716b1ae5f2e639223dd5c2218a929a4da/source/Renderer/shaders/ibl.glsl#L81
-vec3 getIBLRadianceLambertian(DotParams params, BaseParams base_params, vec3 f0, float specularWeight) {
+vec3 getIBLRadianceLambertian(DotParams params, BaseParams base_params, vec3 f0, float specularWeight, vec3 diffuse_colour) {
 	float NdotV = params.normal_dot_view;
-	float roughness = params.roughness;
+	float roughness = base_params.perceptual_roughness;
 
     vec2 brdfSamplePoint = clamp(vec2(NdotV, roughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
     vec2 f_ab = texture(textures[base_params.ggx_lut_texture_index], brdfSamplePoint).rg;
@@ -153,10 +152,11 @@ vec3 getIBLRadianceLambertian(DotParams params, BaseParams base_params, vec3 f0,
     float Ems = (1.0 - (f_ab.x + f_ab.y));
     vec3 F_avg = specularWeight * (f0 + (1.0 - f0) / 21.0);
     vec3 FmsEms = Ems * FssEss * F_avg / (1.0 - F_avg * Ems);
-    vec3 k_D = base_params.base_colour * (1.0 - FssEss + FmsEms); // we use +FmsEms as indicated by the formula in the blog post (might be a typo in the implementation)
+    vec3 k_D = diffuse_colour * (1.0 - FssEss + FmsEms); // we use +FmsEms as indicated by the formula in the blog post (might be a typo in the implementation)
 
     return (FmsEms + k_D) * irradiance;
 }
+*/
 
 // https://google.github.io/filament/Filament.md.html#materialsystem/standardmodelsummary
 
@@ -183,7 +183,7 @@ vec3 brdf(BrdfInputParams input_params) {
 	params.roughness = input_params.perceptual_roughness * input_params.perceptual_roughness;
 	params.ggx_lut_texture_index = input_params.ggx_lut_texture_index;
 	params.ambient_light = input_params.ambient_light;
-	params.base_colour = input_params.base_colour;
+	params.perceptual_roughness = input_params.perceptual_roughness;
 
 	DotParams dot_params = calculate_dot_params(params);
 
@@ -208,10 +208,11 @@ vec3 brdf(BrdfInputParams input_params) {
 
 	vec3 combined_factor = diffuse_brdf_factor + specular_brdf_factor;
 
-	vec3 ibl = getIBLRadianceGGX(dot_params, params, f0, 1.0) + getIBLRadianceLambertian(dot_params, params, f0, 1.0);
+	// This is simple and not at all physically accurate but it works for now.
+	vec3 ambient_lighting = input_params.ambient_light * input_params.base_colour;
 
 	// For normal map debugging.
 	//return input_params.normal * 0.5 + 0.5;
 
-	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor + ibl;
+	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor + ambient_lighting;
 }
