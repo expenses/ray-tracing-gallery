@@ -71,7 +71,55 @@ vec3 rotate_normal_into_world_space(vec3 local_space_normal) {
     return normalize(rotated_normal);
 }
 
-float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
+// Maps 2 randomly generated numbers from 0 to 1 onto a circle with a radius of 1.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381.
+vec2 rng_to_circle(vec2 rng) {
+    float radius = sqrt(rng.x);
+    float angle = rng.y * 2.0 * PI;
+
+    return radius * vec2(cos(angle), sin(angle));
+}
+
+// Randomly pick a direction vector that points towards a directional light of a given radius.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381.
+vec3 sample_directional_light(vec2 rng, vec3 center_direction, float light_radius) {
+    vec2 point = rng_to_circle(rng) * light_radius;
+
+    vec3 tangent = normalize(cross(center_direction, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = normalize(cross(tangent, center_direction));
+
+    return normalize(center_direction + point.x * tangent + point.y * bitangent);
+}
+
+// Sample a random vec2 from a blue noise texture.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 381 & 382.
+vec2 sample_blue_noise(uint blue_noise_texture_index, uint iteration) {
+    uvec2 coord = gl_LaunchIDEXT.xy;
+    uvec2 offset = uvec2(13, 41);
+    vec2 texture_size = vec2(64.0);
+
+    uvec2 first_offset = iteration * 2 * offset;
+    uvec2 second_offset = (iteration * 2 + 1) * offset;
+
+    return vec2(
+        texture(textures[blue_noise_texture_index], (coord + first_offset) / texture_size).r,
+        texture(textures[blue_noise_texture_index], (coord + second_offset) / texture_size).r
+    );
+}
+
+// Animate blue noise over time using the golden ratio.
+//
+// See Ray Tracing Gems II, Chapter 24.7.2, Page 383 & 384.
+vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
+    // The fractional part of the golden ratio
+    float golden_ratio_fract = 0.618033988749;
+    return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
+}
+
+float cast_shadow_ray(vec3 origin, vec3 direction) {
     float t_min = 0.001;
     float t_max = 10000.0;
     shadow_payload.shadowed = uint8_t(1);
@@ -80,9 +128,10 @@ float sun_factor(vec3 shadow_origin, vec3 sun_dir) {
         accelerationStructureEXT(push_constant_buffer_addresses.acceleration_structure),
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
         0xFF, 1, 0, 1,
-        shadow_origin, t_min, sun_dir, t_max, 1
+        origin, t_min, direction, t_max, 1
     );
-    return float(1 - shadow_payload.shadowed);
+
+    return float(uint8_t(1) - shadow_payload.shadowed);
 }
 
 void main() {
@@ -101,11 +150,20 @@ void main() {
     vec3 barycentric_coords = compute_barycentric_coords();
     Vertex interpolated = interpolate_triangle(triangle, barycentric_coords);
 
-    // Shadow casting
+    // Cast 4 random shadow rays
+
+    float shadow_lighting_sum = 0.0;
     vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
-	// Important! If we have this function take the uniforms struct as input, it SEGFAULTs
-    // `device.create_shader_module`. Fantastic.
-    float sun_factor = sun_factor(shadow_origin, uniforms.sun_dir);
+
+    for (uint i = 0; i < 4; i++) {
+        // Important! If we have this function take the uniforms struct as input, it SEGFAULTs
+        // `device.create_shader_module`. Fantastic.
+        vec2 blue_noise = animated_blue_noise(sample_blue_noise(uniforms.blue_noise_texture_index, i), uniforms.frame_index);
+        vec3 sun_dir = sample_directional_light(blue_noise, uniforms.sun_dir, uniforms.sun_radius);
+        shadow_lighting_sum += cast_shadow_ray(shadow_origin, sun_dir);
+    }
+
+    float sun_factor = shadow_lighting_sum / 4.0;
 
     MaterialData material_data = read_material_from_textures(geo_info, interpolated.uv);
 

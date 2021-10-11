@@ -1,5 +1,3 @@
-const float PI = 3.141592653589793;
-
 // See: https://google.github.io/filament/Filament.md.html#notation
 struct BaseParams {
 	// v
