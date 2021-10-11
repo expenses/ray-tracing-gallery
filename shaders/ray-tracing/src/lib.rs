@@ -15,10 +15,9 @@ use spirv_std::macros::spirv;
 use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
-    image::SampledImage,
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
-    Image, RuntimeArray,
+    Image,
 };
 
 mod heatmap;
@@ -27,7 +26,8 @@ mod pbr;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
-use structs::{PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
+use shared_structs::Uniforms;
+use structs::{PrimaryRayPayload, ShadowRayPayload, Vertex};
 
 #[spirv(miss)]
 pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
@@ -101,9 +101,9 @@ pub fn ray_generation(
     let launch_id_xy = launch_id.truncate();
     let launch_size_xy = launch_size.truncate();
 
-    let pixel_center = launch_id_xy.as_f32() + 0.5;
+    let pixel_center = launch_id_xy.as_vec2() + 0.5;
 
-    let texture_coordinates = pixel_center / launch_size_xy.as_f32();
+    let texture_coordinates = pixel_center / launch_size_xy.as_vec2();
 
     let render_coordinates = texture_coordinates * 2.0 - 1.0;
 

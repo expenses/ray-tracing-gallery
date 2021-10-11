@@ -582,9 +582,9 @@ checksum = "f0a01e0497841a3b2db4f8afa483cce65f7e96a3498bd6c541734792aeac8fe7"
 
 [[package]]
 name = "glam"
-version = "0.17.3"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
+checksum = "525a3e490ba77b8e326fb67d4b44b4bd2f920f44d4cc73ccec50adc68e3bee34"
 dependencies = [
  "num-traits",
 ]
@@ -1264,11 +1264,13 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "glam",
  "gltf",
  "gpu-allocator",
  "image",
  "log",
  "rand",
+ "shared-structs",
  "simplelog",
  "structopt",
  "ultraviolet",
@@ -1279,7 +1281,8 @@ dependencies = [
 name = "ray-tracing-shaders"
 version = "0.1.0"
 dependencies = [
- "spirv-std 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
+ "shared-structs",
+ "spirv-std",
 ]
 
 [[package]]
@@ -1470,6 +1473,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared-structs"
+version = "0.1.0"
+dependencies = [
+ "glam",
+]
+
+[[package]]
 name = "simplelog"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1535,20 +1545,8 @@ dependencies = [
  "bitflags",
  "glam",
  "num-traits",
- "spirv-std-macros 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
- "spirv-types 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
-]
-
-[[package]]
-name = "spirv-std"
-version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
-dependencies = [
- "bitflags",
- "glam",
- "num-traits",
- "spirv-std-macros 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
- "spirv-types 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
+ "spirv-std-macros",
+ "spirv-types",
 ]
 
 [[package]]
@@ -1559,19 +1557,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "spirv-types 0.4.0-alpha.12 (git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions)",
- "syn",
-]
-
-[[package]]
-name = "spirv-std-macros"
-version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "spirv-types 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
+ "spirv-types",
  "syn",
 ]
 
@@ -1599,11 +1585,6 @@ dependencies = [
 name = "spirv-types"
 version = "0.4.0-alpha.12"
 source = "git+https://github.com/expenses/rust-gpu?branch=add-unsigned-glsl-functions#f39b96e8ccff3701b7a4e6529dbbbb3809253f8e"
-
-[[package]]
-name = "spirv-types"
-version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d#14e2152198377311aa4c809e879609cf39d2713d"
 
 [[package]]
 name = "strsim"
@@ -1673,13 +1654,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dfed899f0eb03f32ee8c6a0aabdb8a7949659e3466561fc0adf54e26d88c5f4"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "test-shader"
-version = "0.1.0"
-dependencies = [
- "spirv-std 0.4.0-alpha.12 (git+https://github.com/EmbarkStudios/rust-gpu?rev=14e2152198377311aa4c809e879609cf39d2713d)",
 ]
 
 [[package]]

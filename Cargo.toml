@@ -5,7 +5,7 @@ edition = "2018"
 resolver = "2"
 
 [workspace]
-members = [".", "shaders/ray-tracing", "shaders/test-shader", "compile-shaders"]
+members = [".", "shaders/ray-tracing", "compile-shaders", "shared-structs"]
 
 [dependencies]
 anyhow = "1.0.43"
@@ -21,6 +21,8 @@ simplelog = "0.10.0"
 structopt = "0.3.23"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
+shared-structs = { path = "shared-structs" }
+glam = "0.18.0"
 
 [profile.dev.package."*"]
 opt-level = 3

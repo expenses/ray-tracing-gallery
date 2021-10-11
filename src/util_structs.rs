@@ -8,11 +8,12 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::gpu_structs::{GeometryImages, GeometryInfo, ModelInfo};
+use crate::gpu_structs::unsafe_cast_slice;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
     load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
+use shared_structs::{GeometryInfo, ModelInfo, GeometryImages};
 use ultraviolet::{Vec2, Vec3};
 
 // A list of C strings and their associated pointers
@@ -1227,7 +1228,7 @@ impl Model {
                 allocator,
             )?,
             geometry_info_buffer: Buffer::new(
-                bytemuck::cast_slice(&geometry_info),
+                unsafe { unsafe_cast_slice(&geometry_info) },
                 &format!("{} geometry info buffer", name),
                 other_buffers_flags,
                 allocator,

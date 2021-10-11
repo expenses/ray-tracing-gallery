@@ -1,6 +1,6 @@
+use spirv_std::arch::{signed_max, signed_min};
 use spirv_std::glam::Vec3;
 use spirv_std::num_traits::Float;
-use spirv_std::arch::{signed_min, signed_max};
 
 pub fn heatmap_temperature(heat: f32) -> Vec3 {
     let colours = [

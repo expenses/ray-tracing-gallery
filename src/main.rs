@@ -34,9 +34,8 @@ use util_functions::{
     vulkan_debug_utils_callback, ShaderGroup,
 };
 
-use gpu_structs::{
-    unsafe_bytes_of, unsafe_cast_slice, PushConstantBufferAddresses, RayTracingUniforms,
-};
+use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice};
+use shared_structs::{PushConstantBufferAddresses, Uniforms};
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 
@@ -471,7 +470,7 @@ fn main() -> anyhow::Result<()> {
     image_manager.fill_with_dummy_images_up_to(MAX_BOUND_IMAGES as usize);
 
     let model_info_buffer = Buffer::new(
-        bytemuck::cast_slice(&model_info),
+        unsafe { unsafe_cast_slice(&model_info) },
         "model info",
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         &mut allocator,
@@ -566,16 +565,18 @@ fn main() -> anyhow::Result<()> {
         yaw: 1.0,
     };
 
-    let mut uniforms = RayTracingUniforms {
-        sun_dir: sun.as_normal(),
+    let mut uniforms = Uniforms {
+        sun_dir: <[f32; 3]>::from(sun.as_normal()).into(),
         sun_radius: 0.1,
-        view_inverse: Mat4::identity(),
-        proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
-            59.0_f32.to_radians(),
-            extent.width as f32 / extent.height as f32,
-            0.1,
-        )
-        .inversed(),
+        view_inverse: glam::Mat4::IDENTITY,
+        proj_inverse: mat_to_glam(
+            ultraviolet::projection::perspective_reversed_infinite_z_vk(
+                59.0_f32.to_radians(),
+                extent.width as f32 / extent.height as f32,
+                0.1,
+            )
+            .inversed(),
+        ),
         show_heatmap: false,
         blue_noise_texture_index: 2,
         frame_index: 0,
@@ -724,12 +725,14 @@ fn main() -> anyhow::Result<()> {
                             extent.height as f64 / 2.0,
                         );
 
-                        uniforms.proj_inverse = ultraviolet::projection::perspective_infinite_z_vk(
-                            59.0_f32.to_radians(),
-                            extent.width as f32 / extent.height as f32,
-                            0.1,
-                        )
-                        .inversed();
+                        uniforms.proj_inverse = mat_to_glam(
+                            ultraviolet::projection::perspective_reversed_infinite_z_vk(
+                                59.0_f32.to_radians(),
+                                extent.width as f32 / extent.height as f32,
+                                0.1,
+                            )
+                            .inversed(),
+                        );
 
                         unsafe {
                             device.queue_wait_idle(queue)?;
@@ -922,8 +925,8 @@ fn main() -> anyhow::Result<()> {
                             let swapchain_image = swapchain.images[swapchain_image_index as usize];
                             let resources = &mut frame.resources;
 
-                            uniforms.view_inverse = camera.as_view_matrix().inversed();
-                            uniforms.sun_dir = sun.as_normal();
+                            uniforms.view_inverse = mat_to_glam(camera.as_view_matrix().inversed());
+                            uniforms.sun_dir = <[f32; 3]>::from(sun.as_normal()).into();
                             uniforms.frame_index += 1;
 
                             resources
@@ -1216,4 +1219,10 @@ impl FirstPersonCamera {
             Vec4::new(-x_axis.dot(eye), -y_axis.dot(eye), -z_axis.dot(eye), 1.0),
         )
     }
+}
+
+fn mat_to_glam(mat: Mat4) -> glam::Mat4 {
+    let mut glam = glam::Mat4::default();
+    *glam.as_mut() = *mat.as_array();
+    glam
 }
