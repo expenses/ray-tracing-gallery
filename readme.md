@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/reflections.png)
+![](screenshots/soft-shadows-and-ambient-lighting.png)
 
 ## Features
 
