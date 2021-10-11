@@ -257,17 +257,17 @@ fn main() -> anyhow::Result<()> {
             .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
         // Hit shaders
         load_shader_module_as_stage(
-            include_bytes!("../shaders/any_hit_alpha_clip.spv"),
+            &std::fs::read("shaders/any_hit_alpha_clip.spv")?,
             vk::ShaderStageFlags::ANY_HIT_KHR,
             &device,
         )?,
         load_shader_module_as_stage(
-            include_bytes!("../shaders/closest_hit_textured.spv"),
+            &std::fs::read("shaders/closest_hit_textured.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
         load_shader_module_as_stage(
-            include_bytes!("../shaders/closest_hit_mirror.spv"),
+            &std::fs::read("shaders/closest_hit_mirror.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
@@ -437,6 +437,17 @@ fn main() -> anyhow::Result<()> {
         )?;
 
         image_manager.push_image(blue_noise_texture, false);
+
+        let ggx_lut_image = load_png_image_from_bytes(
+            include_bytes!("../resources/flipped_ggx_lut.png"),
+            "ggx lut texture",
+            vk::Format::R8G8B8A8_UNORM,
+            init_command_buffer.buffer(),
+            &mut allocator,
+            &mut buffers_to_cleanup,
+        )?;
+
+        image_manager.push_image(ggx_lut_image, true);
     };
 
     // Load model buffers and blases
@@ -579,8 +590,8 @@ fn main() -> anyhow::Result<()> {
         ),
         show_heatmap: false,
         blue_noise_texture_index: 2,
+        ggx_lut_texture_index: 3,
         frame_index: 0,
-        _padding: 0,
     };
 
     let mut multibuffering_frames = unsafe {

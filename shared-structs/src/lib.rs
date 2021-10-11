@@ -13,8 +13,8 @@ pub struct Uniforms {
     pub sun_dir: Vec3,
     pub sun_radius: f32,
     pub blue_noise_texture_index: u32,
+    pub ggx_lut_texture_index: u32,
     pub frame_index: u32,
-    pub _padding: u32,
     pub show_heatmap: bool,
 }
 
@@ -33,7 +33,16 @@ pub struct ModelInfo {
 #[repr(C)]
 pub struct GeometryInfo {
     pub index_buffer_address: DeviceAddress,
-    pub image_index: u32,
+    pub images: GeometryImages,
+}
+
+#[cfg_attr(not(target_arch = "spirv"), derive(Debug))]
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct GeometryImages {
+    pub diffuse_image_index: u32,
+    pub metallic_roughness_image_index: u32,
+    pub normal_map_image_index: i32,
     pub _padding: u32,
 }
 

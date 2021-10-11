@@ -6,6 +6,7 @@ layout(buffer_reference, scalar) buffer Uniforms {
     vec3 sun_dir;
     float sun_radius;
     uint blue_noise_texture_index;
+    uint ggx_lut_texture_index;
     uint frame_index;
     uint8_t show_heatmap;
 };
@@ -53,7 +54,9 @@ layout(buffer_reference, scalar) buffer ModelInfos {
 
 struct GeometryInfo {
     uint64_t index_buffer_address;
-    uint texture_index;
+    uint diffuse_texture_index;
+    uint metallic_roughness_texture_index;
+    int normal_map_texture_index;
 };
 
 layout(buffer_reference, scalar) buffer GeometryInfos {

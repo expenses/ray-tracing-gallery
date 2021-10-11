@@ -11,10 +11,9 @@ use std::os::raw::c_char;
 use crate::gpu_structs::unsafe_cast_slice;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
-    load_png_image_from_bytes, sbt_aligned_size, ImagePixelFormat,
-    PipelineImageMemoryBarrierParams,
+    load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
-use shared_structs::{GeometryInfo, ModelInfo};
+use shared_structs::{GeometryInfo, ModelInfo, GeometryImages};
 use ultraviolet::{Vec2, Vec3};
 
 // A list of C strings and their associated pointers
@@ -919,21 +918,34 @@ struct ModelArrays {
 struct ModelGeometry {
     indices: Vec<u32>,
     opaque: bool,
-    image_index: u32,
+    images: GeometryImages,
 }
 
-fn load_image_from_gltf_texture<P: ImagePixelFormat>(
-    texture: Option<gltf::texture::Info>,
-    backup: P,
+enum TextureOrBackup<'a> {
+    Texture(gltf::texture::Texture<'a>),
+    Backup([f32; 4]),
+}
+
+impl<'a> TextureOrBackup<'a> {
+    pub fn new(info: Option<gltf::texture::Info<'a>>, backup: [f32; 4]) -> Self {
+        match info {
+            Some(info) => Self::Texture(info.texture()),
+            None => Self::Backup(backup),
+        }
+    }
+}
+
+fn load_image_from_gltf_texture(
+    texture: TextureOrBackup,
     buffer_blob: &[u8],
     name: &str,
     params: &mut ModelLoaderParams,
 ) -> anyhow::Result<u32> {
     let texture = match texture {
-        Some(texture) => texture.texture(),
-        None => {
+        TextureOrBackup::Texture(texture) => texture,
+        TextureOrBackup::Backup(colour) => {
             let image = create_single_colour_image(
-                backup,
+                colour,
                 name,
                 params.command_buffer,
                 params.allocator,
@@ -972,7 +984,7 @@ fn load_image_from_gltf_texture<P: ImagePixelFormat>(
     Ok(params.image_manager.push_image(image, linear_filtering))
 }
 
-fn load_image_from_material(
+fn load_images_from_material(
     material: &gltf::Material,
     buffer_blob: &[u8],
     name: &str,
@@ -983,14 +995,39 @@ fn load_image_from_material(
     Ok(ModelGeometry {
         indices: Vec::new(),
         opaque: material.alpha_mode() == gltf::material::AlphaMode::Opaque,
-        image_index: load_image_from_gltf_texture(
-            pbr.base_color_texture(),
-            pbr.base_color_factor(),
-            buffer_blob,
-            &format!("{} diffuse", name),
-            params,
-        )?,
+        images: GeometryImages {
+            diffuse_image_index: load_image_from_gltf_texture(
+                TextureOrBackup::new(pbr.base_color_texture(), pbr.base_color_factor()),
+                buffer_blob,
+                &format!("{} diffuse", name),
+                params,
+            )?,
+            metallic_roughness_image_index: load_image_from_gltf_texture(
+                TextureOrBackup::new(
+                    pbr.metallic_roughness_texture(),
+                    metallic_roughness_to_rgba(pbr.metallic_factor(), pbr.roughness_factor()),
+                ),
+                buffer_blob,
+                &format!("{} metallic roughness", name),
+                params,
+            )?,
+            normal_map_image_index: match material.normal_texture() {
+                Some(normal_texture) => load_image_from_gltf_texture(
+                    TextureOrBackup::Texture(normal_texture.texture()),
+                    buffer_blob,
+                    &format!("{} normal map", name),
+                    params,
+                )? as i32,
+                None => -1,
+            },
+            _padding: 0,
+        },
     })
+}
+
+// https://docs.rs/gltf/0.15.2/gltf/material/struct.PbrMetallicRoughness.html#method.metallic_roughness_texture
+fn metallic_roughness_to_rgba(metallic: f32, roughness: f32) -> [f32; 4] {
+    [1.0, roughness, metallic, 1.0]
 }
 
 struct ModelLoaderParams<'a> {
@@ -1042,7 +1079,7 @@ impl Model {
         // then we need to have two different images in the descriptor set, with the same image view but different samplers.
         // This requires `ImageManager` to be written slightly differently.
         for (i, material) in gltf.materials().enumerate() {
-            let model_geometry = load_image_from_material(
+            let model_geometry = load_images_from_material(
                 &material,
                 buffer_blob,
                 &format!("{} image {}", name, i),
@@ -1056,7 +1093,22 @@ impl Model {
             arrays.geometries.push(ModelGeometry {
                 indices: Vec::new(),
                 opaque: true,
-                image_index: fallback_image_index,
+                images: GeometryImages {
+                    diffuse_image_index: fallback_image_index,
+                    metallic_roughness_image_index: {
+                        let image = create_single_colour_image(
+                            metallic_roughness_to_rgba(0.0, 1.0),
+                            &format!("{} default metallic roughness", name),
+                            params.command_buffer,
+                            params.allocator,
+                            params.buffers_to_cleanup,
+                        )?;
+
+                        params.image_manager.push_image(image, false)
+                    },
+                    normal_map_image_index: -1,
+                    _padding: 0,
+                },
             })
         }
 
@@ -1148,8 +1200,7 @@ impl Model {
 
             geometry_info.push(GeometryInfo {
                 index_buffer_address: index_buffer.device_address(&allocator.device),
-                image_index: geometry_arrays.image_index,
-                _padding: 0,
+                images: geometry_arrays.images,
             });
             index_buffers.push(index_buffer);
         }
