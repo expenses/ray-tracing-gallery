@@ -21,12 +21,12 @@ use spirv_std::{
 };
 
 mod heatmap;
-mod structs;
 mod pbr;
+mod structs;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
-use shared_structs::Uniforms;
+use shared_structs::{PushConstantBufferAddresses, Uniforms};
 use structs::{PrimaryRayPayload, ShadowRayPayload, Vertex};
 
 #[spirv(miss)]
@@ -39,7 +39,7 @@ const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.05]);
 #[spirv(miss)]
 pub fn primary_ray_miss(
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
+    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
 ) {
     if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
@@ -84,12 +84,14 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
 #[spirv(ray_generation)]
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
-    #[spirv(descriptor_set = 1, binding = 1)] image: &Image!(2D, format = rgba8, sampled = false),
-    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
+    #[spirv(descriptor_set = 1, binding = 0)] image: &Image!(2D, format = rgba8, sampled = false),
+    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
+    #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
+    let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
+
     use spirv_std::arch::read_clock_khr;
 
     let start_time = if uniforms.show_heatmap {
@@ -124,7 +126,7 @@ pub fn ray_generation(
         };
 
         trace_ray_explicit(TraceRayExplicitParams {
-            tlas,
+            tlas: &tlas,
             flags: RayFlags::empty(),
             origin,
             direction,

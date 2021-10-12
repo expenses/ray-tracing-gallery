@@ -1059,16 +1059,11 @@ pub fn create_descriptor_set_layouts_and_pool(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(2)
+                    .binding(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR),
