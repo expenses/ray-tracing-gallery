@@ -183,33 +183,6 @@ impl PerFrameResources {
             ],
         );
 
-        /*cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
-            device,
-            buffer: command_buffer,
-            // We just wrote the color attachment
-            src_stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            // We need to do a transfer next.
-            dst_stage: vk::PipelineStageFlags::TRANSFER,
-            image_memory_barriers: &[
-                // prepare swapchain image to be a destination
-                *vk::ImageMemoryBarrier::builder()
-                    .image(swapchain_image)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .subresource_range(subresource_range)
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                // prepare storage image to be a source
-                *vk::ImageMemoryBarrier::builder()
-                    .image(self.storage_image.image)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .subresource_range(subresource_range)
-                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
-            ],
-        });*/
-
         device.cmd_copy_image(
             command_buffer,
             self.storage_image.image,
