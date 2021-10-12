@@ -13,7 +13,7 @@ use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
     load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
-use shared_structs::{GeometryInfo, ModelInfo, GeometryImages};
+use shared_structs::{GeometryImages, GeometryInfo, ModelInfo};
 use ultraviolet::{Vec2, Vec3};
 
 // A list of C strings and their associated pointers

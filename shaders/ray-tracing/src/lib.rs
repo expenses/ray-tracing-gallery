@@ -21,8 +21,8 @@ use spirv_std::{
 };
 
 mod heatmap;
-mod structs;
 mod pbr;
+mod structs;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;

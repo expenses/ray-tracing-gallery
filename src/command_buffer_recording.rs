@@ -149,12 +149,41 @@ impl PerFrameResources {
             .base_array_layer(0)
             .layer_count(1);
 
-        let subresource_range = vk::ImageSubresourceRange::builder()
+        let subresource_range = *vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
 
-        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+        vk_sync::cmd::pipeline_barrier(
+            &device,
+            command_buffer,
+            None,
+            &[],
+            &[
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::Nothing],
+                    next_accesses: &[vk_sync::AccessType::TransferWrite],
+                    //previous_layout: vk_sync::ImageLayout::Optimal,
+                    //next_layout: vk_sync::ImageLayout::Optimal,
+                    image: swapchain_image,
+                    range: subresource_range,
+                    discard_contents: true,
+                    ..Default::default()
+                },
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
+                    next_accesses: &[vk_sync::AccessType::TransferRead],
+                    //previous_layout: vk_sync::ImageLayout::Optimal,
+                    //next_layout: vk_sync::ImageLayout::Optimal,
+                    image: self.storage_image.image,
+                    range: subresource_range,
+                    discard_contents: false,
+                    ..Default::default()
+                },
+            ],
+        );
+
+        /*cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
             device,
             buffer: command_buffer,
             // We just wrote the color attachment
@@ -167,7 +196,7 @@ impl PerFrameResources {
                     .image(swapchain_image)
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .subresource_range(*subresource_range)
+                    .subresource_range(subresource_range)
                     .src_access_mask(vk::AccessFlags::empty())
                     .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
                 // prepare storage image to be a source
@@ -175,11 +204,11 @@ impl PerFrameResources {
                     .image(self.storage_image.image)
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .subresource_range(*subresource_range)
+                    .subresource_range(subresource_range)
                     .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                     .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
             ],
-        });
+        });*/
 
         device.cmd_copy_image(
             command_buffer,
@@ -212,14 +241,14 @@ impl PerFrameResources {
                     .image(swapchain_image)
                     .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .subresource_range(*subresource_range)
+                    .subresource_range(subresource_range)
                     .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
                 // Reset storage image
                 *vk::ImageMemoryBarrier::builder()
                     .image(self.storage_image.image)
                     .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
-                    .subresource_range(*subresource_range)
+                    .subresource_range(subresource_range)
                     .src_access_mask(vk::AccessFlags::TRANSFER_READ),
             ],
         });
