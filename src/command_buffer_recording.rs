@@ -60,13 +60,11 @@ impl PerFrameResources {
     pub fn write_descriptor_sets(&self, device: &ash::Device) {
         let storage_image_info = &[self.storage_image.descriptor_image_info()];
 
-        let writes = &[
-            *vk::WriteDescriptorSet::builder()
-                .dst_set(self.ray_tracing_ds)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(storage_image_info),
-        ];
+        let writes = &[*vk::WriteDescriptorSet::builder()
+            .dst_set(self.ray_tracing_ds)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(storage_image_info)];
 
         unsafe {
             device.update_descriptor_sets(writes, &[]);

@@ -256,11 +256,10 @@ fn main() -> anyhow::Result<()> {
             .stage(vk::ShaderStageFlags::MISS_KHR)
             .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
         // Hit shaders
-        load_shader_module_as_stage(
-            &std::fs::read("shaders/any_hit_alpha_clip.spv")?,
-            vk::ShaderStageFlags::ANY_HIT_KHR,
-            &device,
-        )?,
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::ANY_HIT_KHR)
+            .name(CStr::from_bytes_with_nul(b"any_hit_alpha_clip\0")?),
         load_shader_module_as_stage(
             &std::fs::read("shaders/closest_hit_textured.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,

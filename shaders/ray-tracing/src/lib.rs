@@ -12,12 +12,14 @@ extern crate spirv_std;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
 
-use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
+use spirv_std::glam::{const_vec3, IVec3, UVec3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
+    arch::ignore_intersection,
+    image::SampledImage,
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
-    Image,
+    Image, RuntimeArray,
 };
 
 mod heatmap;
@@ -26,7 +28,7 @@ mod structs;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
-use shared_structs::{PushConstantBufferAddresses, Uniforms};
+use shared_structs::{GeometryInfo, ModelInfo, PushConstantBufferAddresses, Uniforms};
 use structs::{PrimaryRayPayload, ShadowRayPayload, Vertex};
 
 #[spirv(miss)]
@@ -44,9 +46,7 @@ pub fn primary_ray_miss(
 ) {
     use spirv_std::arch::resource_from_handle;
 
-    let uniforms: &'static Uniforms = unsafe {
-        resource_from_handle(buffer_addresses.uniforms)
-    };
+    let uniforms: &'static Uniforms = unsafe { resource_from_handle(buffer_addresses.uniforms) };
 
     if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
         payload.colour = Vec3::splat(1.0);
@@ -98,9 +98,7 @@ pub fn ray_generation(
 ) {
     use spirv_std::arch::{read_clock_khr, resource_from_handle};
 
-    let uniforms: &'static Uniforms = unsafe {
-        resource_from_handle(buffer_addresses.uniforms)
-    };
+    let uniforms: &'static Uniforms = unsafe { resource_from_handle(buffer_addresses.uniforms) };
     let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
 
     let start_time = if uniforms.show_heatmap {
@@ -177,44 +175,6 @@ pub fn ray_generation(
 
     unsafe {
         image.write(launch_id_xy, gamma_corrected_colour.extend(1.0));
-    }
-}
-
-fn compute_barycentric_coords(hit_attributes: Vec2) -> Vec3 {
-    Vec3::new(
-        1.0 - hit_attributes.x - hit_attributes.y,
-        hit_attributes.x,
-        hit_attributes.y,
-    )
-}
-
-fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(
-    a: T,
-    b: T,
-    c: T,
-    barycentric_coords: Vec3,
-) -> T {
-    a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
-}
-
-struct Triangle {
-    a: Vertex,
-    b: Vertex,
-    c: Vertex,
-}
-
-impl Triangle {
-    fn interpolate(&self, barycentric_coords: Vec3) -> Vertex {
-        Vertex {
-            pos: interpolate(self.a.pos, self.b.pos, self.c.pos, barycentric_coords),
-            normal: interpolate(
-                self.a.normal,
-                self.b.normal,
-                self.c.normal,
-                barycentric_coords,
-            ),
-            uv: interpolate(self.a.uv, self.b.uv, self.c.uv, barycentric_coords),
-        }
     }
 }
 
@@ -299,4 +259,100 @@ pub fn closest_hit_portal(
     payload.new_ray_direction = world_ray_direction;
     payload.new_ray_origin =
         world_ray_origin + world_ray_direction * ray_hit_t + portal_relative_position;
+}
+
+#[spirv(any_hit)]
+pub fn any_hit_alpha_clip(
+    #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
+    #[spirv(instance_custom_index)] instance_custom_index: u32,
+    #[spirv(ray_geometry_index)] geometry_index: u32,
+    #[spirv(primitive_id)] primitive_id: u32,
+    #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
+    #[spirv(descriptor_set = 0, binding = 0)] textures: &RuntimeArray<
+        SampledImage<Image!(2D, type=f32, sampled=true)>,
+    >,
+) {
+    let model_info: &'static ModelInfo = unsafe {
+        load_runtime_array(buffer_addresses.model_info).index(instance_custom_index as usize)
+    };
+
+    let geometry_info: &'static GeometryInfo = unsafe {
+        load_runtime_array(model_info.geometry_info_address).index(geometry_index as usize)
+    };
+
+    let indices = read_indices(geometry_info, primitive_id);
+
+    let interpolated_uv: Vec2 = Triangle::load(model_info.uv_buffer_address, indices)
+        .interpolate(compute_barycentric_coords(*hit_attributes));
+
+    let texture = unsafe { textures.index(geometry_info.images.diffuse_image_index as usize) };
+
+    let sample: Vec4 = unsafe { texture.sample_by_lod(interpolated_uv, 0.0) };
+
+    if sample.w < 0.5 {
+        unsafe {
+            ignore_intersection();
+        }
+    }
+}
+
+unsafe fn load_runtime_array<T>(handle: u64) -> &'static mut RuntimeArray<T> {
+    spirv_std::arch::resource_from_handle::<&'static mut RuntimeArray<T>>(handle)
+}
+
+fn read_indices(geometry_info: &GeometryInfo, primitive_id: u32) -> UVec3 {
+    let runtime_array: &'static mut RuntimeArray<u32> =
+        unsafe { load_runtime_array(geometry_info.index_buffer_address) };
+
+    let offset = primitive_id as usize * 3;
+
+    // We need to do 3 reads instead of 1 read as the alignment is wrongly set to 8 bytes instead of 4.
+    unsafe {
+        UVec3::new(
+            *runtime_array.index(offset),
+            *runtime_array.index(offset + 1),
+            *runtime_array.index(offset + 2),
+        )
+    }
+}
+
+fn compute_barycentric_coords(hit_attributes: Vec2) -> Vec3 {
+    Vec3::new(
+        1.0 - hit_attributes.x - hit_attributes.y,
+        hit_attributes.x,
+        hit_attributes.y,
+    )
+}
+
+fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(
+    a: T,
+    b: T,
+    c: T,
+    barycentric_coords: Vec3,
+) -> T {
+    a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
+}
+
+struct Triangle<V> {
+    a: V,
+    b: V,
+    c: V,
+}
+
+impl<V: Copy + Add<V, Output = V> + Mul<f32, Output = V> + 'static> Triangle<V> {
+    fn load(handle: u64, indices: UVec3) -> Self {
+        let array: &'static mut RuntimeArray<V> = unsafe { load_runtime_array(handle) };
+
+        unsafe {
+            Self {
+                a: *array.index(indices.x as usize),
+                b: *array.index(indices.y as usize),
+                c: *array.index(indices.z as usize),
+            }
+        }
+    }
+
+    fn interpolate(&self, barycentric_coords: Vec3) -> V {
+        interpolate(self.a, self.b, self.c, barycentric_coords)
+    }
 }

@@ -747,12 +747,6 @@ impl Buffer {
         }
     }
 
-    pub fn descriptor_buffer_info(&self) -> vk::DescriptorBufferInfo {
-        *vk::DescriptorBufferInfo::builder()
-            .buffer(self.buffer)
-            .range(vk::WHOLE_SIZE)
-    }
-
     pub fn write_mapped(&mut self, bytes: &[u8], offset: usize) -> anyhow::Result<()> {
         let slice = self
             .allocation

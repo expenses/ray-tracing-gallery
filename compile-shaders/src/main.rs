@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
         "SPV_KHR_ray_tracing",
         "SPV_EXT_descriptor_indexing",
         "SPV_KHR_shader_clock",
-        "SPV_KHR_physical_storage_buffer"
+        "SPV_KHR_physical_storage_buffer",
     ];
 
     let capabilities = &[
