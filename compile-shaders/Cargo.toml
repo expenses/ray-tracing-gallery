@@ -7,4 +7,4 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.44"
-spirv-builder = { git = "https://github.com/expenses/rust-gpu", branch = "add-unsigned-glsl-functions", default-features = false, features = ["use-installed-tools"] }
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "f8a1130377a4a500ff05d1058b29c8f1a42f2d80", default-features = false, features = ["use-installed-tools"] }
