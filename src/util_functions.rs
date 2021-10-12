@@ -418,18 +418,16 @@ pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKH
     )
 }
 
-pub struct PipelineImageMemoryBarrierParams<'a> {
-    pub device: &'a ash::Device,
-    pub buffer: vk::CommandBuffer,
-    pub src_stage: vk::PipelineStageFlags,
-    pub dst_stage: vk::PipelineStageFlags,
-    pub image_memory_barriers: &'a [vk::ImageMemoryBarrier],
+struct PipelineImageMemoryBarrierParams<'a> {
+    device: &'a ash::Device,
+    buffer: vk::CommandBuffer,
+    src_stage: vk::PipelineStageFlags,
+    dst_stage: vk::PipelineStageFlags,
+    image_memory_barriers: &'a [vk::ImageMemoryBarrier],
 }
 
 // `cmd_pipeline_barrier` is one of those cases where it's nice if each param is clear.
-pub unsafe fn cmd_pipeline_image_memory_barrier_explicit(
-    params: &PipelineImageMemoryBarrierParams,
-) {
+unsafe fn cmd_pipeline_image_memory_barrier_explicit(params: &PipelineImageMemoryBarrierParams) {
     params.device.cmd_pipeline_barrier(
         params.buffer,
         params.src_stage,

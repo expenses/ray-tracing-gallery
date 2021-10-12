@@ -1,7 +1,4 @@
 use crate::gpu_structs::unsafe_bytes_of;
-use crate::util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, PipelineImageMemoryBarrierParams,
-};
 use crate::util_structs::{
     AccelerationStructure, Allocator, Buffer, Device, Image, ScratchBuffer, ShaderBindingTable,
 };
@@ -155,7 +152,7 @@ impl PerFrameResources {
             .layer_count(1);
 
         vk_sync::cmd::pipeline_barrier(
-            &device,
+            device,
             command_buffer,
             None,
             &[],
@@ -163,8 +160,6 @@ impl PerFrameResources {
                 vk_sync::ImageBarrier {
                     previous_accesses: &[vk_sync::AccessType::Nothing],
                     next_accesses: &[vk_sync::AccessType::TransferWrite],
-                    //previous_layout: vk_sync::ImageLayout::Optimal,
-                    //next_layout: vk_sync::ImageLayout::Optimal,
                     image: swapchain_image,
                     range: subresource_range,
                     discard_contents: true,
@@ -173,8 +168,7 @@ impl PerFrameResources {
                 vk_sync::ImageBarrier {
                     previous_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
                     next_accesses: &[vk_sync::AccessType::TransferRead],
-                    //previous_layout: vk_sync::ImageLayout::Optimal,
-                    //next_layout: vk_sync::ImageLayout::Optimal,
+                    previous_layout: vk_sync::ImageLayout::General,
                     image: self.storage_image.image,
                     range: subresource_range,
                     discard_contents: false,
@@ -201,30 +195,31 @@ impl PerFrameResources {
 
         // Reset image layouts
 
-        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
+        vk_sync::cmd::pipeline_barrier(
             device,
-            buffer: command_buffer,
-            // We just did a transfer
-            src_stage: vk::PipelineStageFlags::TRANSFER,
-            // Nothing happens after this.
-            dst_stage: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            image_memory_barriers: &[
-                // Reset swapchain image
-                *vk::ImageMemoryBarrier::builder()
-                    .image(swapchain_image)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .subresource_range(subresource_range)
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE),
-                // Reset storage image
-                *vk::ImageMemoryBarrier::builder()
-                    .image(self.storage_image.image)
-                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .subresource_range(subresource_range)
-                    .src_access_mask(vk::AccessFlags::TRANSFER_READ),
+            command_buffer,
+            None,
+            &[],
+            &[
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
+                    next_accesses: &[vk_sync::AccessType::Present],
+                    image: swapchain_image,
+                    range: subresource_range,
+                    discard_contents: false,
+                    ..Default::default()
+                },
+                vk_sync::ImageBarrier {
+                    previous_accesses: &[vk_sync::AccessType::TransferRead],
+                    next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
+                    next_layout: vk_sync::ImageLayout::General,
+                    image: self.storage_image.image,
+                    range: subresource_range,
+                    discard_contents: true,
+                    ..Default::default()
+                },
             ],
-        });
+        );
 
         Ok(())
     }
