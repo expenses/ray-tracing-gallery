@@ -1062,11 +1062,6 @@ pub fn create_descriptor_set_layouts_and_pool(
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR),
             ]),
             None,
         )
@@ -1079,16 +1074,7 @@ pub fn create_descriptor_set_layouts_and_pool(
             &vk::DescriptorPoolCreateInfo::builder()
                 .pool_sizes(&[
                     *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(num_frames),
-                    *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(num_frames),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::UNIFORM_BUFFER)
                         .descriptor_count(num_frames),
                     *vk::DescriptorPoolSize::builder()
                         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)

@@ -7,5 +7,5 @@ edition = "2018"
 crate-type = ["dylib", "lib"]
 
 [dependencies]
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "f8a1130377a4a500ff05d1058b29c8f1a42f2d80", features = ["glam"] }
+spirv-std = { git = "https://github.com/expenses/rust-gpu", branch = "msi-minimum-changeset", features = ["glam"] }
 shared-structs = { path = "../../shared-structs" }

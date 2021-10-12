@@ -39,9 +39,15 @@ const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.05]);
 #[spirv(miss)]
 pub fn primary_ray_miss(
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
+    #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
+    use spirv_std::arch::resource_from_handle;
+
+    let uniforms: &'static Uniforms = unsafe {
+        resource_from_handle(buffer_addresses.uniforms)
+    };
+
     if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
         payload.colour = Vec3::splat(1.0);
     } else {
@@ -85,14 +91,17 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
     #[spirv(descriptor_set = 1, binding = 0)] image: &Image!(2D, format = rgba8, sampled = false),
-    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
+    //#[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
-    let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
+    use spirv_std::arch::{read_clock_khr, resource_from_handle};
 
-    use spirv_std::arch::read_clock_khr;
+    let uniforms: &'static Uniforms = unsafe {
+        resource_from_handle(buffer_addresses.uniforms)
+    };
+    let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
 
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
