@@ -12,7 +12,7 @@ extern crate spirv_std;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
 
-use spirv_std::glam::{const_vec3, IVec3, UVec3, Vec2, Vec3, Vec4};
+use spirv_std::glam::{const_vec3, IVec3, UVec3, Vec2, Vec3, Vec4, Mat3};
 
 use spirv_std::{
     arch::ignore_intersection,
@@ -297,6 +297,50 @@ pub fn any_hit_alpha_clip(
     }
 }
 
+#[spirv(closest_hit)]
+pub fn closest_hit_mirror(
+    #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
+    #[spirv(instance_custom_index)] instance_custom_index: u32,
+    #[spirv(ray_geometry_index)] geometry_index: u32,
+    #[spirv(primitive_id)] primitive_id: u32,
+    #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
+    #[spirv(object_to_world)] object_to_world: [[f32; 4]; 3],
+    #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
+    #[spirv(world_ray_origin)] world_ray_origin: Vec3,
+    #[spirv(world_ray_direction)] world_ray_direction: Vec3,
+    #[spirv(ray_tmax)] ray_hit_t: f32,
+) {
+    let model_info: &'static ModelInfo = unsafe {
+        load_runtime_array(buffer_addresses.model_info).index(instance_custom_index as usize)
+    };
+
+    let geometry_info: &'static GeometryInfo = unsafe {
+        load_runtime_array(model_info.geometry_info_address).index(geometry_index as usize)
+    };
+
+    let indices = read_indices(geometry_info, primitive_id);
+
+    let interpolated_normal: Vec3 = Triangle::load_vec3(model_info.normal_buffer_address, indices)
+        .interpolate(compute_barycentric_coords(*hit_attributes));
+
+    /*let object_to_world = Mat3::from_cols(
+        Vec3::new(object_to_world[0][0], object_to_world[0][1], object_to_world[0][2]),
+        Vec3::new(object_to_world[1][0], object_to_world[1][1], object_to_world[1][2]),
+        Vec3::new(object_to_world[2][0], object_to_world[2][1], object_to_world[2][2]),
+    );*/
+
+    //let rotated_normal = object_to_world * interpolated_normal;
+
+    let normal = interpolated_normal.normalize();
+
+    payload.new_ray_direction = reflect(world_ray_direction, normal);
+    payload.new_ray_origin = world_ray_origin + world_ray_direction * ray_hit_t;
+}
+
+fn reflect(incidence: Vec3, normal: Vec3) -> Vec3 {
+    incidence - 2.0 * normal.dot(incidence) * normal
+}
+
 unsafe fn load_runtime_array<T>(handle: u64) -> &'static mut RuntimeArray<T> {
     spirv_std::arch::resource_from_handle::<&'static mut RuntimeArray<T>>(handle)
 }
@@ -355,5 +399,24 @@ impl<V: Copy + Add<V, Output = V> + Mul<f32, Output = V> + 'static> Triangle<V> 
 
     fn interpolate(&self, barycentric_coords: Vec3) -> V {
         interpolate(self.a, self.b, self.c, barycentric_coords)
+    }
+}
+
+impl Triangle<Vec3> {
+    fn load_vec3(handle: u64, indices: UVec3) -> Self {
+        let array: &'static mut RuntimeArray<f32> = unsafe { load_runtime_array(handle) };
+
+        let load_vec3 = |index: usize| -> Vec3 {
+            let offset = index * 3;
+            unsafe {
+                Vec3::new(*array.index(offset), *array.index(offset + 1), *array.index(offset + 2))
+            }
+        };
+
+        Self {
+            a: load_vec3(indices.x as usize),
+            b: load_vec3(indices.y as usize),
+            c: load_vec3(indices.z as usize),
+        }
     }
 }
