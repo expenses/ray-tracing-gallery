@@ -285,6 +285,7 @@ pub fn any_hit_alpha_clip(
     let interpolated_uv: Vec2 = Triangle::load(model_info.uv_buffer_address, indices)
         .interpolate(compute_barycentric_coords(*hit_attributes));
 
+    // Todo: index needs to be non-uniform.
     let texture = unsafe { textures.index(geometry_info.images.diffuse_image_index as usize) };
 
     let sample: Vec4 = unsafe { texture.sample_by_lod(interpolated_uv, 0.0) };
