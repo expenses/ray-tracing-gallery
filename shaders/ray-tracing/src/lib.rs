@@ -12,7 +12,7 @@ extern crate spirv_std;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
 
-use spirv_std::glam::{const_vec3, IVec3, UVec3, Vec2, Vec3, Vec4, Mat3};
+use spirv_std::glam::{const_vec3, IVec3, Mat3, UVec3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
     arch::ignore_intersection,
@@ -297,6 +297,14 @@ pub fn any_hit_alpha_clip(
     }
 }
 
+#[spirv(matrix)]
+pub struct Mat4x3 {
+    x: Vec3,
+    y: Vec3,
+    z: Vec3,
+    w: Vec3,
+}
+
 #[spirv(closest_hit)]
 pub fn closest_hit_mirror(
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
@@ -304,7 +312,7 @@ pub fn closest_hit_mirror(
     #[spirv(ray_geometry_index)] geometry_index: u32,
     #[spirv(primitive_id)] primitive_id: u32,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
-    #[spirv(object_to_world)] object_to_world: [[f32; 4]; 3],
+    #[spirv(object_to_world)] object_to_world: Mat4x3,
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
     #[spirv(world_ray_origin)] world_ray_origin: Vec3,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
@@ -323,15 +331,11 @@ pub fn closest_hit_mirror(
     let interpolated_normal: Vec3 = Triangle::load_vec3(model_info.normal_buffer_address, indices)
         .interpolate(compute_barycentric_coords(*hit_attributes));
 
-    /*let object_to_world = Mat3::from_cols(
-        Vec3::new(object_to_world[0][0], object_to_world[0][1], object_to_world[0][2]),
-        Vec3::new(object_to_world[1][0], object_to_world[1][1], object_to_world[1][2]),
-        Vec3::new(object_to_world[2][0], object_to_world[2][1], object_to_world[2][2]),
-    );*/
+    let object_to_world = Mat3::from_cols(object_to_world.x, object_to_world.y, object_to_world.z);
 
-    //let rotated_normal = object_to_world * interpolated_normal;
+    let rotated_normal = object_to_world * interpolated_normal;
 
-    let normal = interpolated_normal.normalize();
+    let normal = rotated_normal.normalize();
 
     payload.new_ray_direction = reflect(world_ray_direction, normal);
     payload.new_ray_origin = world_ray_origin + world_ray_direction * ray_hit_t;
@@ -409,7 +413,11 @@ impl Triangle<Vec3> {
         let load_vec3 = |index: usize| -> Vec3 {
             let offset = index * 3;
             unsafe {
-                Vec3::new(*array.index(offset), *array.index(offset + 1), *array.index(offset + 2))
+                Vec3::new(
+                    *array.index(offset),
+                    *array.index(offset + 1),
+                    *array.index(offset + 2),
+                )
             }
         };
 

@@ -265,11 +265,6 @@ fn main() -> anyhow::Result<()> {
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
-        /*load_shader_module_as_stage(
-            &std::fs::read("shaders/closest_hit_mirror.spv")?,
-            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-            &device,
-        )?,*/
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
