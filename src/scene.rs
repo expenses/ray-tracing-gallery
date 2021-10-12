@@ -121,7 +121,13 @@ impl DefaultScene {
                 HitShader::Portal,
                 true,
             ),
-            // fence model??
+            AccelerationStructureInstance::new(
+                Mat4::from_translation(Vec3::new(2.0, 0.0, 2.0)),
+                &scene.fence_model,
+                &allocator.device,
+                HitShader::Textured,
+                true,
+            ),
         ];
 
         {
