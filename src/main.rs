@@ -230,7 +230,7 @@ fn main() -> anyhow::Result<()> {
                 .set_layouts(&[general_dsl, per_frame_dsl])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(
-                        vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                        vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR | vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                     )
                     .size(std::mem::size_of::<PushConstantBufferAddresses>() as u32)]),
             None,
@@ -260,11 +260,19 @@ fn main() -> anyhow::Result<()> {
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::ANY_HIT_KHR)
             .name(CStr::from_bytes_with_nul(b"any_hit_alpha_clip\0")?),
+        /*
+        *vk::PipelineShaderStageCreateInfo::builder()
+            .module(ray_tracing_module)
+            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+            .name(CStr::from_bytes_with_nul(b"closest_hit_textured\0")?),
+        */
+        // /*
         load_shader_module_as_stage(
             &std::fs::read("shaders/closest_hit_textured.spv")?,
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
+        // */
         *vk::PipelineShaderStageCreateInfo::builder()
             .module(ray_tracing_module)
             .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)

@@ -7,4 +7,4 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.44"
-spirv-builder = { git = "https://github.com/expenses/rust-gpu", branch = "msi-minimum-changeset", default-features = false, features = ["use-installed-tools"] }
+spirv-builder = { git = "https://github.com/expenses/rust-gpu", branch = "convert-u-to-ptr", default-features = false, features = ["use-installed-tools"] }

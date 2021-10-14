@@ -12,7 +12,7 @@ extern crate spirv_std;
 #[cfg(not(target_arch = "spirv"))]
 use spirv_std::macros::spirv;
 
-use spirv_std::glam::{const_vec3, IVec3, Mat3, UVec3, Vec2, Vec3, Vec4};
+use spirv_std::glam::{const_vec3, IVec3, Mat3, Vec2, Vec3, Vec4};
 
 use spirv_std::{
     arch::ignore_intersection,
@@ -20,10 +20,11 @@ use spirv_std::{
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
     Image, RuntimeArray,
+    arch::convert_u_to_ptr,
 };
 
 mod heatmap;
-mod pbr;
+//mod pbr;
 mod structs;
 
 use core::ops::{Add, Mul};
@@ -44,9 +45,7 @@ pub fn primary_ray_miss(
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
-    use spirv_std::arch::resource_from_handle;
-
-    let uniforms: &'static Uniforms = unsafe { resource_from_handle(buffer_addresses.uniforms) };
+    let uniforms = unsafe { &mut *convert_u_to_ptr::<Uniforms>(buffer_addresses.uniforms) };
 
     if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
         payload.colour = Vec3::splat(1.0);
@@ -91,14 +90,13 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
     #[spirv(descriptor_set = 1, binding = 0)] image: &Image!(2D, format = rgba8, sampled = false),
-    //#[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
-    use spirv_std::arch::{read_clock_khr, resource_from_handle};
+    use spirv_std::arch::read_clock_khr;
 
-    let uniforms: &'static Uniforms = unsafe { resource_from_handle(buffer_addresses.uniforms) };
+    let uniforms = unsafe { &mut *convert_u_to_ptr::<Uniforms>(buffer_addresses.uniforms) };
     let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
 
     let start_time = if uniforms.show_heatmap {
@@ -178,81 +176,13 @@ pub fn ray_generation(
     }
 }
 
-/*
-#[spirv(closest_hit)]
-pub fn wip_closest_hit(
-    #[spirv(instance_custom_index)] model_index: u32,
-    #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
-    #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(ray_payload)] shadow_payload: &mut ShadowRayPayload,
-    #[spirv(world_ray_origin)] world_ray_origin: Vec3,
-    #[spirv(world_ray_direction)] world_ray_direction: Vec3,
-    #[spirv(ray_tmax)] ray_hit_t: f32,
-    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] model_info: &[ModelInfo],
-    #[spirv(descriptor_set = 0, binding = 1)] textures: &RuntimeArray<
-        SampledImage<Image!(2D, type=f32, sampled=true)>,
-    >,
-    #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
-    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
-) {
-    let info = &model_info[model_index as usize];
-
-    // Missing features:
-    //
-    // * casting u64 addresses to pointers (OpConvertUToPtr)
-    //   - https://github.com/EmbarkStudios/rust-gpu/issues/383
-    // * NonUniform support:
-    //   - https://github.com/EmbarkStudios/rust-gpu/issues/756
-
-    let triangle = Triangle {
-        a: Vertex::default(),
-        b: Vertex::default(),
-        c: Vertex::default(),
-    };
-
-    let barycentric_coords = compute_barycentric_coords(*hit_attributes);
-
-    let interpolated = triangle.interpolate(barycentric_coords);
-
-    let texture = unsafe { textures.index(info.texture_index as usize) };
-    let colour: Vec4 = unsafe { texture.sample_by_lod(interpolated.uv, 0.0) };
-    let colour = colour.truncate();
-
-    let shadowed = {
-        shadow_payload.shadowed = true;
-
-        trace_ray_explicit(TraceRayExplicitParams {
-            tlas,
-            flags: RayFlags::OPAQUE
-                | RayFlags::TERMINATE_ON_FIRST_HIT
-                | RayFlags::SKIP_CLOSEST_HIT_SHADER,
-            origin: world_ray_origin + world_ray_direction * ray_hit_t,
-            direction: uniforms.sun_dir,
-            t_min: 0.001,
-            t_max: 10_000.0,
-            payload: shadow_payload,
-            cull_mask: 0xff,
-            // Not sure if we need this offset
-            sbt_offset: 1,
-            sbt_stride: 0,
-            miss_shader_index: 1,
-        });
-
-        shadow_payload.shadowed
-    };
-
-    let lighting = !shadowed as u8 as f32;
-
-    payload.colour = colour * ((lighting * 0.6) + 0.4);
-}
-*/
-
 type Textures = RuntimeArray<SampledImage<Image!(2D, type=f32, sampled=true)>>;
 
 fn sample_texture(textures: &Textures, index: u32, uv: Vec2) -> Vec4 {
     unsafe {
+        let index = index as usize;
         // Todo: index needs to be non-uniform.
-        let texture = textures.index(index as usize);
+        let texture = textures.index(index);
         texture.sample_by_lod(uv, 0.0)
     }
 }
@@ -274,23 +204,17 @@ pub fn closest_hit_portal(
 #[spirv(any_hit)]
 pub fn any_hit_alpha_clip(
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
-    #[spirv(instance_custom_index)] instance_custom_index: u32,
-    #[spirv(ray_geometry_index)] geometry_index: u32,
-    #[spirv(primitive_id)] primitive_id: u32,
+    #[spirv(instance_custom_index)] instance_custom_index: usize,
+    #[spirv(ray_geometry_index)] geometry_index: usize,
+    #[spirv(primitive_id)] primitive_id: usize,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
     #[spirv(descriptor_set = 0, binding = 0)] textures: &Textures,
 ) {
-    let model_info: &'static ModelInfo = unsafe {
-        load_runtime_array(buffer_addresses.model_info).index(instance_custom_index as usize)
-    };
+    let (model_info, geometry_info) = load_model_and_geometry_info(buffer_addresses, instance_custom_index, geometry_index);
 
-    let geometry_info: &'static GeometryInfo = unsafe {
-        load_runtime_array(model_info.geometry_info_address).index(geometry_index as usize)
-    };
+    let indices = read_indices(&geometry_info, primitive_id);
 
-    let indices = read_indices(geometry_info, primitive_id);
-
-    let interpolated_uv: Vec2 = Triangle::load_vec2(model_info.uv_buffer_address, indices)
+    let interpolated_uv: Vec2 = TriangleOfComponents::load_vec2(model_info.uv_buffer_address, indices)
         .interpolate(compute_barycentric_coords(*hit_attributes));
 
     let sample = sample_texture(
@@ -311,15 +235,33 @@ pub struct Mat4x3 {
     x: Vec3,
     y: Vec3,
     z: Vec3,
-    w: Vec3,
+    _w: Vec3,
+}
+
+impl Mat4x3 {
+    fn as_mat3(&self) -> Mat3 {
+        Mat3::from_cols(self.x, self.y, self.z)
+    }
+}
+
+fn load_model_and_geometry_info(buffer_addresses: &PushConstantBufferAddresses, instance_custom_index: usize, geometry_index: usize) -> (ModelInfo, GeometryInfo) {
+    let model_info = unsafe {
+        *load_runtime_array_from_handle::<ModelInfo>(buffer_addresses.model_info).index(instance_custom_index)
+    };
+
+    let geometry_info = unsafe {
+        *load_runtime_array_from_handle::<GeometryInfo>(model_info.geometry_info_address).index(geometry_index)
+    };
+
+    (model_info, geometry_info)
 }
 
 #[spirv(closest_hit)]
 pub fn closest_hit_mirror(
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
-    #[spirv(instance_custom_index)] instance_custom_index: u32,
-    #[spirv(ray_geometry_index)] geometry_index: u32,
-    #[spirv(primitive_id)] primitive_id: u32,
+    #[spirv(instance_custom_index)] instance_custom_index: usize,
+    #[spirv(ray_geometry_index)] geometry_index: usize,
+    #[spirv(primitive_id)] primitive_id: usize,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
     #[spirv(object_to_world)] object_to_world: Mat4x3,
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
@@ -327,22 +269,14 @@ pub fn closest_hit_mirror(
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
     #[spirv(ray_tmax)] ray_hit_t: f32,
 ) {
-    let model_info: &'static ModelInfo = unsafe {
-        load_runtime_array(buffer_addresses.model_info).index(instance_custom_index as usize)
-    };
+    let (model_info, geometry_info) = load_model_and_geometry_info(buffer_addresses, instance_custom_index, geometry_index);
 
-    let geometry_info: &'static GeometryInfo = unsafe {
-        load_runtime_array(model_info.geometry_info_address).index(geometry_index as usize)
-    };
+    let indices = read_indices(&geometry_info, primitive_id);
 
-    let indices = read_indices(geometry_info, primitive_id);
-
-    let interpolated_normal: Vec3 = Triangle::load_vec3(model_info.normal_buffer_address, indices)
+    let interpolated_normal: Vec3 = TriangleOfComponents::load_vec3(model_info.normal_buffer_address, indices)
         .interpolate(compute_barycentric_coords(*hit_attributes));
 
-    let object_to_world = Mat3::from_cols(object_to_world.x, object_to_world.y, object_to_world.z);
-
-    let rotated_normal = object_to_world * interpolated_normal;
+    let rotated_normal = object_to_world.as_mat3() * interpolated_normal;
 
     let normal = rotated_normal.normalize();
 
@@ -353,25 +287,18 @@ pub fn closest_hit_mirror(
 #[spirv(closest_hit)]
 pub fn closest_hit_textured(
     #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
-    #[spirv(instance_custom_index)] instance_custom_index: u32,
-    #[spirv(ray_geometry_index)] geometry_index: u32,
-    #[spirv(primitive_id)] primitive_id: u32,
+    #[spirv(instance_custom_index)] instance_custom_index: usize,
+    #[spirv(ray_geometry_index)] geometry_index: usize,
+    #[spirv(primitive_id)] primitive_id: usize,
     #[spirv(hit_attribute)] hit_attributes: &mut Vec2,
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
     #[spirv(descriptor_set = 0, binding = 0)] textures: &Textures,
 ) {
-    let model_info: &'static ModelInfo = unsafe {
-        load_runtime_array(buffer_addresses.model_info).index(instance_custom_index as usize)
-    };
+    let (model_info, geometry_info) = load_model_and_geometry_info(buffer_addresses, instance_custom_index, geometry_index);
 
-    let geometry_info: &'static GeometryInfo = unsafe {
-        load_runtime_array(model_info.geometry_info_address).index(geometry_index as usize)
-    };
+    let uniforms = unsafe { &mut *convert_u_to_ptr::<Uniforms>(buffer_addresses.uniforms) };
 
-    let uniforms: &'static Uniforms =
-        unsafe { spirv_std::arch::resource_from_handle(buffer_addresses.uniforms) };
-
-    let triangle = FullTriangle::load(model_info, geometry_info, primitive_id);
+    let triangle = FullTriangle::load(&model_info, &geometry_info, primitive_id);
 
     let barycentric_coords = compute_barycentric_coords(*hit_attributes);
 
@@ -404,19 +331,19 @@ impl MaterialData {
 }
 
 struct FullTriangle {
-    positions: Triangle<Vec3>,
-    normals: Triangle<Vec3>,
-    uvs: Triangle<Vec2>,
+    positions: TriangleOfComponents<Vec3>,
+    normals: TriangleOfComponents<Vec3>,
+    uvs: TriangleOfComponents<Vec2>,
 }
 
 impl FullTriangle {
-    pub fn load(model_info: &ModelInfo, geometry_info: &GeometryInfo, primitive_id: u32) -> Self {
+    pub fn load(model_info: &ModelInfo, geometry_info: &GeometryInfo, primitive_id: usize) -> Self {
         let indices = read_indices(geometry_info, primitive_id);
 
         Self {
-            positions: Triangle::load_vec3(model_info.position_buffer_address, indices),
-            normals: Triangle::load_vec3(model_info.normal_buffer_address, indices),
-            uvs: Triangle::load_vec2(model_info.uv_buffer_address, indices),
+            positions: TriangleOfComponents::load_vec3(model_info.position_buffer_address, indices),
+            normals: TriangleOfComponents::load_vec3(model_info.normal_buffer_address, indices),
+            uvs: TriangleOfComponents::load_vec2(model_info.uv_buffer_address, indices),
         }
     }
 
@@ -433,36 +360,20 @@ fn reflect(incidence: Vec3, normal: Vec3) -> Vec3 {
     incidence - 2.0 * normal.dot(incidence) * normal
 }
 
-unsafe fn load_runtime_array<T>(handle: u64) -> &'static mut RuntimeArray<T> {
-    spirv_std::arch::resource_from_handle::<&'static mut RuntimeArray<T>>(handle)
-}
 
-unsafe fn load_u32_runtime_array_from_handle(handle: u64) -> &'static RuntimeArray<u32> {
-    asm!(
-        "%u32 = OpTypeInt 32 0",
-        "%runtime_array = OpTypeRuntimeArray %u32",
-        "%runtime_array_ptr = OpTypePointer Generic %runtime_array",
-        "%result = OpConvertUToPtr %runtime_array_ptr {handle}",
-        "OpReturnValue %result",
-        handle = in(reg) handle,
-        options(noreturn)
-    )
-}
-
-
-fn read_indices(geometry_info: &GeometryInfo, primitive_id: u32) -> UVec3 {
+fn read_indices(geometry_info: &GeometryInfo, primitive_id: usize) -> [usize; 3] {
     let runtime_array =
-        unsafe { load_u32_runtime_array_from_handle(geometry_info.index_buffer_address) };
+        unsafe { load_runtime_array_from_handle::<usize>(geometry_info.index_buffer_address) };
 
-    let offset = primitive_id as usize * 3;
+    let offset = primitive_id * 3;
 
     // We need to do 3 reads instead of 1 read as the alignment is wrongly set to 8 bytes instead of 4.
     unsafe {
-        UVec3::new(
+        [
             *runtime_array.index(offset),
             *runtime_array.index(offset + 1),
             *runtime_array.index(offset + 2),
-        )
+        ]
     }
 }
 
@@ -483,47 +394,25 @@ fn interpolate<T: Mul<f32, Output = T> + Add<T, Output = T>>(
     a * barycentric_coords.x + b * barycentric_coords.y + c * barycentric_coords.z
 }
 
-// TriangleOfComponent(s)?
-struct Triangle<V> {
+struct TriangleOfComponents<V> {
     a: V,
     b: V,
     c: V,
 }
 
-impl<V: Copy + Add<V, Output = V> + Mul<f32, Output = V> + 'static> Triangle<V> {
+impl<V: Copy + Add<V, Output = V> + Mul<f32, Output = V> + 'static> TriangleOfComponents<V> {
     fn interpolate(&self, barycentric_coords: Vec3) -> V {
         interpolate(self.a, self.b, self.c, barycentric_coords)
     }
 }
 
-unsafe fn load_f32_runtime_array_from_handle(handle: u64) -> &'static mut RuntimeArray<f32> {
-    asm!(
-        "%f32 = OpTypeFloat 32",
-        "%runtime_array = OpTypeRuntimeArray %f32",
-        "%runtime_array_ptr = OpTypePointer Generic %runtime_array",
-        "%result = OpConvertUToPtr %runtime_array_ptr {handle}",
-        "OpReturnValue %result",
-        handle = in(reg) handle,
-        options(noreturn)
-    )
+unsafe fn load_runtime_array_from_handle<T>(handle: u64) -> &'static mut RuntimeArray<T> {
+    &mut *convert_u_to_ptr(handle)
 }
 
-unsafe fn load_vec2_runtime_array_from_handle(handle: u64) -> &'static RuntimeArray<Vec2> {
-    asm!(
-        "%f32 = OpTypeFloat 32",
-        "%vec2 = OpTypeVector %f32 2",
-        "%runtime_array = OpTypeRuntimeArray %vec2",
-        "%runtime_array_ptr = OpTypePointer Generic %runtime_array",
-        "%result = OpConvertUToPtr %runtime_array_ptr {handle}",
-        "OpReturnValue %result",
-        handle = in(reg) handle,
-        options(noreturn)
-    )
-}
-
-impl Triangle<Vec3> {
-    fn load_vec3(handle: u64, indices: UVec3) -> Self {
-        let array = unsafe { load_f32_runtime_array_from_handle(handle) };
+impl TriangleOfComponents<Vec3> {
+    fn load_vec3(handle: u64, indices: [usize; 3]) -> Self {
+        let array = unsafe { load_runtime_array_from_handle::<f32>(handle) };
 
         let load_vec3 = |index: usize| -> Vec3 {
             let offset = index * 3;
@@ -537,22 +426,22 @@ impl Triangle<Vec3> {
         };
 
         Self {
-            a: load_vec3(indices.x as usize),
-            b: load_vec3(indices.y as usize),
-            c: load_vec3(indices.z as usize),
+            a: load_vec3(indices[0]),
+            b: load_vec3(indices[1]),
+            c: load_vec3(indices[2]),
         }
     }
 }
 
-impl Triangle<Vec2> {
-    fn load_vec2(handle: u64, indices: UVec3) -> Self {
-        let array = unsafe { load_vec2_runtime_array_from_handle(handle) };
+impl TriangleOfComponents<Vec2> {
+    fn load_vec2(handle: u64, indices: [usize; 3]) -> Self {
+        let array = unsafe { load_runtime_array_from_handle::<Vec2>(handle) };
 
         unsafe {
             Self {
-                a: *array.index(indices.x as usize),
-                b: *array.index(indices.y as usize),
-                c: *array.index(indices.z as usize),
+                a: *array.index(indices[0]),
+                b: *array.index(indices[1]),
+                c: *array.index(indices[2]),
             }
         }
     }
