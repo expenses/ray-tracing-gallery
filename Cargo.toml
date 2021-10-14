@@ -22,7 +22,7 @@ structopt = "0.3.23"
 ultraviolet = { version = "0.8.1", features = ["bytemuck"] }
 winit = "0.25.0"
 shared-structs = { path = "shared-structs" }
-glam = "0.18.0"
+glam = "0.19.0"
 
 [profile.dev.package."*"]
 opt-level = 3
