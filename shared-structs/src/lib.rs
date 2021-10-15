@@ -2,7 +2,7 @@
 
 type DeviceAddress = u64;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3A};
 
 #[cfg_attr(not(target_arch = "spirv"), derive(Debug))]
 #[derive(Copy, Clone)]
@@ -10,7 +10,7 @@ use glam::{Mat4, Vec3};
 pub struct Uniforms {
     pub view_inverse: Mat4,
     pub proj_inverse: Mat4,
-    pub sun_dir: Vec3,
+    pub sun_dir: Vec3A,
     pub sun_radius: f32,
     pub blue_noise_texture_index: u32,
     pub ggx_lut_texture_index: u32,

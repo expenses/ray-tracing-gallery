@@ -578,7 +578,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut uniforms = Uniforms {
         sun_dir: <[f32; 3]>::from(sun.as_normal()).into(),
-        sun_radius: 0.1,
+        sun_radius: 0.05,
         view_inverse: glam::Mat4::IDENTITY,
         proj_inverse: mat_to_glam(
             ultraviolet::projection::perspective_reversed_infinite_z_vk(

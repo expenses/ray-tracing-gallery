@@ -19,6 +19,7 @@ use spirv_std::{
     ray_tracing::{AccelerationStructure, RayFlags},
     Image,
 };
+use spirv_std::num_traits::Float;
 
 mod heatmap;
 mod pbr;
@@ -42,7 +43,7 @@ pub fn primary_ray_miss(
     #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
 ) {
-    if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
+    if world_ray_direction.dot(uniforms.sun_dir.into()) > uniforms.sun_radius.cos() {
         payload.colour = Vec3::splat(1.0);
     } else {
         payload.colour = SKY_COLOUR;
@@ -78,6 +79,19 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
             params.payload,
         )
     }
+}
+
+// https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
+fn linear_to_srgb_scalar(linear: f32) -> f32 {
+    if linear < 0.0031308 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn linear_to_srgb(linear: Vec3) -> Vec3 {
+    Vec3::new(linear_to_srgb_scalar(linear.x), linear_to_srgb_scalar(linear.y), linear_to_srgb_scalar(linear.z))
 }
 
 #[cfg(target_arch = "spirv")]
@@ -162,12 +176,9 @@ pub fn ray_generation(
         payload.colour
     };
 
-    let gamma = 2.2;
-
-    let gamma_corrected_colour = colour.powf(1.0 / gamma);
 
     unsafe {
-        image.write(launch_id_xy, gamma_corrected_colour.extend(1.0));
+        image.write(launch_id_xy, linear_to_srgb(colour).extend(1.0));
     }
 }
 
