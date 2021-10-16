@@ -110,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         AccelerationStructureLoader::name(),
         RayTracingPipelineLoader::name(),
         vk::KhrShaderClockFn::name(),
+        vk::KhrShaderNonSemanticInfoFn::name(),
     ]);
 
     let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()

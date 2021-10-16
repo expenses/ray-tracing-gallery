@@ -14,12 +14,12 @@ use spirv_std::macros::spirv;
 
 use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 
+use spirv_std::num_traits::Float;
 use spirv_std::{
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
     Image,
 };
-use spirv_std::num_traits::Float;
 
 mod heatmap;
 mod pbr;
@@ -91,7 +91,11 @@ fn linear_to_srgb_scalar(linear: f32) -> f32 {
 }
 
 fn linear_to_srgb(linear: Vec3) -> Vec3 {
-    Vec3::new(linear_to_srgb_scalar(linear.x), linear_to_srgb_scalar(linear.y), linear_to_srgb_scalar(linear.z))
+    Vec3::new(
+        linear_to_srgb_scalar(linear.x),
+        linear_to_srgb_scalar(linear.y),
+        linear_to_srgb_scalar(linear.z),
+    )
 }
 
 #[cfg(target_arch = "spirv")]
@@ -107,6 +111,16 @@ pub fn ray_generation(
     let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
 
     use spirv_std::arch::read_clock_khr;
+
+    if launch_id == IVec3::new(0, 0, 0) {
+        unsafe {
+            spirv_std::macros::printfln!(
+                "show_heatmap = %u, frame_index = %u",
+                uniforms.show_heatmap,
+                uniforms.frame_index
+            );
+        }
+    }
 
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
@@ -175,7 +189,6 @@ pub fn ray_generation(
     } else {
         payload.colour
     };
-
 
     unsafe {
         image.write(launch_id_xy, linear_to_srgb(colour).extend(1.0));
