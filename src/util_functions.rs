@@ -192,7 +192,6 @@ pub fn load_rust_shader_module_as_stage<'a>(
     device: &ash::Device,
 ) -> anyhow::Result<vk::PipelineShaderStageCreateInfoBuilder<'a>> {
     let filename = &format!("shaders/{}.spv", entry_point.name);
-    dbg!(filename);
 
     let module = load_shader_module(&std::fs::read(filename)?, device)?;
 
