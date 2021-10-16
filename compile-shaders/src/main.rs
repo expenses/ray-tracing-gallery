@@ -15,9 +15,7 @@ fn main() -> anyhow::Result<()> {
         Capability::ShaderClockKHR,
     ];
 
-    compile_shader("shaders/ray-tracing", extensions, capabilities)?;
-
-    //compile_shader("shaders/test-shader", extensions, capabilities)?;
+    compile_shader_multi("shaders/ray-tracing", extensions, capabilities)?;
 
     Ok(())
 }
@@ -42,6 +40,32 @@ fn compile_shader(
     let result = builder.build()?;
 
     std::fs::copy(result.module.unwrap_single(), &format!("{}.spv", path))?;
+
+    Ok(())
+}
+
+fn compile_shader_multi(
+    path: &str,
+    extensions: &[&str],
+    capabilities: &[Capability],
+) -> anyhow::Result<()> {
+    let mut builder = SpirvBuilder::new(path, "spirv-unknown-spv1.4")
+        .print_metadata(MetadataPrintout::None)
+        .multimodule(true);
+
+    for extension in extensions {
+        builder = builder.extension(*extension);
+    }
+
+    for capability in capabilities {
+        builder = builder.capability(*capability);
+    }
+
+    let result = builder.build()?;
+
+    for (name, path) in result.module.unwrap_multi() {
+        std::fs::copy(path, &format!("shaders/{}.spv", name))?;
+    }
 
     Ok(())
 }

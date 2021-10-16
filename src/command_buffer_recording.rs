@@ -105,7 +105,9 @@ impl PerFrameResources {
         device.cmd_push_constants(
             command_buffer,
             global.pipeline_layout,
-            vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            vk::ShaderStageFlags::RAYGEN_KHR
+                | vk::ShaderStageFlags::ANY_HIT_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             0,
             unsafe_bytes_of(&PushConstantBufferAddresses {
                 model_info: global.model_info_buffer.device_address(device),

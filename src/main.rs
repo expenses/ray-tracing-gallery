@@ -29,9 +29,9 @@ use util_structs::{
 };
 
 use util_functions::{
-    build_tlas, info_from_group, load_png_image_from_bytes, load_shader_module,
+    build_tlas, info_from_group, load_png_image_from_bytes, load_rust_shader_module_as_stage,
     load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
-    vulkan_debug_utils_callback, ShaderGroup,
+    vulkan_debug_utils_callback, ShaderEntryPoint, ShaderGroup,
 };
 
 use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice};
@@ -230,31 +230,38 @@ fn main() -> anyhow::Result<()> {
                 .set_layouts(&[general_dsl, per_frame_dsl])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(
-                        vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                        vk::ShaderStageFlags::RAYGEN_KHR
+                            | vk::ShaderStageFlags::ANY_HIT_KHR
+                            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                     )
                     .size(std::mem::size_of::<PushConstantBufferAddresses>() as u32)]),
             None,
         )
     }?;
 
-    let ray_tracing_module =
-        load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
+    let ray_generation = ShaderEntryPoint::new("ray_generation")?;
+    let primary_ray_miss = ShaderEntryPoint::new("primary_ray_miss")?;
+    let shadow_ray_miss = ShaderEntryPoint::new("shadow_ray_miss")?;
+    let closest_hit_portal = ShaderEntryPoint::new("closest_hit_portal")?;
 
     let shader_stages = [
         // Ray generation shader
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
-            .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
+        *load_rust_shader_module_as_stage(
+            &ray_generation,
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            &device,
+        )?,
         // Miss shaders
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
+        *load_rust_shader_module_as_stage(
+            &primary_ray_miss,
+            vk::ShaderStageFlags::MISS_KHR,
+            &device,
+        )?,
+        *load_rust_shader_module_as_stage(
+            &shadow_ray_miss,
+            vk::ShaderStageFlags::MISS_KHR,
+            &device,
+        )?,
         // Hit shaders
         load_shader_module_as_stage(
             &std::fs::read("shaders/any_hit_alpha_clip.spv")?,
@@ -271,10 +278,11 @@ fn main() -> anyhow::Result<()> {
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-            .name(CStr::from_bytes_with_nul(b"closest_hit_portal\0")?),
+        *load_rust_shader_module_as_stage(
+            &closest_hit_portal,
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
     ];
 
     let shader_groups = [
