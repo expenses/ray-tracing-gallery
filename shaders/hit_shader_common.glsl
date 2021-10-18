@@ -162,5 +162,4 @@ Vertex interpolate_triangle(Triangle triangle, vec3 barycentric_coords) {
     vertex.uv = interpolate(triangle.uvs, barycentric_coords);
 
     return vertex;
-
 }

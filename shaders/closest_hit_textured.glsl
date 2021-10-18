@@ -119,6 +119,43 @@ vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
     return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
 }
 
+// Uses the formula from www.thetenthplanet.de/archives/1180 but adapts for ray tracing
+mat3 compute_cotangent_frame(vec3 normal, Triangle triangle) {
+    // get edge vectors of the pixel triangle
+    vec3 delta_pos_1 = triangle.positions.b - triangle.positions.a;
+    vec3 delta_pos_2 = triangle.positions.c - triangle.positions.a;
+    vec2 delta_uv_1 = triangle.uvs.b - triangle.uvs.a;
+    vec2 delta_uv_2 = triangle.uvs.c - triangle.uvs.a;
+
+    // solve the linear system
+    vec3 delta_pos_2_perp = cross(delta_pos_2, normal);
+    vec3 delta_pos_1_perp = cross(normal, delta_pos_1);
+    vec3 T = delta_pos_2_perp * delta_uv_1.x + delta_pos_1_perp * delta_uv_2.x;
+    vec3 B = delta_pos_2_perp * delta_uv_1.y + delta_pos_1_perp * delta_uv_2.y;
+
+    // construct a scale-invariant frame
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return mat3(T * invmax, B * invmax, normal);
+}
+
+vec3 calculate_normal(Vertex interpolated, Triangle triangle, ModelInfo info, GeometryInfo geo_info) {
+    // Just rotate the vertex normal into world space if there is no normal map.
+    if (geo_info.normal_map_texture_index < 0) {
+        return rotate_normal_into_world_space(interpolated.normal);
+    }
+
+    vec3 map_normal = texture(textures[nonuniformEXT(geo_info.normal_map_texture_index)], interpolated.uv).rgb;
+
+    // Convert the map normal into a unit vector
+    map_normal = map_normal * 2.0 - vec3(1.0);
+
+    mat3 local_space_tbn_matrix = compute_cotangent_frame(interpolated.normal, triangle);
+
+    vec3 local_space_normal = local_space_tbn_matrix * normalize(map_normal);
+
+    return rotate_normal_into_world_space(local_space_normal);
+}
+
 float cast_shadow_ray(vec3 origin, vec3 direction) {
     float t_min = 0.001;
     float t_max = 10000.0;
@@ -168,7 +205,7 @@ void main() {
     MaterialData material_data = read_material_from_textures(geo_info, interpolated.uv);
 
     BrdfInputParams params;
-    params.normal = rotate_normal_into_world_space(interpolated.normal);
+    params.normal = calculate_normal(interpolated, triangle, info, geo_info);
     // Important!! This is the negative of the ray direction as it's the
     // direction of output light.
     params.object_to_view = -gl_WorldRayDirectionEXT;

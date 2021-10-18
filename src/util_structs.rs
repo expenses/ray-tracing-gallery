@@ -939,6 +939,7 @@ fn load_image_from_gltf_texture(
     texture: TextureOrBackup,
     buffer_blob: &[u8],
     name: &str,
+    format: vk::Format,
     params: &mut ModelLoaderParams,
 ) -> anyhow::Result<u32> {
     let texture = match texture {
@@ -975,7 +976,7 @@ fn load_image_from_gltf_texture(
     let image = load_png_image_from_bytes(
         image_bytes,
         name,
-        vk::Format::R8G8B8A8_SRGB,
+        format,
         params.command_buffer,
         params.allocator,
         params.buffers_to_cleanup,
@@ -1000,6 +1001,7 @@ fn load_images_from_material(
                 TextureOrBackup::new(pbr.base_color_texture(), pbr.base_color_factor()),
                 buffer_blob,
                 &format!("{} diffuse", name),
+                vk::Format::R8G8B8A8_SRGB,
                 params,
             )?,
             metallic_roughness_image_index: load_image_from_gltf_texture(
@@ -1009,6 +1011,7 @@ fn load_images_from_material(
                 ),
                 buffer_blob,
                 &format!("{} metallic roughness", name),
+                vk::Format::R8G8B8A8_SRGB,
                 params,
             )?,
             normal_map_image_index: match material.normal_texture() {
@@ -1016,6 +1019,7 @@ fn load_images_from_material(
                     TextureOrBackup::Texture(normal_texture.texture()),
                     buffer_blob,
                     &format!("{} normal map", name),
+                    vk::Format::R8G8B8A8_UNORM,
                     params,
                 )? as i32,
                 None => -1,
