@@ -6,6 +6,7 @@ fn main() -> anyhow::Result<()> {
         "SPV_EXT_descriptor_indexing",
         "SPV_KHR_shader_clock",
         "SPV_KHR_physical_storage_buffer",
+        "SPV_KHR_non_semantic_info",
     ];
 
     let capabilities = &[
@@ -17,7 +18,7 @@ fn main() -> anyhow::Result<()> {
         Capability::PhysicalStorageBufferAddresses,
     ];
 
-    compile_shader("shaders/ray-tracing", extensions, capabilities)?;
+    compile_shader_multi("shaders/ray-tracing", extensions, capabilities)?;
 
     Ok(())
 }
@@ -46,7 +47,7 @@ fn compile_shader(
     Ok(())
 }
 
-fn compile_shader_debug(
+fn compile_shader_multi(
     path: &str,
     extensions: &[&str],
     capabilities: &[Capability],
@@ -66,7 +67,7 @@ fn compile_shader_debug(
     let result = builder.build()?;
 
     for (name, path) in result.module.unwrap_multi() {
-        std::fs::copy(path, &format!("shaders/{}_debug.spv", name))?;
+        std::fs::copy(path, &format!("shaders/{}.spv", name))?;
     }
 
     Ok(())

@@ -11,7 +11,6 @@ struct BaseParams {
 	// Also, annoying, sometimes called 'a'
 	float roughness;
 	uint ggx_lut_texture_index;
-	vec3 ambient_light;
 	float perceptual_roughness;
 };
 
@@ -169,8 +168,6 @@ struct BrdfInputParams {
 	float metallic;
 	float perceptual_dielectric_reflectance;
 	vec3 light_intensity;
-	// Also called the irradience.
-	vec3 ambient_light;
 	uint ggx_lut_texture_index;
 };
 
@@ -182,7 +179,6 @@ vec3 brdf(BrdfInputParams input_params) {
 	params.halfway = normalize(input_params.object_to_view + input_params.light);
 	params.roughness = input_params.perceptual_roughness * input_params.perceptual_roughness;
 	params.ggx_lut_texture_index = input_params.ggx_lut_texture_index;
-	params.ambient_light = input_params.ambient_light;
 	params.perceptual_roughness = input_params.perceptual_roughness;
 
 	DotParams dot_params = calculate_dot_params(params);
@@ -208,11 +204,8 @@ vec3 brdf(BrdfInputParams input_params) {
 
 	vec3 combined_factor = diffuse_brdf_factor + specular_brdf_factor;
 
-	// This is simple and not at all physically accurate but it works for now.
-	vec3 ambient_lighting = input_params.ambient_light * input_params.base_colour;
-
 	// For normal map debugging.
 	//return input_params.normal * 0.5 + 0.5;
 
-	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor + ambient_lighting;
+	return input_params.light_intensity * dot_params.normal_dot_light * combined_factor;
 }

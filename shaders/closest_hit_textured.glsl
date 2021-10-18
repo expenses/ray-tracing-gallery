@@ -155,7 +155,7 @@ void main() {
     float shadow_lighting_sum = 0.0;
     vec3 shadow_origin = get_shadow_terminator_fix_shadow_origin(triangle, interpolated.pos, barycentric_coords);
 
-    for (uint i = 0; i < 4; i++) {
+    for (uint i = 0; i < 2; i++) {
         // Important! If we have this function take the uniforms struct as input, it SEGFAULTs
         // `device.create_shader_module`. Fantastic.
         vec2 blue_noise = animated_blue_noise(sample_blue_noise(uniforms.blue_noise_texture_index, i), uniforms.frame_index);
@@ -163,7 +163,7 @@ void main() {
         shadow_lighting_sum += cast_shadow_ray(shadow_origin, sun_dir);
     }
 
-    float sun_factor = shadow_lighting_sum / 4.0;
+    float sun_factor = shadow_lighting_sum / 2.0;
 
     MaterialData material_data = read_material_from_textures(geo_info, interpolated.uv);
 
@@ -179,8 +179,11 @@ void main() {
     // Corresponds to 4% reflectance on non-metallic (dielectric) materials (0.16 * 0.5 * 0.5).
     params.perceptual_dielectric_reflectance = 0.5;
     params.light_intensity = vec3(1.0) * sun_factor;
-    params.ambient_light = vec3(0.1);
     params.ggx_lut_texture_index = uniforms.ggx_lut_texture_index;
 
-    primary_payload.colour = brdf(params);
+    // This is simple and not at all physically accurate but it works for now.
+    vec3 ambient_light = vec3(0.1);
+    vec3 ambient_lighting = ambient_light * material_data.colour;
+
+    primary_payload.colour = brdf(params) + ambient_lighting;
 }

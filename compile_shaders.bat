@@ -2,6 +2,6 @@
 :: rustup +nightly-2021-09-29-x86_64-pc-windows-msvc component add rust-src rustc-dev llvm-tools-preview
 cargo +nightly-2021-09-29-x86_64-pc-windows-msvc run -p compile-shaders --release
 
-glslc --target-spv=spv1.4 -fshader-stage=rchit shaders/closest_hit_textured.glsl -o shaders/closest_hit_textured.spv
+glslc --target-spv=spv1.4 -fshader-stage=rchit shaders/closest_hit_textured.glsl -o shaders/closest_hit_textured_glsl.spv
 
-spirv-opt shaders/closest_hit_textured.spv -O -o shaders/closest_hit_textured.spv
+spirv-opt shaders/closest_hit_textured_glsl.spv -O -o shaders/closest_hit_textured_glsl.spv

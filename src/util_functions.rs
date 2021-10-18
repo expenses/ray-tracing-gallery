@@ -172,6 +172,35 @@ pub fn load_shader_module_as_stage(
         .name(CStr::from_bytes_with_nul(b"main\0")?))
 }
 
+pub struct ShaderEntryPoint {
+    name: &'static str,
+    c_string: std::ffi::CString,
+}
+
+impl ShaderEntryPoint {
+    pub fn new(name: &'static str) -> anyhow::Result<Self> {
+        Ok(Self {
+            name,
+            c_string: std::ffi::CString::new(name)?,
+        })
+    }
+}
+
+pub fn load_rust_shader_module_as_stage<'a>(
+    entry_point: &'a ShaderEntryPoint,
+    stage: vk::ShaderStageFlags,
+    device: &ash::Device,
+) -> anyhow::Result<vk::PipelineShaderStageCreateInfoBuilder<'a>> {
+    let filename = &format!("shaders/{}.spv", entry_point.name);
+
+    let module = load_shader_module(&std::fs::read(filename)?, device)?;
+
+    Ok(vk::PipelineShaderStageCreateInfo::builder()
+        .module(module)
+        .stage(stage)
+        .name(&entry_point.c_string))
+}
+
 pub trait ImagePixelFormat: bytemuck::Pod {
     const FORMAT: vk::Format;
 }

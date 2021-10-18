@@ -14,6 +14,7 @@ use spirv_std::macros::spirv;
 
 use spirv_std::glam::{const_vec3, IVec3, Mat3, Vec2, Vec3, Vec4};
 
+use spirv_std::num_traits::Float;
 use spirv_std::{
     arch::ignore_intersection,
     image::SampledImage,
@@ -47,7 +48,7 @@ pub fn primary_ray_miss(
 ) {
     let uniforms = unsafe { &mut *convert_u_to_ptr::<Uniforms>(buffer_addresses.uniforms) };
 
-    if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
+    if world_ray_direction.dot(uniforms.sun_dir.into()) > uniforms.sun_radius.cos() {
         payload.colour = Vec3::splat(1.0);
     } else {
         payload.colour = SKY_COLOUR;
@@ -85,6 +86,23 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
     }
 }
 
+// https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
+fn linear_to_srgb_scalar(linear: f32) -> f32 {
+    if linear < 0.0031308 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn linear_to_srgb(linear: Vec3) -> Vec3 {
+    Vec3::new(
+        linear_to_srgb_scalar(linear.x),
+        linear_to_srgb_scalar(linear.y),
+        linear_to_srgb_scalar(linear.z),
+    )
+}
+
 #[cfg(target_arch = "spirv")]
 #[spirv(ray_generation)]
 pub fn ray_generation(
@@ -98,6 +116,18 @@ pub fn ray_generation(
 
     let uniforms = unsafe { &mut *convert_u_to_ptr::<Uniforms>(buffer_addresses.uniforms) };
     let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
+
+    /*
+    if launch_id == IVec3::new(0, 0, 0) {
+        unsafe {
+            spirv_std::macros::debug_printfln!(
+                "show_heatmap = %u, frame_index = %u",
+                uniforms.show_heatmap,
+                uniforms.frame_index
+            );
+        }
+    }
+    */
 
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
@@ -167,12 +197,8 @@ pub fn ray_generation(
         payload.colour
     };
 
-    let gamma = 2.2;
-
-    let gamma_corrected_colour = colour.powf(1.0 / gamma);
-
     unsafe {
-        image.write(launch_id_xy, gamma_corrected_colour.extend(1.0));
+        image.write(launch_id_xy, linear_to_srgb(colour).extend(1.0));
     }
 }
 
