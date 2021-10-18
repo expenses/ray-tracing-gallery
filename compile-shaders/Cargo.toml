@@ -7,4 +7,4 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.44"
-spirv-builder = { git = "https://github.com/expenses/rust-gpu.git", branch = "all-changes", default-features = false, features = ["use-installed-tools"] }
+spirv-builder = { git = "https://github.com/expenses/rust-gpu", branch = "printfln-macro", default-features = false, features = ["use-installed-tools"] }

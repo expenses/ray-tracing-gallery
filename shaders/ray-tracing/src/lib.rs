@@ -14,20 +14,21 @@ use spirv_std::macros::spirv;
 
 use spirv_std::glam::{const_vec3, IVec3, Vec2, Vec3, Vec4};
 
+use spirv_std::num_traits::Float;
 use spirv_std::{
-    arch::read_clock_khr,
-    image::SampledImage,
     memory::Scope,
     ray_tracing::{AccelerationStructure, RayFlags},
-    Image, RuntimeArray,
+    Image,
 };
 
 mod heatmap;
+mod pbr;
 mod structs;
 
 use core::ops::{Add, Mul};
 use heatmap::heatmap_temperature;
-use structs::{PrimaryRayPayload, ShadowRayPayload, Uniforms, Vertex};
+use shared_structs::{PushConstantBufferAddresses, Uniforms};
+use structs::{PrimaryRayPayload, ShadowRayPayload, Vertex};
 
 #[spirv(miss)]
 pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPayload) {
@@ -39,10 +40,10 @@ const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.05]);
 #[spirv(miss)]
 pub fn primary_ray_miss(
     #[spirv(incoming_ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
+    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(world_ray_direction)] world_ray_direction: Vec3,
 ) {
-    if world_ray_direction.dot(uniforms.sun_dir) > 0.998 {
+    if world_ray_direction.dot(uniforms.sun_dir.into()) > uniforms.sun_radius.cos() {
         payload.colour = Vec3::splat(1.0);
     } else {
         payload.colour = SKY_COLOUR;
@@ -80,15 +81,49 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
     }
 }
 
+// https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
+fn linear_to_srgb_scalar(linear: f32) -> f32 {
+    if linear < 0.0031308 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn linear_to_srgb(linear: Vec3) -> Vec3 {
+    Vec3::new(
+        linear_to_srgb_scalar(linear.x),
+        linear_to_srgb_scalar(linear.y),
+        linear_to_srgb_scalar(linear.z),
+    )
+}
+
+#[cfg(target_arch = "spirv")]
 #[spirv(ray_generation)]
 pub fn ray_generation(
     #[spirv(ray_payload)] payload: &mut PrimaryRayPayload,
-    #[spirv(descriptor_set = 1, binding = 0)] tlas: &AccelerationStructure,
-    #[spirv(descriptor_set = 1, binding = 1)] image: &Image!(2D, format = rgba8, sampled = false),
-    #[spirv(descriptor_set = 1, binding = 2, uniform)] uniforms: &Uniforms,
+    #[spirv(descriptor_set = 1, binding = 0)] image: &Image!(2D, format = rgba8, sampled = false),
+    #[spirv(descriptor_set = 1, binding = 1, uniform)] uniforms: &Uniforms,
     #[spirv(launch_id)] launch_id: IVec3,
     #[spirv(launch_size)] launch_size: IVec3,
+    #[spirv(push_constant)] buffer_addresses: &PushConstantBufferAddresses,
 ) {
+    let tlas = unsafe { AccelerationStructure::from_u64(buffer_addresses.acceleration_structure) };
+
+    use spirv_std::arch::read_clock_khr;
+
+    /*
+    if launch_id == IVec3::new(0, 0, 0) {
+        unsafe {
+            spirv_std::macros::debug_printfln!(
+                "show_heatmap = %u, frame_index = %u",
+                uniforms.show_heatmap,
+                uniforms.frame_index
+            );
+        }
+    }
+    */
+
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
     } else {
@@ -98,9 +133,9 @@ pub fn ray_generation(
     let launch_id_xy = launch_id.truncate();
     let launch_size_xy = launch_size.truncate();
 
-    let pixel_center = launch_id_xy.as_f32() + 0.5;
+    let pixel_center = launch_id_xy.as_vec2() + 0.5;
 
-    let texture_coordinates = pixel_center / launch_size_xy.as_f32();
+    let texture_coordinates = pixel_center / launch_size_xy.as_vec2();
 
     let render_coordinates = texture_coordinates * 2.0 - 1.0;
 
@@ -121,7 +156,7 @@ pub fn ray_generation(
         };
 
         trace_ray_explicit(TraceRayExplicitParams {
-            tlas,
+            tlas: &tlas,
             flags: RayFlags::empty(),
             origin,
             direction,
@@ -157,12 +192,8 @@ pub fn ray_generation(
         payload.colour
     };
 
-    let gamma = 2.2;
-
-    let gamma_corrected_colour = colour.powf(1.0 / gamma);
-
     unsafe {
-        image.write(launch_id_xy, gamma_corrected_colour.extend(1.0));
+        image.write(launch_id_xy, linear_to_srgb(colour).extend(1.0));
     }
 }
 

@@ -29,14 +29,13 @@ use util_structs::{
 };
 
 use util_functions::{
-    build_tlas, info_from_group, load_png_image_from_bytes, load_shader_module,
+    build_tlas, info_from_group, load_png_image_from_bytes, load_rust_shader_module_as_stage,
     load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
-    vulkan_debug_utils_callback, ShaderGroup,
+    vulkan_debug_utils_callback, ShaderEntryPoint, ShaderGroup,
 };
 
-use gpu_structs::{
-    unsafe_bytes_of, unsafe_cast_slice, PushConstantBufferAddresses, RayTracingUniforms,
-};
+use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice};
+use shared_structs::{PushConstantBufferAddresses, Uniforms};
 
 use command_buffer_recording::{GlobalResources, PerFrameResources, ShaderBindingTables};
 
@@ -111,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         AccelerationStructureLoader::name(),
         RayTracingPipelineLoader::name(),
         vk::KhrShaderClockFn::name(),
+        vk::KhrShaderNonSemanticInfoFn::name(),
     ]);
 
     let mut debug_messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
@@ -164,6 +164,7 @@ fn main() -> anyhow::Result<()> {
         let mut vk_12_features = vk::PhysicalDeviceVulkan12Features::builder()
             .shader_int8(true)
             .buffer_device_address(true)
+            .storage_buffer8_bit_access(true)
             .runtime_descriptor_array(true)
             .shader_sampled_image_array_non_uniform_indexing(true);
 
@@ -230,31 +231,38 @@ fn main() -> anyhow::Result<()> {
                 .set_layouts(&[general_dsl, per_frame_dsl])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(
-                        vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                        vk::ShaderStageFlags::RAYGEN_KHR
+                            | vk::ShaderStageFlags::ANY_HIT_KHR
+                            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                     )
                     .size(std::mem::size_of::<PushConstantBufferAddresses>() as u32)]),
             None,
         )
     }?;
 
-    let ray_tracing_module =
-        load_shader_module(include_bytes!("../shaders/ray-tracing.spv"), &device)?;
+    let ray_generation = ShaderEntryPoint::new("ray_generation")?;
+    let primary_ray_miss = ShaderEntryPoint::new("primary_ray_miss")?;
+    let shadow_ray_miss = ShaderEntryPoint::new("shadow_ray_miss")?;
+    let closest_hit_portal = ShaderEntryPoint::new("closest_hit_portal")?;
 
     let shader_stages = [
         // Ray generation shader
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
-            .name(CStr::from_bytes_with_nul(b"ray_generation\0")?),
+        *load_rust_shader_module_as_stage(
+            &ray_generation,
+            vk::ShaderStageFlags::RAYGEN_KHR,
+            &device,
+        )?,
         // Miss shaders
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"primary_ray_miss\0")?),
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::MISS_KHR)
-            .name(CStr::from_bytes_with_nul(b"shadow_ray_miss\0")?),
+        *load_rust_shader_module_as_stage(
+            &primary_ray_miss,
+            vk::ShaderStageFlags::MISS_KHR,
+            &device,
+        )?,
+        *load_rust_shader_module_as_stage(
+            &shadow_ray_miss,
+            vk::ShaderStageFlags::MISS_KHR,
+            &device,
+        )?,
         // Hit shaders
         load_shader_module_as_stage(
             &std::fs::read("shaders/any_hit_alpha_clip.spv")?,
@@ -271,10 +279,11 @@ fn main() -> anyhow::Result<()> {
             vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             &device,
         )?,
-        *vk::PipelineShaderStageCreateInfo::builder()
-            .module(ray_tracing_module)
-            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-            .name(CStr::from_bytes_with_nul(b"closest_hit_portal\0")?),
+        *load_rust_shader_module_as_stage(
+            &closest_hit_portal,
+            vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            &device,
+        )?,
     ];
 
     let shader_groups = [
@@ -408,6 +417,7 @@ fn main() -> anyhow::Result<()> {
         let green_texture = load_png_image_from_bytes(
             include_bytes!("../resources/green.png"),
             "green texture",
+            vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
             &mut allocator,
             &mut buffers_to_cleanup,
@@ -418,12 +428,35 @@ fn main() -> anyhow::Result<()> {
         let pink_texture = load_png_image_from_bytes(
             include_bytes!("../resources/pink.png"),
             "pink texture",
+            vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
             &mut allocator,
             &mut buffers_to_cleanup,
         )?;
 
         image_manager.push_image(pink_texture, false);
+
+        let blue_noise_texture = load_png_image_from_bytes(
+            include_bytes!("../resources/blue_noise_64x64.png"),
+            "blue noise texture",
+            vk::Format::R8G8B8A8_UNORM,
+            init_command_buffer.buffer(),
+            &mut allocator,
+            &mut buffers_to_cleanup,
+        )?;
+
+        image_manager.push_image(blue_noise_texture, false);
+
+        let ggx_lut_image = load_png_image_from_bytes(
+            include_bytes!("../resources/flipped_ggx_lut.png"),
+            "ggx lut texture",
+            vk::Format::R8G8B8A8_UNORM,
+            init_command_buffer.buffer(),
+            &mut allocator,
+            &mut buffers_to_cleanup,
+        )?;
+
+        image_manager.push_image(ggx_lut_image, true);
     };
 
     // Load model buffers and blases
@@ -457,7 +490,7 @@ fn main() -> anyhow::Result<()> {
     image_manager.fill_with_dummy_images_up_to(MAX_BOUND_IMAGES as usize);
 
     let model_info_buffer = Buffer::new(
-        bytemuck::cast_slice(&model_info),
+        unsafe { unsafe_cast_slice(&model_info) },
         "model info",
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         &mut allocator,
@@ -552,18 +585,22 @@ fn main() -> anyhow::Result<()> {
         yaw: 1.0,
     };
 
-    let mut uniforms = RayTracingUniforms {
-        sun_dir: sun.as_normal(),
-        //sun_radius: 0.1,
-        view_inverse: Mat4::identity(),
-        proj_inverse: ultraviolet::projection::perspective_infinite_z_vk(
-            59.0_f32.to_radians(),
-            extent.width as f32 / extent.height as f32,
-            0.1,
-        )
-        .inversed(),
+    let mut uniforms = Uniforms {
+        sun_dir: <[f32; 3]>::from(sun.as_normal()).into(),
+        sun_radius: 0.05,
+        view_inverse: glam::Mat4::IDENTITY,
+        proj_inverse: mat_to_glam(
+            ultraviolet::projection::perspective_reversed_infinite_z_vk(
+                59.0_f32.to_radians(),
+                extent.width as f32 / extent.height as f32,
+                0.1,
+            )
+            .inversed(),
+        ),
         show_heatmap: false,
-        _padding: 0,
+        blue_noise_texture_index: 2,
+        ggx_lut_texture_index: 3,
+        frame_index: 0,
     };
 
     let mut multibuffering_frames = unsafe {
@@ -708,12 +745,14 @@ fn main() -> anyhow::Result<()> {
                             extent.height as f64 / 2.0,
                         );
 
-                        uniforms.proj_inverse = ultraviolet::projection::perspective_infinite_z_vk(
-                            59.0_f32.to_radians(),
-                            extent.width as f32 / extent.height as f32,
-                            0.1,
-                        )
-                        .inversed();
+                        uniforms.proj_inverse = mat_to_glam(
+                            ultraviolet::projection::perspective_reversed_infinite_z_vk(
+                                59.0_f32.to_radians(),
+                                extent.width as f32 / extent.height as f32,
+                                0.1,
+                            )
+                            .inversed(),
+                        );
 
                         unsafe {
                             device.queue_wait_idle(queue)?;
@@ -906,8 +945,9 @@ fn main() -> anyhow::Result<()> {
                             let swapchain_image = swapchain.images[swapchain_image_index as usize];
                             let resources = &mut frame.resources;
 
-                            uniforms.view_inverse = camera.as_view_matrix().inversed();
-                            uniforms.sun_dir = sun.as_normal();
+                            uniforms.view_inverse = mat_to_glam(camera.as_view_matrix().inversed());
+                            uniforms.sun_dir = <[f32; 3]>::from(sun.as_normal()).into();
+                            uniforms.frame_index += 1;
 
                             resources
                                 .ray_tracing_uniforms
@@ -1028,16 +1068,11 @@ pub fn create_descriptor_set_layouts_and_pool(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
                 *vk::DescriptorSetLayoutBinding::builder()
                     .binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
                 *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(2)
+                    .binding(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR),
@@ -1199,4 +1234,10 @@ impl FirstPersonCamera {
             Vec4::new(-x_axis.dot(eye), -y_axis.dot(eye), -z_axis.dot(eye), 1.0),
         )
     }
+}
+
+fn mat_to_glam(mat: Mat4) -> glam::Mat4 {
+    let mut glam = glam::Mat4::default();
+    *glam.as_mut() = *mat.as_array();
+    glam
 }

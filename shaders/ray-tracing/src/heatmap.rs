@@ -1,3 +1,4 @@
+use spirv_std::arch::{signed_max, signed_min};
 use spirv_std::glam::Vec3;
 use spirv_std::num_traits::Float;
 
@@ -19,8 +20,8 @@ pub fn heatmap_temperature(heat: f32) -> Vec3 {
     let heat_index_int = heat as i32;
 
     let cur = heat_index_int as usize;
-    let prv = branchless_max(heat_index_int - 1, 0) as usize;
-    let nxt = branchless_min(heat_index_int + 1, 9) as usize;
+    let prv = signed_max(heat_index_int - 1, 0) as usize;
+    let nxt = signed_min(heat_index_int + 1, 9) as usize;
 
     let heat_floor = heat.floor();
     let heat_ceil = heat.ceil();
@@ -34,14 +35,6 @@ pub fn heatmap_temperature(heat: f32) -> Vec3 {
 
     let result = wc * colours[cur] + wp * colours[prv] + wn * colours[nxt];
     result.clamp(Vec3::splat(0.0), Vec3::splat(1.0))
-}
-
-fn branchless_max(a: i32, b: i32) -> i32 {
-    a + (a < b) as i32 * (b - a)
-}
-
-fn branchless_min(a: i32, b: i32) -> i32 {
-    a + (a > b) as i32 * (b - a)
 }
 
 fn saturate(value: f32) -> f32 {

@@ -2,7 +2,7 @@
 
 A work-in-progress
 
-![](screenshots/reflections.png)
+![](screenshots/soft-shadows-and-ambient-lighting.png)
 
 ## Features
 
@@ -11,12 +11,13 @@ A work-in-progress
 * Double-buffering
 * A controllable camera and directional light source
 * Implements a fix for shadow terminator problems from [Ray Tracing Gems II], Chapter 4.
-* Most shaders([*](https://github.com/EmbarkStudios/rust-gpu/issues/754)) are written using [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)!
+* Most shaders([\*](https://github.com/EmbarkStudios/rust-gpu/issues/754)) are written using [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)!
+* Blue noise soft shadows from [Ray Tracing Gems II], Chapter 24.
 
 ## Todo
 
-* Soft shadows ([Ray Tracing Gems II], Chapter 24) and a shadow denoiser pass
 * Ray traced ambient occlusion
+* Shadow denoising
 
 ## Acknowledgements and sources
 
@@ -24,6 +25,8 @@ A work-in-progress
 * [Sascha Willems'](https://github.com/SaschaWillems) [Vulkan examples](https://github.com/SaschaWillems/Vulkan/)
 * [evopen](https://github.com/evopen)/[silly-cat-engine](https://github.com/evopen/silly-cat-engine) for some help with understanding the `vk::AccelerationStructureInstanceKHR` struct and various other rust-specific details.
 * [Lain model by woopoodle on Sketchfab](https://sketchfab.com/3d-models/lain-bf255be16da34df08d48abb5443a6706)
+* Blue noise texture from https://momentsingraphics.de/BlueNoise.html.
+* GGX LUT texture taken https://github.com/KhronosGroup/glTF-Sample-Viewer/blob/master/assets/images/lut_ggx.png and flipped on the V axis for Vulkan.
 * [Yet another blog explaining Vulkan synchronization](https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/) - helped me a lot to fully understand pipeline barriers.
 * [Vulkan Guide - Double Buffering](https://vkguide.dev/docs/chapter-4/double_buffering/)
 * [Ray Tracing Gems II], Chapter 16, Page 239. for clarifying how in-place Acceleration Structures work.

@@ -582,9 +582,9 @@ checksum = "f0a01e0497841a3b2db4f8afa483cce65f7e96a3498bd6c541734792aeac8fe7"
 
 [[package]]
 name = "glam"
-version = "0.17.3"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
+checksum = "525a3e490ba77b8e326fb67d4b44b4bd2f920f44d4cc73ccec50adc68e3bee34"
 dependencies = [
  "num-traits",
 ]
@@ -1264,11 +1264,13 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "glam",
  "gltf",
  "gpu-allocator",
  "image",
  "log",
  "rand",
+ "shared-structs",
  "simplelog",
  "structopt",
  "ultraviolet",
@@ -1279,6 +1281,7 @@ dependencies = [
 name = "ray-tracing-shaders"
 version = "0.1.0"
 dependencies = [
+ "shared-structs",
  "spirv-std",
 ]
 
@@ -1336,7 +1339,7 @@ checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/expenses/rust-gpu?branch=printfln-macro#0f0d13d40a7f0d71f175b125935f6036fa99fd39"
 dependencies = [
  "ar",
  "bimap",
@@ -1470,6 +1473,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared-structs"
+version = "0.1.0"
+dependencies = [
+ "glam",
+]
+
+[[package]]
 name = "simplelog"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1518,7 +1528,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/expenses/rust-gpu?branch=printfln-macro#0f0d13d40a7f0d71f175b125935f6036fa99fd39"
 dependencies = [
  "memchr",
  "raw-string",
@@ -1530,7 +1540,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/expenses/rust-gpu?branch=printfln-macro#0f0d13d40a7f0d71f175b125935f6036fa99fd39"
 dependencies = [
  "bitflags",
  "glam",
@@ -1542,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/expenses/rust-gpu?branch=printfln-macro#0f0d13d40a7f0d71f175b125935f6036fa99fd39"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1574,7 +1584,7 @@ dependencies = [
 [[package]]
 name = "spirv-types"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/expenses/rust-gpu?branch=all-changes#90e0bd653d3b72d0e14dc05cd98a7eb7146d369e"
+source = "git+https://github.com/expenses/rust-gpu?branch=printfln-macro#0f0d13d40a7f0d71f175b125935f6036fa99fd39"
 
 [[package]]
 name = "strsim"
@@ -1644,13 +1654,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dfed899f0eb03f32ee8c6a0aabdb8a7949659e3466561fc0adf54e26d88c5f4"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "test-shader"
-version = "0.1.0"
-dependencies = [
- "spirv-std",
 ]
 
 [[package]]

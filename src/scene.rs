@@ -1,8 +1,9 @@
 use crate::command_buffer_recording::PerFrameResources;
-use crate::gpu_structs::{transpose_matrix_for_instance, AccelerationStructureInstance, ModelInfo};
+use crate::gpu_structs::{transpose_matrix_for_instance, AccelerationStructureInstance};
 use crate::util_structs::{Allocator, Buffer, ImageManager, Model, ScratchBuffer};
 use crate::HitShader;
 use ash::vk;
+use shared_structs::ModelInfo;
 use ultraviolet::{Mat4, Vec3};
 
 // A scene holds both the model buffers and blases, as well as information
@@ -120,7 +121,13 @@ impl DefaultScene {
                 HitShader::Portal,
                 true,
             ),
-            // fence model??
+            AccelerationStructureInstance::new(
+                Mat4::from_translation(Vec3::new(2.0, 0.0, 2.0)),
+                &scene.fence_model,
+                &allocator.device,
+                HitShader::Textured,
+                true,
+            ),
         ];
 
         {

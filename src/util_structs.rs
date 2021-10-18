@@ -8,11 +8,12 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDes
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use crate::gpu_structs::{GeometryImages, GeometryInfo, ModelInfo};
+use crate::gpu_structs::unsafe_cast_slice;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
     load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
+use shared_structs::{GeometryImages, GeometryInfo, ModelInfo};
 use ultraviolet::{Vec2, Vec3, Vec4};
 
 // A list of C strings and their associated pointers
@@ -939,6 +940,7 @@ fn load_image_from_gltf_texture(
     texture: TextureOrBackup,
     buffer_blob: &[u8],
     name: &str,
+    format: vk::Format,
     params: &mut ModelLoaderParams,
 ) -> anyhow::Result<u32> {
     let texture = match texture {
@@ -975,6 +977,7 @@ fn load_image_from_gltf_texture(
     let image = load_png_image_from_bytes(
         image_bytes,
         name,
+        format,
         params.command_buffer,
         params.allocator,
         params.buffers_to_cleanup,
@@ -983,7 +986,7 @@ fn load_image_from_gltf_texture(
     Ok(params.image_manager.push_image(image, linear_filtering))
 }
 
-fn load_image_from_material(
+fn load_images_from_material(
     material: &gltf::Material,
     buffer_blob: &[u8],
     name: &str,
@@ -999,6 +1002,7 @@ fn load_image_from_material(
                 TextureOrBackup::new(pbr.base_color_texture(), pbr.base_color_factor()),
                 buffer_blob,
                 &format!("{} diffuse", name),
+                vk::Format::R8G8B8A8_SRGB,
                 params,
             )?,
             metallic_roughness_image_index: load_image_from_gltf_texture(
@@ -1008,6 +1012,7 @@ fn load_image_from_material(
                 ),
                 buffer_blob,
                 &format!("{} metallic roughness", name),
+                vk::Format::R8G8B8A8_SRGB,
                 params,
             )?,
             normal_map_image_index: match material.normal_texture() {
@@ -1015,6 +1020,7 @@ fn load_image_from_material(
                     TextureOrBackup::Texture(normal_texture.texture()),
                     buffer_blob,
                     &format!("{} normal map", name),
+                    vk::Format::R8G8B8A8_UNORM,
                     params,
                 )? as i32,
                 None => -1,
@@ -1079,7 +1085,7 @@ impl Model {
         // then we need to have two different images in the descriptor set, with the same image view but different samplers.
         // This requires `ImageManager` to be written slightly differently.
         for (i, material) in gltf.materials().enumerate() {
-            let model_geometry = load_image_from_material(
+            let model_geometry = load_images_from_material(
                 &material,
                 buffer_blob,
                 &format!("{} image {}", name, i),
@@ -1142,7 +1148,6 @@ impl Model {
                 }
             }
         }
-        let model_id = model_info.len() as u32;
 
         let model = Self::new(
             &arrays,
@@ -1150,7 +1155,7 @@ impl Model {
             params.allocator,
             params.command_buffer,
             scratch_buffer,
-            model_id,
+            model_info.len() as u32,
         )?;
 
         model_info.push(ModelInfo {
@@ -1236,7 +1241,7 @@ impl Model {
                 allocator,
             )?,
             geometry_info_buffer: Buffer::new(
-                bytemuck::cast_slice(&geometry_info),
+                unsafe { unsafe_cast_slice(&geometry_info) },
                 &format!("{} geometry info buffer", name),
                 other_buffers_flags,
                 allocator,

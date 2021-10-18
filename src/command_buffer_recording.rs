@@ -1,4 +1,4 @@
-use crate::gpu_structs::PushConstantBufferAddresses;
+use crate::gpu_structs::unsafe_bytes_of;
 use crate::util_functions::{
     cmd_pipeline_image_memory_barrier_explicit, PipelineImageMemoryBarrierParams,
 };
@@ -6,6 +6,7 @@ use crate::util_structs::{
     AccelerationStructure, Allocator, Buffer, Device, Image, ScratchBuffer, ShaderBindingTable,
 };
 use ash::vk;
+use shared_structs::PushConstantBufferAddresses;
 
 pub struct ShaderBindingTables {
     pub raygen: ShaderBindingTable,
@@ -60,32 +61,15 @@ impl PerFrameResources {
         let storage_image_info = &[self.storage_image.descriptor_image_info()];
         let uniform_buffer_info = &[self.ray_tracing_uniforms.descriptor_buffer_info()];
 
-        let structures = &[self.tlas.acceleration_structure];
-
-        let mut write_acceleration_structures =
-            vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-                .acceleration_structures(structures);
-
         let writes = &[
-            {
-                let mut write_as = *vk::WriteDescriptorSet::builder()
-                    .dst_set(self.ray_tracing_ds)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .push_next(&mut write_acceleration_structures);
-
-                write_as.descriptor_count = 1;
-
-                write_as
-            },
             *vk::WriteDescriptorSet::builder()
                 .dst_set(self.ray_tracing_ds)
-                .dst_binding(1)
+                .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(storage_image_info),
             *vk::WriteDescriptorSet::builder()
                 .dst_set(self.ray_tracing_ds)
-                .dst_binding(2)
+                .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(uniform_buffer_info),
         ];
@@ -121,9 +105,11 @@ impl PerFrameResources {
         device.cmd_push_constants(
             command_buffer,
             global.pipeline_layout,
-            vk::ShaderStageFlags::ANY_HIT_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            vk::ShaderStageFlags::RAYGEN_KHR
+                | vk::ShaderStageFlags::ANY_HIT_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
             0,
-            bytemuck::bytes_of(&PushConstantBufferAddresses {
+            unsafe_bytes_of(&PushConstantBufferAddresses {
                 model_info: global.model_info_buffer.device_address(device),
                 uniforms: self.ray_tracing_uniforms.device_address(device),
                 acceleration_structure: self.tlas.buffer.device_address(device),
