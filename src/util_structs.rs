@@ -14,7 +14,7 @@ use crate::util_functions::{
     load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
 };
 use shared_structs::{GeometryImages, GeometryInfo, ModelInfo};
-use ultraviolet::{Vec2, Vec3, Vec4};
+use ultraviolet::{Vec2, Vec3};
 
 // A list of C strings and their associated pointers
 pub struct CStrList<'a> {
@@ -912,7 +912,6 @@ struct ModelArrays {
     normals: Vec<Vec3>,
     uvs: Vec<Vec2>,
     geometries: Vec<ModelGeometry>,
-    tangents: Option<Vec<Vec4>>,
 }
 
 #[derive(Debug)]
@@ -1048,7 +1047,6 @@ pub struct Model {
     uv_buffer: Buffer,
     geometry_info_buffer: Buffer,
     index_buffers: Vec<Buffer>,
-    tangent_buffer: Option<Buffer>,
     pub blas: AccelerationStructure,
     pub id: u32,
 }
@@ -1137,15 +1135,10 @@ impl Model {
                 let positions = reader.read_positions().unwrap();
                 let normals = reader.read_normals().unwrap();
                 let uvs = reader.read_tex_coords(0).unwrap().into_f32();
+
                 arrays.positions.extend(positions.map(Vec3::from));
                 arrays.normals.extend(normals.map(Vec3::from));
                 arrays.uvs.extend(uvs.map(Vec2::from));
-
-                if let Some(tangents) = reader.read_tangents() {
-                    arrays.tangents.get_or_insert_with(|| Default::default()).extend(tangents.map(Vec4::from));
-                } else if arrays.tangents.is_some() {
-                    return Err(anyhow::anyhow!("Some primitives in the model have tangents, some do not. This is not allowed."));
-                }
             }
         }
 
@@ -1163,8 +1156,6 @@ impl Model {
             normal_buffer_address: model.normal_buffer.device_address(&allocator.device),
             uv_buffer_address: model.uv_buffer.device_address(&allocator.device),
             geometry_info_address: model.geometry_info_buffer.device_address(&allocator.device),
-            tangent_info_address: model.tangent_buffer.as_ref().map(|buffer| buffer.device_address(&allocator.device)).unwrap_or(0),
-            has_tangents: model.tangent_buffer.is_some() as u64 * u64::max_value()
         });
 
         Ok(model)
@@ -1246,14 +1237,6 @@ impl Model {
                 other_buffers_flags,
                 allocator,
             )?,
-            tangent_buffer: arrays.tangents.as_ref().map(|tangent_array| {
-                Buffer::new(
-                    bytemuck::cast_slice(&tangent_array),
-                    &format!("{} geometry tangent buffer", name),
-                    other_buffers_flags,
-                    allocator,
-                )
-            }).transpose()?,
             id,
         })
     }
@@ -1267,10 +1250,6 @@ impl Model {
 
         for index_buffer in &self.index_buffers {
             index_buffer.cleanup(allocator)?;
-        }
-
-        if let Some(tangent_buffer) = &self.tangent_buffer {
-            tangent_buffer.cleanup(allocator)?;
         }
 
         Ok(())

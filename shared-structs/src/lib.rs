@@ -26,8 +26,6 @@ pub struct ModelInfo {
     pub normal_buffer_address: DeviceAddress,
     pub uv_buffer_address: DeviceAddress,
     pub geometry_info_address: DeviceAddress,
-    pub tangent_info_address: DeviceAddress,
-    pub has_tangents: u64,
 }
 
 #[cfg_attr(not(target_arch = "spirv"), derive(Debug))]

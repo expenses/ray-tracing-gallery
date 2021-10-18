@@ -119,9 +119,28 @@ vec2 animated_blue_noise(vec2 blue_noise, uint frame_index) {
     return fract(blue_noise + float(frame_index % 32) * golden_ratio_fract);
 }
 
+// Uses the formula from www.thetenthplanet.de/archives/1180 but adapts for ray tracing
+mat3 compute_cotangent_frame(vec3 normal, Triangle triangle) {
+    // get edge vectors of the pixel triangle
+    vec3 delta_pos_1 = triangle.positions.b - triangle.positions.a;
+    vec3 delta_pos_2 = triangle.positions.c - triangle.positions.a;
+    vec2 delta_uv_1 = triangle.uvs.b - triangle.uvs.a;
+    vec2 delta_uv_2 = triangle.uvs.c - triangle.uvs.a;
+
+    // solve the linear system
+    vec3 delta_pos_2_perp = cross(delta_pos_2, normal);
+    vec3 delta_pos_1_perp = cross(normal, delta_pos_1);
+    vec3 T = delta_pos_2_perp * delta_uv_1.x + delta_pos_1_perp * delta_uv_2.x;
+    vec3 B = delta_pos_2_perp * delta_uv_1.y + delta_pos_1_perp * delta_uv_2.y;
+
+    // construct a scale-invariant frame
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return mat3(T * invmax, B * invmax, normal);
+}
+
 vec3 calculate_normal(Vertex interpolated, Triangle triangle, ModelInfo info, GeometryInfo geo_info) {
-    // Just rotate the vertex normal into world space if there is no normal map or tangents.
-    if (geo_info.normal_map_texture_index < 0 || info.has_tangents == 0) {
+    // Just rotate the vertex normal into world space if there is no normal map.
+    if (geo_info.normal_map_texture_index < 0) {
         return rotate_normal_into_world_space(interpolated.normal);
     }
 
@@ -130,15 +149,7 @@ vec3 calculate_normal(Vertex interpolated, Triangle triangle, ModelInfo info, Ge
     // Convert the map normal into a unit vector
     map_normal = map_normal * 2.0 - vec3(1.0);
 
-    vec3 normal = normalize(interpolated.normal);
-
-    vec4 tangent_and_handedness = read_and_interpolate_tangents(info, read_indices(geo_info), compute_barycentric_coords());
-    vec3 tangent = normalize(tangent_and_handedness.xyz);
-    float handedness = tangent_and_handedness.w;
-
-    vec3 bitangent = cross(normal, tangent) * handedness;
-
-    mat3 local_space_tbn_matrix = mat3(tangent, bitangent, normal);
+    mat3 local_space_tbn_matrix = compute_cotangent_frame(interpolated.normal, triangle);
 
     vec3 local_space_normal = local_space_tbn_matrix * normalize(map_normal);
 
