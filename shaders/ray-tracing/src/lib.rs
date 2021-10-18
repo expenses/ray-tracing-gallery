@@ -112,15 +112,17 @@ pub fn ray_generation(
 
     use spirv_std::arch::read_clock_khr;
 
+    /*
     if launch_id == IVec3::new(0, 0, 0) {
         unsafe {
-            spirv_std::macros::printfln!(
+            spirv_std::macros::debug_printfln!(
                 "show_heatmap = %u, frame_index = %u",
                 uniforms.show_heatmap,
                 uniforms.frame_index
             );
         }
     }
+    */
 
     let start_time = if uniforms.show_heatmap {
         unsafe { read_clock_khr::<{ Scope::Subgroup as u32 }>() }
