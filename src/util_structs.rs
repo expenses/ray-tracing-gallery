@@ -10,8 +10,7 @@ use std::os::raw::c_char;
 
 use crate::gpu_structs::unsafe_cast_slice;
 use crate::util_functions::{
-    cmd_pipeline_image_memory_barrier_explicit, create_single_colour_image,
-    load_png_image_from_bytes, sbt_aligned_size, PipelineImageMemoryBarrierParams,
+    create_single_colour_image, load_png_image_from_bytes, sbt_aligned_size,
 };
 use shared_structs::{GeometryImages, GeometryInfo, ModelInfo};
 use ultraviolet::{Vec2, Vec3};
@@ -486,23 +485,20 @@ impl ScratchBuffer {
                     //
                     // Atleast, I think this is the case. It seems to crash my gpu sometimes if I don't do this.
 
-                    log::debug!("Inserting a scratch buffer re-use command buffer.");
+                    log::debug!("Inserting a scratch buffer re-use pipeline barrier.");
 
-                    unsafe {
-                        allocator.device.cmd_pipeline_barrier(
-                            command_buffer,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::DependencyFlags::empty(),
-                            // We don't *seem* to need a memory barrier, but I don't know why not.
-                            /*&[*vk::MemoryBarrier::builder()
-                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)],*/
-                            &[],
-                            &[],
-                            &[],
-                        )
-                    }
+                    vk_sync::cmd::pipeline_barrier(
+                        &allocator.device,
+                        command_buffer,
+                        Some(vk_sync::GlobalBarrier {
+                            previous_accesses: &[
+                                vk_sync::AccessType::AccelerationStructureBufferWrite,
+                            ],
+                            next_accesses: &[vk_sync::AccessType::AccelerationStructureBufferWrite],
+                        }),
+                        &[],
+                        &[],
+                    );
                 }
             }
         }
@@ -859,28 +855,26 @@ impl Image {
             )
         }?;
 
-        let subresource_range = vk::ImageSubresourceRange::builder()
+        let subresource_range = *vk::ImageSubresourceRange::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
 
-        unsafe {
-            cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
-                device: &allocator.device,
-                buffer: command_buffer,
-                // No need to block on anything before this.
-                src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
-                // We're blocking the use of the texture in ray tracing
-                dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
-                    .image(image)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .subresource_range(*subresource_range)
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)],
-            });
-        }
+        vk_sync::cmd::pipeline_barrier(
+            &allocator.device,
+            command_buffer,
+            None,
+            &[],
+            &[vk_sync::ImageBarrier {
+                previous_accesses: &[vk_sync::AccessType::Nothing],
+                next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
+                next_layout: vk_sync::ImageLayout::General,
+                image,
+                range: subresource_range,
+                discard_contents: true,
+                ..Default::default()
+            }],
+        );
 
         Ok(Self {
             image,

@@ -189,19 +189,16 @@ impl Scene for DefaultScene {
         )?;
 
         // wait for tlas update to finish
-        unsafe {
-            allocator.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[*vk::MemoryBarrier::builder()
-                    .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                    .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)],
-                &[],
-                &[],
-            );
-        }
+        vk_sync::cmd::pipeline_barrier(
+            &allocator.device,
+            command_buffer,
+            Some(vk_sync::GlobalBarrier {
+                previous_accesses: &[vk_sync::AccessType::AccelerationStructureBuildWrite],
+                next_accesses: &[vk_sync::AccessType::RayTracingShaderReadAccelerationStructure],
+            }),
+            &[],
+            &[],
+        );
 
         Ok(())
     }

@@ -324,7 +324,7 @@ pub fn create_image_from_bytes(
         allocator.device.set_object_name(image, name)?;
     }
 
-    let subresource_range = vk::ImageSubresourceRange::builder()
+    let subresource_range = *vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .level_count(1)
         .layer_count(1);
@@ -335,27 +335,28 @@ pub fn create_image_from_bytes(
                 .image(image)
                 .view_type(view_ty)
                 .format(format)
-                .subresource_range(*subresource_range),
+                .subresource_range(subresource_range),
             None,
         )
     }?;
 
-    unsafe {
-        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
-            device: &allocator.device,
-            buffer: command_buffer,
-            // We don't need to block on anything before this.
-            src_stage: vk::PipelineStageFlags::TOP_OF_PIPE,
-            // We're blocking a transfer
-            dst_stage: vk::PipelineStageFlags::TRANSFER,
-            image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
-                .image(image)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .subresource_range(*subresource_range)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)],
-        });
+    vk_sync::cmd::pipeline_barrier(
+        &allocator.device,
+        command_buffer,
+        None,
+        &[],
+        &[vk_sync::ImageBarrier {
+            previous_accesses: &[vk_sync::AccessType::Nothing],
+            next_accesses: &[vk_sync::AccessType::TransferWrite],
+            next_layout: vk_sync::ImageLayout::Optimal,
+            image,
+            range: subresource_range,
+            discard_contents: true,
+            ..Default::default()
+        }],
+    );
 
+    unsafe {
         allocator.device.cmd_copy_buffer_to_image(
             command_buffer,
             staging_buffer.buffer,
@@ -372,23 +373,25 @@ pub fn create_image_from_bytes(
                 })
                 .image_extent(extent)],
         );
-
-        cmd_pipeline_image_memory_barrier_explicit(&PipelineImageMemoryBarrierParams {
-            device: &allocator.device,
-            buffer: command_buffer,
-            // We're blocking on a transfer.
-            src_stage: vk::PipelineStageFlags::TRANSFER,
-            // We're blocking the use of the texture in ray tracing
-            dst_stage: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-            image_memory_barriers: &[*vk::ImageMemoryBarrier::builder()
-                .image(image)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .subresource_range(*subresource_range)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)],
-        });
     }
+
+    vk_sync::cmd::pipeline_barrier(
+        &allocator.device,
+        command_buffer,
+        None,
+        &[],
+        &[vk_sync::ImageBarrier {
+            previous_accesses: &[vk_sync::AccessType::TransferWrite],
+            next_accesses: &[
+                vk_sync::AccessType::RayTracingShaderReadSampledImageOrUniformTexelBuffer,
+            ],
+            next_layout: vk_sync::ImageLayout::Optimal,
+            image,
+            range: subresource_range,
+            discard_contents: true,
+            ..Default::default()
+        }],
+    );
 
     buffers_to_cleanup.push(staging_buffer);
 
@@ -444,29 +447,6 @@ pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKH
     aligned_size(
         props.shader_group_handle_size,
         props.shader_group_handle_alignment,
-    )
-}
-
-pub struct PipelineImageMemoryBarrierParams<'a> {
-    pub device: &'a ash::Device,
-    pub buffer: vk::CommandBuffer,
-    pub src_stage: vk::PipelineStageFlags,
-    pub dst_stage: vk::PipelineStageFlags,
-    pub image_memory_barriers: &'a [vk::ImageMemoryBarrier],
-}
-
-// `cmd_pipeline_barrier` is one of those cases where it's nice if each param is clear.
-pub unsafe fn cmd_pipeline_image_memory_barrier_explicit(
-    params: &PipelineImageMemoryBarrierParams,
-) {
-    params.device.cmd_pipeline_barrier(
-        params.buffer,
-        params.src_stage,
-        params.dst_stage,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        params.image_memory_barriers,
     )
 }
 
