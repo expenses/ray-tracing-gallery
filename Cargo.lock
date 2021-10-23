@@ -1331,7 +1331,7 @@ dependencies = [
  "simplelog",
  "structopt",
  "ultraviolet",
- "vk-sync",
+ "vk-sync-fork",
  "winit",
 ]
 
@@ -1850,9 +1850,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 
 [[package]]
-name = "vk-sync"
-version = "0.1.6"
-source = "git+https://github.com/expenses/vk-sync-rs#cc7b7a5ba1fe1b7383f2ca3380667943cb008e63"
+name = "vk-sync-fork"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec4933d9b2bc41211cb06994a367c20cf33d39b0450b3763a2c502956036c92"
 dependencies = [
  "ash",
 ]

@@ -485,23 +485,20 @@ impl ScratchBuffer {
                     //
                     // Atleast, I think this is the case. It seems to crash my gpu sometimes if I don't do this.
 
-                    log::debug!("Inserting a scratch buffer re-use command buffer.");
+                    log::debug!("Inserting a scratch buffer re-use pipeline barrier.");
 
-                    unsafe {
-                        allocator.device.cmd_pipeline_barrier(
-                            command_buffer,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                            vk::DependencyFlags::empty(),
-                            // We don't *seem* to need a memory barrier, but I don't know why not.
-                            /*&[*vk::MemoryBarrier::builder()
-                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)],*/
-                            &[],
-                            &[],
-                            &[],
-                        )
-                    }
+                    vk_sync::cmd::pipeline_barrier(
+                        &allocator.device,
+                        command_buffer,
+                        Some(vk_sync::GlobalBarrier {
+                            previous_accesses: &[
+                                vk_sync::AccessType::AccelerationStructureBufferWrite,
+                            ],
+                            next_accesses: &[vk_sync::AccessType::AccelerationStructureBufferWrite],
+                        }),
+                        &[],
+                        &[],
+                    );
                 }
             }
         }
