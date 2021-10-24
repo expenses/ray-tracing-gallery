@@ -24,6 +24,7 @@ winit = "0.25.0"
 shared-structs = { path = "shared-structs" }
 glam = "0.19.0"
 vk-sync = { package = "vk-sync-fork", version = "0.2.0" }
+ash-opinionated-abstractions = { path = "../vulkan-common" }
 
 [profile.dev.package."*"]
 opt-level = 3
