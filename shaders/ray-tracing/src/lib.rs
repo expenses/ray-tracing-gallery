@@ -82,20 +82,13 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
 }
 
 // https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
-fn linear_to_srgb_scalar(linear: f32) -> f32 {
-    if linear < 0.0031308 {
-        linear * 12.92
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    }
-}
-
 fn linear_to_srgb(linear: Vec3) -> Vec3 {
-    Vec3::new(
-        linear_to_srgb_scalar(linear.x),
-        linear_to_srgb_scalar(linear.y),
-        linear_to_srgb_scalar(linear.z),
-    )
+    let threshold = linear.cmple(Vec3::splat(0.0031308));
+
+    let lower = linear * 12.92;
+    let higher = 1.055 * linear.powf(1.0 / 2.4) - 0.055;
+
+    Vec3::select(threshold, lower, higher)
 }
 
 #[cfg(target_arch = "spirv")]
