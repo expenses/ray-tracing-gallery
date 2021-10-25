@@ -37,7 +37,7 @@ impl PerFrameResources {
         format: vk::Format,
         index: usize,
         device: &Device,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<()> {
         self.storage_image.cleanup(allocator)?;
         self.storage_image = Image::new_storage_image(
@@ -188,7 +188,7 @@ impl PerFrameResources {
             &[
                 vk_sync::ImageBarrier {
                     previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                    next_accesses: &[vk_sync::AccessType::Present],
+                    next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
                     image: swapchain_image,
                     range: subresource_range,
                     discard_contents: false,

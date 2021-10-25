@@ -15,10 +15,10 @@ pub trait Scene {
         &self,
         resources: &mut PerFrameResources,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<()>;
 
-    fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()>;
+    fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()>;
 }
 
 pub struct DefaultScene {
@@ -35,7 +35,7 @@ impl DefaultScene {
     pub fn new(
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         image_manager: &mut ImageManager,
         buffers_to_cleanup: &mut Vec<Buffer>,
     ) -> anyhow::Result<(Self, Vec<AccelerationStructureInstance>, Vec<ModelInfo>)> {
@@ -168,7 +168,7 @@ impl Scene for DefaultScene {
         &self,
         resources: &mut PerFrameResources,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<()> {
         let lain_instance_transform = transpose_matrix_for_instance(
             self.lain_base_transform * Mat4::from_rotation_y(self.lain_rotation),
@@ -203,7 +203,7 @@ impl Scene for DefaultScene {
         Ok(())
     }
 
-    fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         self.plane_model.cleanup(allocator)?;
         self.tori_model.cleanup(allocator)?;
         self.lain_model.cleanup(allocator)?;
@@ -221,7 +221,7 @@ impl LoadedModelScene {
         filename: &str,
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         image_manager: &mut ImageManager,
         buffers_to_cleanup: &mut Vec<Buffer>,
     ) -> anyhow::Result<(Self, Vec<AccelerationStructureInstance>, Vec<ModelInfo>)> {
@@ -260,12 +260,12 @@ impl Scene for LoadedModelScene {
         &self,
         _resources: &mut PerFrameResources,
         _command_buffer: vk::CommandBuffer,
-        _allocator: &mut Allocator,
+        _allocator: &Allocator,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         self.model.cleanup(allocator)
     }
 }
@@ -287,7 +287,7 @@ impl<A: Scene, B: Scene> Scene for EitherScene<A, B> {
         &self,
         resources: &mut PerFrameResources,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<()> {
         match self {
             Self::SceneA(a) => a.write_resources(resources, command_buffer, allocator),
@@ -295,7 +295,7 @@ impl<A: Scene, B: Scene> Scene for EitherScene<A, B> {
         }
     }
 
-    fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         match self {
             Self::SceneA(a) => a.cleanup(allocator),
             Self::SceneB(b) => b.cleanup(allocator),

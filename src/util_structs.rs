@@ -86,7 +86,7 @@ impl std::ops::Deref for Device {
 }
 
 pub struct Allocator {
-    pub inner: gpu_allocator::vulkan::Allocator,
+    pub inner: parking_lot::Mutex<gpu_allocator::vulkan::Allocator>,
     pub device: Device,
     queue_family: u32,
 }
@@ -99,24 +99,41 @@ impl Allocator {
         queue_family: u32,
     ) -> anyhow::Result<Self> {
         Ok(Allocator {
-            inner: gpu_allocator::vulkan::Allocator::new(&AllocatorCreateDesc {
-                instance,
-                device: device.inner.clone(),
-                physical_device,
-                debug_settings: gpu_allocator::AllocatorDebugSettings {
-                    log_memory_information: false,
-                    log_leaks_on_shutdown: true,
-                    store_stack_traces: false,
-                    log_allocations: true,
-                    log_frees: true,
-                    log_stack_traces: false,
+            inner: parking_lot::Mutex::new(gpu_allocator::vulkan::Allocator::new(
+                &AllocatorCreateDesc {
+                    instance,
+                    device: device.inner.clone(),
+                    physical_device,
+                    debug_settings: gpu_allocator::AllocatorDebugSettings {
+                        log_memory_information: false,
+                        log_leaks_on_shutdown: true,
+                        store_stack_traces: false,
+                        log_allocations: true,
+                        log_frees: true,
+                        log_stack_traces: false,
+                    },
+                    // Needed for getting buffer device addresses
+                    buffer_device_address: true,
                 },
-                // Needed for getting buffer device addresses
-                buffer_device_address: true,
-            })?,
+            )?),
             queue_family,
             device,
         })
+    }
+}
+
+pub struct ArcedAllocator(pub std::sync::Arc<Allocator>);
+
+impl egui_winit_ash_integration::AllocatorTrait for ArcedAllocator {
+    type Allocation = Allocation;
+    type AllocationCreateInfo = AllocationCreateDesc<'static>;
+
+    fn allocate(&self, desc: Self::AllocationCreateInfo) -> anyhow::Result<Self::Allocation> {
+        Ok(self.0.inner.lock().allocate(&desc)?)
+    }
+
+    fn free(&self, allocation: Self::Allocation) -> anyhow::Result<()> {
+        Ok(self.0.inner.lock().free(allocation)?)
     }
 }
 
@@ -140,7 +157,7 @@ impl AccelerationStructure {
     fn build_blas(
         name: &str,
         scratch_buffer: &mut ScratchBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         command_buffer: vk::CommandBuffer,
         geometries: &[Geometry],
     ) -> anyhow::Result<Self> {
@@ -227,7 +244,7 @@ impl AccelerationStructure {
         size: vk::DeviceSize,
         name: &str,
         ty: vk::AccelerationStructureTypeKHR,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         scratch_buffer: &Buffer,
         mut geometry_info: vk::AccelerationStructureBuildGeometryInfoKHRBuilder,
         offsets: &[vk::AccelerationStructureBuildRangeInfoKHR],
@@ -287,7 +304,7 @@ impl AccelerationStructure {
         instances: &Buffer,
         num_instances: u32,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         scratch_buffer: &mut ScratchBuffer,
     ) -> anyhow::Result<()> {
         let instances = vk::AccelerationStructureGeometryInstancesDataKHR::builder().data(
@@ -360,7 +377,7 @@ impl AccelerationStructure {
         &self,
         command_buffer: vk::CommandBuffer,
         name: &str,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let new_buffer = Buffer::new_of_size(
             self.size,
@@ -404,7 +421,7 @@ impl AccelerationStructure {
         })
     }
 
-    pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn rename(&mut self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
         unsafe {
             allocator
                 .device
@@ -445,7 +462,7 @@ impl ScratchBuffer {
         &mut self,
         size: vk::DeviceSize,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<&Buffer> {
         match &mut self.inner {
             ScratchBufferInner::Unallocated => {
@@ -509,7 +526,7 @@ impl ScratchBuffer {
         }
     }
 
-    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         if let ScratchBufferInner::Allocated(buffer) = &self.inner {
             buffer.cleanup(allocator)?;
         }
@@ -517,7 +534,7 @@ impl ScratchBuffer {
         Ok(())
     }
 
-    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn cleanup_and_drop(self, allocator: &Allocator) -> anyhow::Result<()> {
         self.cleanup(allocator)?;
         Ok(())
     }
@@ -534,7 +551,7 @@ impl ShaderBindingTable {
         name: &str,
         props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
         range: std::ops::Range<u32>,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let offset = range.start;
         let num_shaders = (range.end - range.start) as u64;
@@ -577,7 +594,7 @@ impl Buffer {
         size: vk::DeviceSize,
         name: &str,
         usage: vk::BufferUsageFlags,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let buffer = unsafe {
             allocator.device.create_buffer(
@@ -591,7 +608,7 @@ impl Buffer {
 
         let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
 
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -616,7 +633,7 @@ impl Buffer {
         name: &str,
         usage: vk::BufferUsageFlags,
         alignment: vk::DeviceSize,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let buffer = unsafe {
             allocator.device.create_buffer(
@@ -632,7 +649,7 @@ impl Buffer {
 
         requirements.alignment = alignment;
 
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -656,7 +673,7 @@ impl Buffer {
         bytes: &[u8],
         name: &str,
         usage: vk::BufferUsageFlags,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let buffer_size = bytes.len() as vk::DeviceSize;
 
@@ -672,7 +689,7 @@ impl Buffer {
 
         let requirements = unsafe { allocator.device.get_buffer_memory_requirements(buffer) };
 
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
@@ -687,7 +704,7 @@ impl Buffer {
         name: &str,
         usage: vk::BufferUsageFlags,
         alignment: vk::DeviceSize,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let buffer_size = bytes.len() as vk::DeviceSize;
 
@@ -705,7 +722,7 @@ impl Buffer {
 
         requirements.alignment = alignment;
 
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::CpuToGpu,
@@ -758,20 +775,21 @@ impl Buffer {
         Ok(())
     }
 
-    pub fn rename(&mut self, name: &str, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn rename(&mut self, name: &str, allocator: &Allocator) -> anyhow::Result<()> {
         unsafe {
             allocator.device.set_object_name(self.buffer, name)?;
         }
 
         allocator
             .inner
+            .lock()
             .rename_allocation(&mut self.allocation, name)?;
 
         Ok(())
     }
 
-    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.inner.free(self.allocation.clone())?;
+    pub fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
+        allocator.inner.lock().free(self.allocation.clone())?;
 
         unsafe { allocator.device.destroy_buffer(self.buffer, None) };
 
@@ -779,7 +797,7 @@ impl Buffer {
     }
 
     // Prefer using this when practical.
-    pub fn cleanup_and_drop(self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn cleanup_and_drop(self, allocator: &Allocator) -> anyhow::Result<()> {
         self.cleanup(allocator)?;
         drop(self);
         Ok(())
@@ -799,7 +817,7 @@ impl Image {
         name: &str,
         format: vk::Format,
         command_buffer: vk::CommandBuffer,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
     ) -> anyhow::Result<Self> {
         let image = unsafe {
             allocator.device.create_image(
@@ -823,7 +841,7 @@ impl Image {
 
         let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
 
-        let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
             name,
             requirements,
             location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -889,8 +907,8 @@ impl Image {
             .image_layout(vk::ImageLayout::GENERAL)
     }
 
-    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
-        allocator.inner.free(self.allocation.clone())?;
+    pub fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
+        allocator.inner.lock().free(self.allocation.clone())?;
 
         unsafe { allocator.device.destroy_image_view(self.view, None) };
 
@@ -1029,7 +1047,7 @@ fn metallic_roughness_to_rgba(metallic: f32, roughness: f32) -> [f32; 4] {
 }
 
 struct ModelLoaderParams<'a> {
-    allocator: &'a mut Allocator,
+    allocator: &'a Allocator,
     image_manager: &'a mut ImageManager,
     command_buffer: vk::CommandBuffer,
     buffers_to_cleanup: &'a mut Vec<Buffer>,
@@ -1050,7 +1068,7 @@ impl Model {
         bytes: &[u8],
         name: &str,
         fallback_image_index: u32,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         image_manager: &mut ImageManager,
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
@@ -1158,7 +1176,7 @@ impl Model {
     fn new(
         arrays: &ModelArrays,
         name: &str,
-        allocator: &mut Allocator,
+        allocator: &Allocator,
         command_buffer: vk::CommandBuffer,
         scratch_buffer: &mut ScratchBuffer,
         id: u32,
@@ -1235,7 +1253,7 @@ impl Model {
         })
     }
 
-    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         self.position_buffer.cleanup(allocator)?;
         self.normal_buffer.cleanup(allocator)?;
         self.uv_buffer.cleanup(allocator)?;
@@ -1367,7 +1385,7 @@ impl ImageManager {
             .image_info(&self.image_infos)
     }
 
-    pub fn cleanup(&self, allocator: &mut Allocator) -> anyhow::Result<()> {
+    pub fn cleanup(&self, allocator: &Allocator) -> anyhow::Result<()> {
         for image in &self.images {
             image.cleanup(allocator)?;
         }

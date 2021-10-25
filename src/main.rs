@@ -8,6 +8,7 @@ use ash::extensions::khr::{
 use ash::vk;
 use std::f32::consts::PI;
 use std::ffi::CStr;
+use std::mem::ManuallyDrop;
 use structopt::StructOpt;
 use ultraviolet::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -334,7 +335,12 @@ fn main() -> anyhow::Result<()> {
 
     // Create an allocator
 
-    let mut allocator = Allocator::new(instance, device.clone(), physical_device, queue_family)?;
+    let allocator = std::sync::Arc::new(Allocator::new(
+        instance,
+        device.clone(),
+        physical_device,
+        queue_family,
+    )?);
 
     // Shader binding tables
 
@@ -363,7 +369,7 @@ fn main() -> anyhow::Result<()> {
             "raygen shader binding table",
             &ray_tracing_props,
             0..1,
-            &mut allocator,
+            &allocator,
         )?,
         // 2 miss shaders
         miss: ShaderBindingTable::new(
@@ -371,7 +377,7 @@ fn main() -> anyhow::Result<()> {
             "miss shader binding table",
             &ray_tracing_props,
             1..3,
-            &mut allocator,
+            &allocator,
         )?,
         // 3 hit shaders.
         hit: ShaderBindingTable::new(
@@ -379,7 +385,7 @@ fn main() -> anyhow::Result<()> {
             "hit shader binding table",
             &ray_tracing_props,
             3..6,
-            &mut allocator,
+            &allocator,
         )?,
     };
 
@@ -419,7 +425,7 @@ fn main() -> anyhow::Result<()> {
             "green texture",
             vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
-            &mut allocator,
+            &allocator,
             &mut buffers_to_cleanup,
         )?;
 
@@ -430,7 +436,7 @@ fn main() -> anyhow::Result<()> {
             "pink texture",
             vk::Format::R8G8B8A8_SRGB,
             init_command_buffer.buffer(),
-            &mut allocator,
+            &allocator,
             &mut buffers_to_cleanup,
         )?;
 
@@ -441,7 +447,7 @@ fn main() -> anyhow::Result<()> {
             "blue noise texture",
             vk::Format::R8G8B8A8_UNORM,
             init_command_buffer.buffer(),
-            &mut allocator,
+            &allocator,
             &mut buffers_to_cleanup,
         )?;
 
@@ -452,7 +458,7 @@ fn main() -> anyhow::Result<()> {
             "ggx lut texture",
             vk::Format::R8G8B8A8_UNORM,
             init_command_buffer.buffer(),
-            &mut allocator,
+            &allocator,
             &mut buffers_to_cleanup,
         )?;
 
@@ -468,7 +474,7 @@ fn main() -> anyhow::Result<()> {
             &model_to_load,
             init_command_buffer.buffer(),
             &mut scratch_buffer,
-            &mut allocator,
+            &allocator,
             &mut image_manager,
             &mut buffers_to_cleanup,
         )?;
@@ -477,7 +483,7 @@ fn main() -> anyhow::Result<()> {
         let (scene, instances, model_info) = DefaultScene::new(
             init_command_buffer.buffer(),
             &mut scratch_buffer,
-            &mut allocator,
+            &allocator,
             &mut image_manager,
             &mut buffers_to_cleanup,
         )?;
@@ -493,7 +499,7 @@ fn main() -> anyhow::Result<()> {
         unsafe { unsafe_cast_slice(&model_info) },
         "model info",
         vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-        &mut allocator,
+        &allocator,
     )?;
 
     let mut instances_buffer = Buffer::new_with_custom_alignment(
@@ -502,7 +508,7 @@ fn main() -> anyhow::Result<()> {
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         16,
-        &mut allocator,
+        &allocator,
     )?;
 
     let num_instances = instances.len() as u32;
@@ -524,7 +530,7 @@ fn main() -> anyhow::Result<()> {
     let mut tlas = build_tlas(
         &instances_buffer,
         num_instances,
-        &mut allocator,
+        &allocator,
         &mut scratch_buffer,
         init_command_buffer.buffer(),
     )?;
@@ -609,7 +615,7 @@ fn main() -> anyhow::Result<()> {
                         "storage image 0",
                         surface_format.format,
                         init_command_buffer.buffer(),
-                        &mut allocator,
+                        &allocator,
                     )?,
                     ray_tracing_ds: ray_tracing_sets[0],
                     ray_tracing_uniforms: Buffer::new(
@@ -617,9 +623,9 @@ fn main() -> anyhow::Result<()> {
                         "ray tracing uniforms 0",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                        &mut allocator,
+                        &allocator,
                     )?,
-                    tlas: tlas.clone(init_command_buffer.buffer(), "tlas 0", &mut allocator)?,
+                    tlas: tlas.clone(init_command_buffer.buffer(), "tlas 0", &allocator)?,
                     scratch_buffer: ScratchBuffer::new("scratch buffer 0", &as_props),
                     instances_buffer: Buffer::new_with_custom_alignment(
                         unsafe_cast_slice(&instances),
@@ -627,7 +633,7 @@ fn main() -> anyhow::Result<()> {
                         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                         16,
-                        &mut allocator,
+                        &allocator,
                     )?,
                     num_instances,
                 },
@@ -642,7 +648,7 @@ fn main() -> anyhow::Result<()> {
                         "storage image 1",
                         surface_format.format,
                         init_command_buffer.buffer(),
-                        &mut allocator,
+                        &allocator,
                     )?,
                     ray_tracing_ds: ray_tracing_sets[1],
                     ray_tracing_uniforms: Buffer::new(
@@ -650,15 +656,15 @@ fn main() -> anyhow::Result<()> {
                         "ray tracing uniforms 1",
                         vk::BufferUsageFlags::UNIFORM_BUFFER
                             | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                        &mut allocator,
+                        &allocator,
                     )?,
                     tlas: {
-                        tlas.rename("tlas 1", &mut allocator)?;
+                        tlas.rename("tlas 1", &allocator)?;
                         tlas
                     },
                     scratch_buffer: ScratchBuffer::new("scratch buffer 1", &as_props),
                     instances_buffer: {
-                        instances_buffer.rename("instances buffer 1", &mut allocator)?;
+                        instances_buffer.rename("instances buffer 1", &allocator)?;
                         instances_buffer
                     },
                     num_instances,
@@ -674,10 +680,10 @@ fn main() -> anyhow::Result<()> {
         drop(instances);
 
         for staging_buffer in buffers_to_cleanup.into_iter() {
-            staging_buffer.cleanup_and_drop(&mut allocator)?;
+            staging_buffer.cleanup_and_drop(&allocator)?;
         }
 
-        scratch_buffer.cleanup_and_drop(&mut allocator)?;
+        scratch_buffer.cleanup_and_drop(&allocator)?;
     }
 
     // Create swapchain
@@ -725,7 +731,22 @@ fn main() -> anyhow::Result<()> {
         model_info_buffer,
     };
 
+    let mut egui_integration = ManuallyDrop::new(egui_winit_ash_integration::Integration::new(
+        extent.width,
+        extent.height,
+        window.scale_factor(),
+        Default::default(),
+        Default::default(),
+        (*device).clone(),
+        util_structs::ArcedAllocator(allocator.clone()),
+        device.swapchain_loader.clone(),
+        swapchain.swapchain,
+        surface_format,
+    ));
+
     event_loop.run(move |event, _, control_flow| {
+        egui_integration.handle_event(&event);
+
         let loop_closure = || -> anyhow::Result<()> {
             match event {
                 Event::WindowEvent { event, .. } => match event {
@@ -769,11 +790,18 @@ fn main() -> anyhow::Result<()> {
                                 surface_format.format,
                                 i,
                                 &device,
-                                &mut allocator,
+                                &allocator,
                             )?;
                         }
 
                         resize_command_buffer.finish()?;
+
+                        egui_integration.update_swapchain(
+                            extent.width,
+                            extent.height,
+                            swapchain.swapchain.clone(),
+                            surface_format,
+                        );
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -957,7 +985,7 @@ fn main() -> anyhow::Result<()> {
                                 scene.write_resources(
                                     resources,
                                     frame.command_buffer,
-                                    &mut allocator,
+                                    &allocator,
                                 )?;
 
                                 resources.record(
@@ -967,6 +995,27 @@ fn main() -> anyhow::Result<()> {
                                     extent,
                                     &global_resources,
                                 )?;
+
+                                {
+                                    egui_integration.begin_frame();
+
+                                    egui::containers::Window::new("Controls").show(
+                                        &egui_integration.context(),
+                                        |ui| {
+                                            ui.checkbox(&mut uniforms.show_heatmap, "Show Heatmap");
+                                        },
+                                    );
+
+                                    let (_output, paint_commands) =
+                                        egui_integration.end_frame(&window);
+                                    let paint_jobs =
+                                        egui_integration.context().tessellate(paint_commands);
+                                    egui_integration.paint(
+                                        frame.command_buffer,
+                                        swapchain_image_index as usize,
+                                        paint_jobs,
+                                    );
+                                }
 
                                 device.end_command_buffer(frame.command_buffer)?;
 
@@ -999,26 +1048,31 @@ fn main() -> anyhow::Result<()> {
                         device.device_wait_idle()?;
                     }
 
-                    scene.cleanup(&mut allocator)?;
+                    scene.cleanup(&allocator)?;
 
-                    global_resources.model_info_buffer.cleanup(&mut allocator)?;
+                    global_resources.model_info_buffer.cleanup(&allocator)?;
 
                     let sbts = &global_resources.shader_binding_tables;
 
-                    sbts.raygen.buffer.cleanup(&mut allocator)?;
-                    sbts.miss.buffer.cleanup(&mut allocator)?;
-                    sbts.hit.buffer.cleanup(&mut allocator)?;
+                    sbts.raygen.buffer.cleanup(&allocator)?;
+                    sbts.miss.buffer.cleanup(&allocator)?;
+                    sbts.hit.buffer.cleanup(&allocator)?;
 
-                    image_manager.cleanup(&mut allocator)?;
+                    image_manager.cleanup(&allocator)?;
 
                     for frame in &mut multibuffering_frames {
                         let resources = &mut frame.resources;
 
-                        resources.storage_image.cleanup(&mut allocator)?;
-                        resources.ray_tracing_uniforms.cleanup(&mut allocator)?;
-                        resources.tlas.buffer.cleanup(&mut allocator)?;
-                        resources.scratch_buffer.cleanup(&mut allocator)?;
-                        resources.instances_buffer.cleanup(&mut allocator)?;
+                        resources.storage_image.cleanup(&allocator)?;
+                        resources.ray_tracing_uniforms.cleanup(&allocator)?;
+                        resources.tlas.buffer.cleanup(&allocator)?;
+                        resources.scratch_buffer.cleanup(&allocator)?;
+                        resources.instances_buffer.cleanup(&allocator)?;
+                    }
+
+                    unsafe {
+                        egui_integration.destroy();
+                        ManuallyDrop::drop(&mut egui_integration);
                     }
                 }
                 _ => {}

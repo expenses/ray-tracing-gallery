@@ -217,7 +217,7 @@ pub fn create_single_colour_image<P: ImagePixelFormat>(
     pixel: P,
     name: &str,
     command_buffer: vk::CommandBuffer,
-    allocator: &mut Allocator,
+    allocator: &Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
 ) -> anyhow::Result<Image> {
     create_image_from_bytes(
@@ -241,7 +241,7 @@ pub fn load_png_image_from_bytes(
     name: &str,
     format: vk::Format,
     command_buffer: vk::CommandBuffer,
-    allocator: &mut Allocator,
+    allocator: &Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
 ) -> anyhow::Result<Image> {
     let decoded_image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)?;
@@ -271,7 +271,7 @@ pub fn create_image_from_bytes(
     format: vk::Format,
     name: &str,
     command_buffer: vk::CommandBuffer,
-    allocator: &mut Allocator,
+    allocator: &Allocator,
     buffers_to_cleanup: &mut Vec<Buffer>,
 ) -> anyhow::Result<Image> {
     fn ty_from_view_ty(ty: vk::ImageViewType) -> vk::ImageType {
@@ -309,7 +309,7 @@ pub fn create_image_from_bytes(
 
     let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
 
-    let allocation = allocator.inner.allocate(&AllocationCreateDesc {
+    let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
         name,
         requirements,
         location: gpu_allocator::MemoryLocation::GpuOnly,
@@ -453,7 +453,7 @@ pub fn sbt_aligned_size(props: &vk::PhysicalDeviceRayTracingPipelinePropertiesKH
 pub fn build_tlas(
     instances: &Buffer,
     num_instances: u32,
-    allocator: &mut Allocator,
+    allocator: &Allocator,
     scratch_buffer: &mut ScratchBuffer,
     command_buffer: vk::CommandBuffer,
 ) -> anyhow::Result<AccelerationStructure> {
