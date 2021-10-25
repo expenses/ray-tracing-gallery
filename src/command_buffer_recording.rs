@@ -156,7 +156,6 @@ impl PerFrameResources {
                     previous_layout: vk_sync::ImageLayout::General,
                     image: self.storage_image.image,
                     range: subresource_range,
-                    discard_contents: false,
                     ..Default::default()
                 },
             ],
@@ -191,7 +190,6 @@ impl PerFrameResources {
                     next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
                     image: swapchain_image,
                     range: subresource_range,
-                    discard_contents: false,
                     ..Default::default()
                 },
                 vk_sync::ImageBarrier {

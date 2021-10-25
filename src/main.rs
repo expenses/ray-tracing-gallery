@@ -1109,8 +1109,8 @@ pub fn create_descriptor_set_layouts_and_pool(
         )
     }?;
 
-    // TODO: Remove acceleration structure and uniform buffer from these, using
-    // buffer device addresses instead. This requires support in rust-gpu tho.
+    // TODO: Remove uniform buffer from these, using buffer device addresses instead.
+    // This requires support in rust-gpu.
     let per_frame_dsl = unsafe {
         device.create_descriptor_set_layout(
             &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
