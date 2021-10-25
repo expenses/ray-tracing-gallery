@@ -90,6 +90,17 @@ version = "0.33.3+1.2.191"
 source = "git+https://github.com/MaikKlein/ash?rev=e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4#e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4"
 
 [[package]]
+name = "ash-opinionated-abstractions"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ash",
+ "gpu-allocator",
+ "log",
+ "vk-sync-fork",
+]
+
+[[package]]
 name = "ash-window"
 version = "0.7.0"
 source = "git+https://github.com/MaikKlein/ash?rev=e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4#e10bbf3063d9b84b9d8c04e6e2baae7d4881cce4"
@@ -1444,6 +1455,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ash",
+ "ash-opinionated-abstractions",
  "ash-window",
  "bytemuck",
  "egui",

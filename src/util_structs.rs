@@ -5,8 +5,7 @@ use ash::extensions::khr::{
 };
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocatorCreateDesc};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::ffi::CString;
 
 use crate::gpu_structs::unsafe_cast_slice;
 use crate::util_functions::{
@@ -15,25 +14,11 @@ use crate::util_functions::{
 use shared_structs::{GeometryImages, GeometryInfo, ModelInfo};
 use ultraviolet::{Vec2, Vec3};
 
-// A list of C strings and their associated pointers
-pub struct CStrList<'a> {
-    pub list: Vec<&'a CStr>,
-    pub pointers: Vec<*const c_char>,
-}
-
-impl<'a> CStrList<'a> {
-    pub fn new(list: Vec<&'a CStr>) -> Self {
-        let pointers = list.iter().map(|cstr| cstr.as_ptr()).collect();
-
-        Self { list, pointers }
-    }
-}
-
 // Contains a logical device as well as extension loaders.
 #[derive(Clone)]
 pub struct Device {
     inner: ash::Device,
-    debug_utils_loader: DebugUtilsLoader,
+    pub debug_utils_loader: DebugUtilsLoader,
     pub as_loader: AccelerationStructureLoader,
     pub swapchain_loader: SwapchainLoader,
     pub rt_pipeline_loader: RayTracingPipelineLoader,
@@ -804,6 +789,15 @@ impl Buffer {
     }
 }
 
+impl From<ash_opinionated_abstractions::Buffer> for Buffer {
+    fn from(buffer: ash_opinionated_abstractions::Buffer) -> Self {
+        Self {
+            allocation: buffer.allocation,
+            buffer: buffer.buffer,
+        }
+    }
+}
+
 pub struct Image {
     pub image: vk::Image,
     pub allocation: Allocation,
@@ -819,86 +813,26 @@ impl Image {
         command_buffer: vk::CommandBuffer,
         allocator: &Allocator,
     ) -> anyhow::Result<Self> {
-        let image = unsafe {
-            allocator.device.create_image(
-                &vk::ImageCreateInfo::builder()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(format)
-                    .extent(vk::Extent3D {
-                        width,
-                        height,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .initial_layout(vk::ImageLayout::UNDEFINED)
-                    .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::STORAGE),
-                None,
-            )
-        }?;
-
-        let requirements = unsafe { allocator.device.get_image_memory_requirements(image) };
-
-        let allocation = allocator.inner.lock().allocate(&AllocationCreateDesc {
-            name,
-            requirements,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            linear: false,
-        })?;
-
-        unsafe {
-            allocator
-                .device
-                .bind_image_memory(image, allocation.memory(), allocation.offset())?;
-
-            allocator.device.set_object_name(image, name)?;
-        };
-
-        let view = unsafe {
-            allocator.device.create_image_view(
-                &vk::ImageViewCreateInfo::builder()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(format)
-                    .subresource_range(
-                        vk::ImageSubresourceRange::builder()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .level_count(1)
-                            .layer_count(1)
-                            .build(),
-                    ),
-                None,
-            )
-        }?;
-
-        let subresource_range = *vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        vk_sync::cmd::pipeline_barrier(
-            &allocator.device,
-            command_buffer,
-            None,
-            &[],
-            &[vk_sync::ImageBarrier {
-                previous_accesses: &[vk_sync::AccessType::Nothing],
+        let image = ash_opinionated_abstractions::Image::new(
+            &ash_opinionated_abstractions::ImageDescriptor {
+                width,
+                height,
+                name,
+                format,
+                mip_levels: 1,
+                usage: vk::ImageUsageFlags::STORAGE,
                 next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
                 next_layout: vk_sync::ImageLayout::General,
-                image,
-                range: subresource_range,
-                discard_contents: true,
-                ..Default::default()
-            }],
-        );
+            },
+            &mut ash_opinionated_abstractions::InitResources {
+                device: &allocator.device,
+                allocator: &mut allocator.inner.lock(),
+                command_buffer,
+                debug_utils_loader: Some(&allocator.device.debug_utils_loader),
+            },
+        )?;
 
-        Ok(Self {
-            image,
-            view,
-            allocation,
-        })
+        Ok(image.into())
     }
 
     pub fn descriptor_image_info(&self) -> vk::DescriptorImageInfo {
@@ -915,6 +849,16 @@ impl Image {
         unsafe { allocator.device.destroy_image(self.image, None) };
 
         Ok(())
+    }
+}
+
+impl From<ash_opinionated_abstractions::Image> for Image {
+    fn from(image: ash_opinionated_abstractions::Image) -> Self {
+        Self {
+            allocation: image.allocation,
+            image: image.image,
+            view: image.view,
+        }
     }
 }
 

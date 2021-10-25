@@ -25,14 +25,14 @@ mod util_functions;
 mod util_structs;
 
 use util_structs::{
-    Allocator, Buffer, CStrList, CommandBufferAndQueue, Device as DeviceWithExtensions, Image,
-    ImageManager, ScratchBuffer, ShaderBindingTable, Swapchain,
+    Allocator, Buffer, CommandBufferAndQueue, Device as DeviceWithExtensions, Image, ImageManager,
+    ScratchBuffer, ShaderBindingTable, Swapchain,
 };
 
+use ash_opinionated_abstractions::{select_physical_device, vulkan_debug_utils_callback, CStrList};
 use util_functions::{
     build_tlas, info_from_group, load_png_image_from_bytes, load_rust_shader_module_as_stage,
-    load_shader_module_as_stage, sbt_aligned_size, select_physical_device,
-    vulkan_debug_utils_callback, ShaderEntryPoint, ShaderGroup,
+    load_shader_module_as_stage, sbt_aligned_size, ShaderEntryPoint, ShaderGroup,
 };
 
 use gpu_structs::{unsafe_bytes_of, unsafe_cast_slice};
@@ -67,7 +67,7 @@ fn main() -> anyhow::Result<()> {
                 ColorChoice::Auto,
             ),
             WriteLogger::new(
-                LevelFilter::Debug,
+                LevelFilter::Trace,
                 Config::default(),
                 std::fs::File::create("run.log")?,
             ),
@@ -123,8 +123,8 @@ fn main() -> anyhow::Result<()> {
         entry.create_instance(
             &vk::InstanceCreateInfo::builder()
                 .application_info(&app_info)
-                .enabled_extension_names(&instance_extensions.pointers)
-                .enabled_layer_names(&enabled_layers.pointers)
+                .enabled_extension_names(instance_extensions.pointers())
+                .enabled_layer_names(enabled_layers.pointers())
                 .push_next(&mut debug_messenger_info),
             None,
         )
@@ -140,14 +140,19 @@ fn main() -> anyhow::Result<()> {
 
     // Pick a physical device
 
-    let (physical_device, queue_family, surface_format) =
-        match select_physical_device(&instance, &device_extensions, &surface_loader, surface)? {
-            Some(selection) => selection,
-            None => {
-                log::info!("No suitable device found 💔. Exiting program");
-                return Ok(());
-            }
-        };
+    let (physical_device, queue_family, surface_format) = match select_physical_device(
+        &instance,
+        &device_extensions,
+        &surface_loader,
+        surface,
+        vk::Format::B8G8R8A8_UNORM,
+    )? {
+        Some(selection) => selection,
+        None => {
+            log::info!("No suitable device found 💔. Exiting program");
+            return Ok(());
+        }
+    };
 
     let surface_caps = unsafe {
         surface_loader.get_physical_device_surface_capabilities(physical_device, surface)
@@ -190,8 +195,8 @@ fn main() -> anyhow::Result<()> {
         let device_info = vk::DeviceCreateInfo::builder()
             .queue_create_infos(&queue_info)
             .enabled_features(&device_features)
-            .enabled_extension_names(&device_extensions.pointers)
-            .enabled_layer_names(&enabled_layers.pointers)
+            .enabled_extension_names(device_extensions.pointers())
+            .enabled_layer_names(enabled_layers.pointers())
             .push_next(&mut vk_12_features)
             .push_next(&mut amd_device_coherent_memory)
             .push_next(&mut ray_tracing_features)
