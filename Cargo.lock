@@ -92,6 +92,7 @@ source = "git+https://github.com/MaikKlein/ash?rev=e10bbf3063d9b84b9d8c04e6e2baa
 [[package]]
 name = "ash-opinionated-abstractions"
 version = "0.1.0"
+source = "git+https://github.com/expenses/ash-opinionated-abstractions#ce7ce86a4529ed4a7df5486620f3be38b96e46b9"
 dependencies = [
  "anyhow",
  "ash",
@@ -243,6 +244,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cint"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d83feae28854d73f33659f9018546157422ddf5b84264ce171a766d8547d77b"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "clap"
 version = "2.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -303,6 +313,18 @@ name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
+
+[[package]]
+name = "colstodian"
+version = "0.1.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd88427e3c59d3c46f1acb90683efb13679fb0c3a8c1200a8a51f2944e011359"
+dependencies = [
+ "bytemuck",
+ "cint",
+ "glam 0.17.3",
+ "kolor",
+]
 
 [[package]]
 name = "compile-shaders"
@@ -703,6 +725,15 @@ checksum = "f0a01e0497841a3b2db4f8afa483cce65f7e96a3498bd6c541734792aeac8fe7"
 
 [[package]]
 name = "glam"
+version = "0.17.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "glam"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b8509e6791516e81c1a630d0bd7fbac36d2fa8712a9da8662e716b52d5051ca"
@@ -859,6 +890,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cc9ffccd38c451a86bf13657df244e9c3f37493cce8e5e21e940963777acc84"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kolor"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c00d77772e7efcfe633b8ba4590517291ea67001ec7851f122644ee7714aaa3a"
+dependencies = [
+ "glam 0.17.3",
 ]
 
 [[package]]
@@ -1458,9 +1498,10 @@ dependencies = [
  "ash-opinionated-abstractions",
  "ash-window",
  "bytemuck",
+ "colstodian",
  "egui",
  "egui-winit-ash-integration",
- "glam",
+ "glam 0.19.0",
  "gltf",
  "gpu-allocator",
  "image",
@@ -1684,7 +1725,7 @@ dependencies = [
 name = "shared-structs"
 version = "0.1.0"
 dependencies = [
- "glam",
+ "glam 0.19.0",
 ]
 
 [[package]]
@@ -1778,7 +1819,7 @@ version = "0.4.0-alpha.12"
 source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
 dependencies = [
  "bitflags",
- "glam",
+ "glam 0.19.0",
  "num-traits",
  "spirv-std-macros",
  "spirv-types",
@@ -1937,6 +1978,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31142970826733df8241ef35dc040ef98c679ab14d7c3e54d827099b3acecaa"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "tonemapping"
+version = "0.1.0"
+dependencies = [
+ "spirv-std",
 ]
 
 [[package]]

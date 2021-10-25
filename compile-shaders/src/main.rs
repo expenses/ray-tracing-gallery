@@ -18,6 +18,8 @@ fn main() -> anyhow::Result<()> {
 
     compile_shader_multi("shaders/ray-tracing", extensions, capabilities)?;
 
+    compile_shader_multi("shaders/tonemapping", extensions, capabilities)?;
+
     Ok(())
 }
 

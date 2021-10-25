@@ -219,7 +219,7 @@ void main() {
     params.ggx_lut_texture_index = uniforms.ggx_lut_texture_index;
 
     // This is simple and not at all physically accurate but it works for now.
-    vec3 ambient_light = vec3(0.1);
+    vec3 ambient_light = vec3(0.2);
     vec3 ambient_lighting = ambient_light * material_data.colour;
 
     primary_payload.colour = brdf(params) + ambient_lighting;

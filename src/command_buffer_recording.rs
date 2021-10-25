@@ -17,6 +17,9 @@ pub struct GlobalResources {
     pub general_ds: vk::DescriptorSet,
     pub shader_binding_tables: ShaderBindingTables,
     pub model_info_buffer: Buffer,
+    pub tonemap_render_pass: vk::RenderPass,
+    pub tonemap_pipeline: vk::Pipeline,
+    pub tonemap_pipeline_layout: vk::PipelineLayout,
 }
 
 pub struct PerFrameResources {
@@ -27,6 +30,7 @@ pub struct PerFrameResources {
     pub scratch_buffer: ScratchBuffer,
     pub instances_buffer: Buffer,
     pub num_instances: u32,
+    pub tonemap_ds: vk::DescriptorSet,
 }
 
 impl PerFrameResources {
@@ -38,6 +42,7 @@ impl PerFrameResources {
         index: usize,
         device: &Device,
         allocator: &Allocator,
+        sampler: vk::Sampler,
     ) -> anyhow::Result<()> {
         self.storage_image.cleanup(allocator)?;
         self.storage_image = Image::new_storage_image(
@@ -49,14 +54,16 @@ impl PerFrameResources {
             allocator,
         )?;
 
-        self.write_descriptor_sets(device);
+        self.write_descriptor_sets(device, sampler);
 
         Ok(())
     }
 
-    pub fn write_descriptor_sets(&self, device: &ash::Device) {
-        let storage_image_info = &[self.storage_image.descriptor_image_info()];
+    pub fn write_descriptor_sets(&self, device: &ash::Device, sampler: vk::Sampler) {
+        let storage_image_info = &[*self.storage_image.descriptor_image_info()];
         let uniform_buffer_info = &[self.ray_tracing_uniforms.descriptor_buffer_info()];
+        let storage_image_with_sampler_info =
+            &[*self.storage_image.descriptor_image_info().sampler(sampler)];
 
         let writes = &[
             *vk::WriteDescriptorSet::builder()
@@ -69,6 +76,11 @@ impl PerFrameResources {
                 .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(uniform_buffer_info),
+            *vk::WriteDescriptorSet::builder()
+                .dst_set(self.tonemap_ds)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(storage_image_with_sampler_info),
         ];
 
         unsafe {
@@ -80,7 +92,7 @@ impl PerFrameResources {
         &mut self,
         command_buffer: vk::CommandBuffer,
         device: &Device,
-        swapchain_image: vk::Image,
+        tonemap_framebuffer: vk::Framebuffer,
         extent: vk::Extent2D,
         global: &GlobalResources,
     ) -> anyhow::Result<()> {
@@ -125,84 +137,68 @@ impl PerFrameResources {
             1,
         );
 
-        let subresource = *vk::ImageSubresourceLayers::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .mip_level(0)
-            .base_array_layer(0)
-            .layer_count(1);
+        let area = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent,
+        };
 
-        let subresource_range = *vk::ImageSubresourceRange::builder()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
+        let viewport = *vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
 
-        vk_sync::cmd::pipeline_barrier(
-            device,
+        let tonemap_render_pass_info = vk::RenderPassBeginInfo::builder()
+            .render_pass(global.tonemap_render_pass)
+            .framebuffer(tonemap_framebuffer)
+            .render_area(area)
+            .clear_values(&[vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            }]);
+
+        device.cmd_begin_render_pass(
             command_buffer,
-            None,
+            &tonemap_render_pass_info,
+            vk::SubpassContents::INLINE,
+        );
+
+        device.cmd_set_scissor(command_buffer, 0, &[area]);
+        device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            global.tonemap_pipeline,
+        );
+
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            global.tonemap_pipeline_layout,
+            0,
+            &[self.tonemap_ds],
             &[],
-            &[
-                vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::Nothing],
-                    next_accesses: &[vk_sync::AccessType::TransferWrite],
-                    image: swapchain_image,
-                    range: subresource_range,
-                    discard_contents: true,
-                    ..Default::default()
-                },
-                vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
-                    next_accesses: &[vk_sync::AccessType::TransferRead],
-                    previous_layout: vk_sync::ImageLayout::General,
-                    image: self.storage_image.image,
-                    range: subresource_range,
-                    ..Default::default()
-                },
-            ],
         );
 
-        device.cmd_copy_image(
+        device.cmd_push_constants(
             command_buffer,
-            self.storage_image.image,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            swapchain_image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[*vk::ImageCopy::builder()
-                .src_subresource(subresource)
-                .dst_subresource(subresource)
-                .extent(vk::Extent3D {
-                    width: extent.width,
-                    height: extent.height,
-                    depth: 1,
-                })],
-        );
-
-        // Reset image layouts
-
-        vk_sync::cmd::pipeline_barrier(
-            device,
-            command_buffer,
-            None,
-            &[],
-            &[
-                vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::TransferWrite],
-                    next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
-                    image: swapchain_image,
-                    range: subresource_range,
+            global.tonemap_pipeline_layout,
+            vk::ShaderStageFlags::FRAGMENT,
+            0,
+            bytemuck::bytes_of(&colstodian::tonemap::BakedLottesTonemapperParams::from(
+                colstodian::tonemap::LottesTonemapperParams {
                     ..Default::default()
                 },
-                vk_sync::ImageBarrier {
-                    previous_accesses: &[vk_sync::AccessType::TransferRead],
-                    next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
-                    next_layout: vk_sync::ImageLayout::General,
-                    image: self.storage_image.image,
-                    range: subresource_range,
-                    discard_contents: true,
-                    ..Default::default()
-                },
-            ],
+            )),
         );
+
+        device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+        device.cmd_end_render_pass(command_buffer);
 
         Ok(())
     }

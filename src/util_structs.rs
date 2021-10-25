@@ -820,7 +820,7 @@ impl Image {
                 name,
                 format,
                 mip_levels: 1,
-                usage: vk::ImageUsageFlags::STORAGE,
+                usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 next_accesses: &[vk_sync::AccessType::ColorAttachmentWrite],
                 next_layout: vk_sync::ImageLayout::General,
             },
@@ -835,8 +835,8 @@ impl Image {
         Ok(image.into())
     }
 
-    pub fn descriptor_image_info(&self) -> vk::DescriptorImageInfo {
-        *vk::DescriptorImageInfo::builder()
+    pub fn descriptor_image_info(&self) -> vk::DescriptorImageInfoBuilder<'_> {
+        vk::DescriptorImageInfo::builder()
             .image_view(self.view)
             .image_layout(vk::ImageLayout::GENERAL)
     }
@@ -1283,10 +1283,6 @@ impl ImageManager {
             images: Default::default(),
             image_infos: Default::default(),
         })
-    }
-
-    pub fn descriptor_count(&self) -> u32 {
-        self.images.len() as u32
     }
 
     pub fn push_image(&mut self, image: Image, linear_filtering: bool) -> u32 {

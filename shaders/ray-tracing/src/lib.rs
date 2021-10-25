@@ -35,7 +35,7 @@ pub fn shadow_ray_miss(#[spirv(incoming_ray_payload)] payload: &mut ShadowRayPay
     payload.shadowed = false;
 }
 
-const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.05]);
+const SKY_COLOUR: Vec3 = const_vec3!([0.0, 0.0, 0.15]);
 
 #[spirv(miss)]
 pub fn primary_ray_miss(
@@ -79,16 +79,6 @@ fn trace_ray_explicit<T>(params: TraceRayExplicitParams<T>) {
             params.payload,
         )
     }
-}
-
-// https://en.wikipedia.org/wiki/SRGB#From_CIE_XYZ_to_sRGB
-fn linear_to_srgb(linear: Vec3) -> Vec3 {
-    let threshold = linear.cmple(Vec3::splat(0.0031308));
-
-    let lower = linear * 12.92;
-    let higher = 1.055 * linear.powf(1.0 / 2.4) - 0.055;
-
-    Vec3::select(threshold, lower, higher)
 }
 
 #[cfg(target_arch = "spirv")]
@@ -186,7 +176,7 @@ pub fn ray_generation(
     };
 
     unsafe {
-        image.write(launch_id_xy, linear_to_srgb(colour).extend(1.0));
+        image.write(launch_id_xy, colour.extend(1.0));
     }
 }
 

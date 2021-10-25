@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
         &device_extensions,
         &surface_loader,
         surface,
-        vk::Format::B8G8R8A8_UNORM,
+        vk::Format::B8G8R8A8_SRGB,
     )? {
         Some(selection) => selection,
         None => {
@@ -226,15 +226,17 @@ fn main() -> anyhow::Result<()> {
 
     // Create descriptor set layouts
 
-    let (general_dsl, per_frame_dsl, descriptor_pool) =
-        create_descriptor_set_layouts_and_pool(&device)?;
+    let descriptor_set_layouts = DescriptorSetLayouts::new(&device)?;
 
     // Create pipelines
 
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[general_dsl, per_frame_dsl])
+                .set_layouts(&[
+                    descriptor_set_layouts.image_array_dsl,
+                    descriptor_set_layouts.per_frame_ray_tracing_dsl,
+                ])
                 .push_constant_ranges(&[*vk::PushConstantRange::builder()
                     .stage_flags(
                         vk::ShaderStageFlags::RAYGEN_KHR
@@ -555,7 +557,7 @@ fn main() -> anyhow::Result<()> {
     // Create descriptor sets
 
     let general_ds =
-        create_general_descriptors_set(&device, &image_manager, general_dsl, descriptor_pool)?;
+        create_image_array_descriptor_set(&device, &image_manager, &descriptor_set_layouts)?;
 
     // Create frames for multibuffering and their resources.
 
@@ -569,8 +571,16 @@ fn main() -> anyhow::Result<()> {
     let ray_tracing_sets = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[per_frame_dsl; 2])
-                .descriptor_pool(descriptor_pool),
+                .set_layouts(&[descriptor_set_layouts.per_frame_ray_tracing_dsl; 2])
+                .descriptor_pool(descriptor_set_layouts.descriptor_pool),
+        )
+    }?;
+
+    let tonemap_sets = unsafe {
+        device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::builder()
+                .set_layouts(&[descriptor_set_layouts.tonemap_dsl; 2])
+                .descriptor_pool(descriptor_set_layouts.descriptor_pool),
         )
     }?;
 
@@ -608,6 +618,16 @@ fn main() -> anyhow::Result<()> {
         frame_index: 0,
     };
 
+    let tonemap_sampler = unsafe {
+        device.create_sampler(
+            &vk::SamplerCreateInfo::builder()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .max_lod(vk::LOD_CLAMP_NONE),
+            None,
+        )
+    }?;
+
     let mut multibuffering_frames = unsafe {
         [
             Frame::new(
@@ -618,7 +638,7 @@ fn main() -> anyhow::Result<()> {
                         extent.width,
                         extent.height,
                         "storage image 0",
-                        surface_format.format,
+                        vk::Format::R32G32B32A32_SFLOAT,
                         init_command_buffer.buffer(),
                         &allocator,
                     )?,
@@ -641,7 +661,9 @@ fn main() -> anyhow::Result<()> {
                         &allocator,
                     )?,
                     num_instances,
+                    tonemap_ds: tonemap_sets[0],
                 },
+                tonemap_sampler,
             )?,
             Frame::new(
                 &device,
@@ -651,7 +673,7 @@ fn main() -> anyhow::Result<()> {
                         extent.width,
                         extent.height,
                         "storage image 1",
-                        surface_format.format,
+                        vk::Format::R32G32B32A32_SFLOAT,
                         init_command_buffer.buffer(),
                         &allocator,
                     )?,
@@ -673,7 +695,9 @@ fn main() -> anyhow::Result<()> {
                         instances_buffer
                     },
                     num_instances,
+                    tonemap_ds: tonemap_sets[1],
                 },
+                tonemap_sampler,
             )?,
         ]
     };
@@ -707,7 +731,7 @@ fn main() -> anyhow::Result<()> {
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(surface_caps.current_transform)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -728,12 +752,20 @@ fn main() -> anyhow::Result<()> {
     let mut screen_center =
         winit::dpi::LogicalPosition::new(extent.width as f64 / 2.0, extent.height as f64 / 2.0);
 
+    let tonemap_render_pass = create_tonemap_render_pass(&device, surface_format.format)?;
+
+    let (tonemap_pipeline, tonemap_pipeline_layout) =
+        create_tonemap_pipeline(&device, &descriptor_set_layouts, tonemap_render_pass)?;
+
     let global_resources = GlobalResources {
         pipeline,
         pipeline_layout,
         shader_binding_tables,
         general_ds,
         model_info_buffer,
+        tonemap_render_pass,
+        tonemap_pipeline,
+        tonemap_pipeline_layout,
     };
 
     let mut egui_integration = ManuallyDrop::new(egui_winit_ash_integration::Integration::new(
@@ -748,6 +780,9 @@ fn main() -> anyhow::Result<()> {
         swapchain.swapchain,
         surface_format,
     ));
+
+    let mut tonemap_framebuffers =
+        create_tonemap_framebuffers(&device, extent, &swapchain, tonemap_render_pass)?;
 
     event_loop.run(move |event, _, control_flow| {
         egui_integration.handle_event(&event);
@@ -796,6 +831,7 @@ fn main() -> anyhow::Result<()> {
                                 i,
                                 &device,
                                 &allocator,
+                                tonemap_sampler,
                             )?;
                         }
 
@@ -807,6 +843,13 @@ fn main() -> anyhow::Result<()> {
                             swapchain.swapchain.clone(),
                             surface_format,
                         );
+
+                        tonemap_framebuffers = create_tonemap_framebuffers(
+                            &device,
+                            extent,
+                            &swapchain,
+                            tonemap_render_pass,
+                        )?;
                     }
                     WindowEvent::KeyboardInput {
                         input:
@@ -969,7 +1012,8 @@ fn main() -> anyhow::Result<()> {
                         )
                     } {
                         Ok((swapchain_image_index, _suboptimal)) => {
-                            let swapchain_image = swapchain.images[swapchain_image_index as usize];
+                            let tonemap_framebuffer =
+                                tonemap_framebuffers[swapchain_image_index as usize];
                             let resources = &mut frame.resources;
 
                             uniforms.view_inverse = mat_to_glam(camera.as_view_matrix().inversed());
@@ -996,7 +1040,7 @@ fn main() -> anyhow::Result<()> {
                                 resources.record(
                                     frame.command_buffer,
                                     &device,
-                                    swapchain_image,
+                                    tonemap_framebuffer,
                                     extent,
                                     &global_resources,
                                 )?;
@@ -1092,99 +1136,123 @@ fn main() -> anyhow::Result<()> {
     });
 }
 
-pub fn create_descriptor_set_layouts_and_pool(
-    device: &ash::Device,
-) -> anyhow::Result<(
-    vk::DescriptorSetLayout,
-    vk::DescriptorSetLayout,
-    vk::DescriptorPool,
-)> {
-    let general_dsl = unsafe {
-        device.create_descriptor_set_layout(
-            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .descriptor_count(MAX_BOUND_IMAGES)
-                    .stage_flags(
-                        vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::ANY_HIT_KHR,
-                    ),
-            ]),
-            None,
-        )
-    }?;
-
-    // TODO: Remove uniform buffer from these, using buffer device addresses instead.
-    // This requires support in rust-gpu.
-    let per_frame_dsl = unsafe {
-        device.create_descriptor_set_layout(
-            &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
-                *vk::DescriptorSetLayoutBinding::builder()
-                    .binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR),
-            ]),
-            None,
-        )
-    }?;
-
-    let num_frames = 2;
-
-    let descriptor_pool = unsafe {
-        device.create_descriptor_pool(
-            &vk::DescriptorPoolCreateInfo::builder()
-                .pool_sizes(&[
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                        .descriptor_count(num_frames),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::STORAGE_IMAGE)
-                        .descriptor_count(num_frames),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(num_frames),
-                    *vk::DescriptorPoolSize::builder()
-                        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .descriptor_count(MAX_BOUND_IMAGES),
-                ])
-                .max_sets(num_frames + 1),
-            None,
-        )
-    }?;
-
-    Ok((general_dsl, per_frame_dsl, descriptor_pool))
+struct DescriptorSetLayouts {
+    image_array_dsl: vk::DescriptorSetLayout,
+    per_frame_ray_tracing_dsl: vk::DescriptorSetLayout,
+    tonemap_dsl: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
 }
 
-pub fn create_general_descriptors_set(
+impl DescriptorSetLayouts {
+    pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        let image_array_dsl = unsafe {
+            device.create_descriptor_set_layout(
+                &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                    *vk::DescriptorSetLayoutBinding::builder()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .descriptor_count(MAX_BOUND_IMAGES)
+                        .stage_flags(
+                            vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                                | vk::ShaderStageFlags::ANY_HIT_KHR,
+                        ),
+                ]),
+                None,
+            )
+        }?;
+
+        let tonemap_dsl = unsafe {
+            device.create_descriptor_set_layout(
+                &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                    *vk::DescriptorSetLayoutBinding::builder()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                ]),
+                None,
+            )
+        }?;
+
+        // TODO: Remove uniform buffer from these, using buffer device addresses instead.
+        // This requires support in rust-gpu.
+        let per_frame_ray_tracing_dsl = unsafe {
+            device.create_descriptor_set_layout(
+                &*vk::DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                    *vk::DescriptorSetLayoutBinding::builder()
+                        .binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                        .descriptor_count(1)
+                        .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                    *vk::DescriptorSetLayoutBinding::builder()
+                        .binding(1)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(
+                            vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR,
+                        ),
+                ]),
+                None,
+            )
+        }?;
+
+        let num_frames = 2;
+
+        let descriptor_pool = unsafe {
+            device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::builder()
+                    .pool_sizes(&[
+                        *vk::DescriptorPoolSize::builder()
+                            .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                            .descriptor_count(num_frames),
+                        *vk::DescriptorPoolSize::builder()
+                            .ty(vk::DescriptorType::STORAGE_IMAGE)
+                            .descriptor_count(num_frames),
+                        *vk::DescriptorPoolSize::builder()
+                            .ty(vk::DescriptorType::STORAGE_BUFFER)
+                            .descriptor_count(1),
+                        *vk::DescriptorPoolSize::builder()
+                            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                            .descriptor_count(num_frames),
+                        *vk::DescriptorPoolSize::builder()
+                            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .descriptor_count(MAX_BOUND_IMAGES + 1),
+                    ])
+                    .max_sets(num_frames * 2 + 1),
+                None,
+            )
+        }?;
+
+        Ok(Self {
+            image_array_dsl,
+            per_frame_ray_tracing_dsl,
+            tonemap_dsl,
+            descriptor_pool,
+        })
+    }
+}
+
+fn create_image_array_descriptor_set(
     device: &ash::Device,
     image_manager: &ImageManager,
-    general_dsl: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
+    descriptor_set_layouts: &DescriptorSetLayouts,
 ) -> anyhow::Result<vk::DescriptorSet> {
-    let descriptor_sets = unsafe {
+    let image_array_ds = unsafe {
         device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::builder()
-                .set_layouts(&[general_dsl])
-                .descriptor_pool(descriptor_pool),
+                .set_layouts(&[descriptor_set_layouts.image_array_dsl])
+                .descriptor_pool(descriptor_set_layouts.descriptor_pool),
         )
-    }?;
-
-    let general_ds = descriptor_sets[0];
+    }?[0];
 
     unsafe {
-        device.update_descriptor_sets(&[*image_manager.write_descriptor_set(general_ds, 0)], &[]);
+        device.update_descriptor_sets(
+            &[*image_manager.write_descriptor_set(image_array_ds, 0)],
+            &[],
+        );
     }
 
-    Ok(general_ds)
+    Ok(image_array_ds)
 }
 
 pub struct Frame {
@@ -1201,8 +1269,9 @@ impl Frame {
         device: &ash::Device,
         queue_family: u32,
         resources: PerFrameResources,
+        sampler: vk::Sampler,
     ) -> anyhow::Result<Self> {
-        resources.write_descriptor_sets(device);
+        resources.write_descriptor_sets(device, sampler);
 
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
@@ -1293,4 +1362,132 @@ fn mat_to_glam(mat: Mat4) -> glam::Mat4 {
     let mut glam = glam::Mat4::default();
     *glam.as_mut() = *mat.as_array();
     glam
+}
+
+fn create_tonemap_render_pass(
+    device: &ash::Device,
+    surface_format: vk::Format,
+) -> anyhow::Result<vk::RenderPass> {
+    let tonemap_attachments = [
+        // Swapchain framebuffer
+        *vk::AttachmentDescription::builder()
+            .format(surface_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+    ];
+
+    let swapchain_framebuffer_ref = [*vk::AttachmentReference::builder()
+        .attachment(0)
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+
+    let tonemap_subpass = [*vk::SubpassDescription::builder()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(&swapchain_framebuffer_ref)];
+
+    let tonemap_subpass_dependency = [*vk::SubpassDependency::builder()
+        .src_subpass(vk::SUBPASS_EXTERNAL)
+        .dst_subpass(0)
+        .src_stage_mask(vk::PipelineStageFlags::TOP_OF_PIPE)
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+
+    Ok(unsafe {
+        device.create_render_pass(
+            &vk::RenderPassCreateInfo::builder()
+                .attachments(&tonemap_attachments)
+                .subpasses(&tonemap_subpass)
+                .dependencies(&tonemap_subpass_dependency),
+            None,
+        )
+    }?)
+}
+
+fn create_tonemap_pipeline(
+    device: &ash::Device,
+    descriptor_set_layouts: &DescriptorSetLayouts,
+    tonemap_render_pass: vk::RenderPass,
+) -> anyhow::Result<(vk::Pipeline, vk::PipelineLayout)> {
+    let fullscreen_tri = ShaderEntryPoint::new("fullscreen_tri")?;
+
+    let fullscreen_tri_stage =
+        load_rust_shader_module_as_stage(&fullscreen_tri, vk::ShaderStageFlags::VERTEX, &device)?;
+
+    let tonemap = ShaderEntryPoint::new("tonemap")?;
+
+    let tonemap_stage =
+        load_rust_shader_module_as_stage(&tonemap, vk::ShaderStageFlags::FRAGMENT, &device)?;
+
+    let tonemap_pipeline_layout = unsafe {
+        device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[descriptor_set_layouts.tonemap_dsl])
+                .push_constant_ranges(&[*vk::PushConstantRange::builder()
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+                    .size(
+                        std::mem::size_of::<colstodian::tonemap::BakedLottesTonemapperParams>()
+                            as u32,
+                    )]),
+            None,
+        )
+    }?;
+
+    let tonemap_pipeline_desc = ash_opinionated_abstractions::GraphicsPipelineDescriptor {
+        primitive_state: ash_opinionated_abstractions::PrimitiveState {
+            cull_mode: vk::CullModeFlags::NONE,
+            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+            polygon_mode: vk::PolygonMode::FILL,
+        },
+        depth_stencil_state: None,
+        vertex_attributes: &[],
+        vertex_bindings: &[],
+        colour_attachments: &[*vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::all())
+            .blend_enable(false)],
+    };
+
+    let tonemap_pipeline_desc = tonemap_pipeline_desc.as_baked();
+    let tonemap_stages = &[*fullscreen_tri_stage, *tonemap_stage];
+
+    let tonemap_pipeline_desc = tonemap_pipeline_desc.as_pipeline_create_info(
+        tonemap_stages,
+        tonemap_pipeline_layout,
+        tonemap_render_pass,
+        0,
+    );
+
+    let tonemap_pipeline = unsafe {
+        device.create_graphics_pipelines(vk::PipelineCache::null(), &[*tonemap_pipeline_desc], None)
+    }
+    .map_err(|(_, err)| err)?[0];
+
+    Ok((tonemap_pipeline, tonemap_pipeline_layout))
+}
+
+fn create_tonemap_framebuffers(
+    device: &ash::Device,
+    extent: vk::Extent2D,
+    swapchain: &Swapchain,
+    tonemap_render_pass: vk::RenderPass,
+) -> anyhow::Result<Vec<vk::Framebuffer>> {
+    swapchain
+        .image_views
+        .iter()
+        .map(|image_view| {
+            unsafe {
+                device.create_framebuffer(
+                    &vk::FramebufferCreateInfo::builder()
+                        .render_pass(tonemap_render_pass)
+                        .attachments(&[*image_view])
+                        .width(extent.width)
+                        .height(extent.height)
+                        .layers(1),
+                    None,
+                )
+            }
+            .map_err(|err| err.into())
+        })
+        .collect()
 }
