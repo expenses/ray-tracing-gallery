@@ -1371,7 +1371,7 @@ checksum = "7ef03e0a2b150c7a90d01faf6254c9c48a41e95fb2a8c2ac1c6f0d2b9aefc342"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu#f0fd47121838ede068b8a499b430d628c9e19f8e"
 dependencies = [
  "ar",
  "bimap",
@@ -1560,7 +1560,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu#f0fd47121838ede068b8a499b430d628c9e19f8e"
 dependencies = [
  "memchr",
  "raw-string",
@@ -1572,7 +1572,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu#f0fd47121838ede068b8a499b430d628c9e19f8e"
 dependencies = [
  "bitflags",
  "glam",
@@ -1584,7 +1584,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu#f0fd47121838ede068b8a499b430d628c9e19f8e"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1616,7 +1616,7 @@ dependencies = [
 [[package]]
 name = "spirv-types"
 version = "0.4.0-alpha.12"
-source = "git+https://github.com/EmbarkStudios/rust-gpu#e5c2953ea6bef895863b3af3de4f45a2d41d138f"
+source = "git+https://github.com/EmbarkStudios/rust-gpu#f0fd47121838ede068b8a499b430d628c9e19f8e"
 
 [[package]]
 name = "strsim"
